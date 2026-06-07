@@ -118,6 +118,8 @@ export interface LocalFactorySweepCandidate {
   psr: number;
   dsrApprox: number;
   pboApprox: number;
+  realityCheckApproxPValue?: number;
+  spaApproxPValue?: number;
   familyAdjustedPValue: number;
   globalAdjustedPValue: number;
   falseDiscoveryRisk: number;
@@ -139,6 +141,16 @@ export interface LocalFactorySweepCandidate {
     driftReasons: string[];
     driftScore: number;
   };
+  executionTelemetry?: Record<string, {
+    fillRate?: number;
+    averageSlippageCents?: number;
+    averagePartialFillRatio?: number;
+    averageFillProbability?: number;
+    averageFillDepthUtilization?: number;
+    staleQuoteRejections?: number;
+    queueMisses?: number;
+    depthRejections?: number;
+  }>;
   paperEvidence: {
     available: boolean;
     status: string;
@@ -401,6 +413,8 @@ function normalizeSweepCandidate(value: unknown): LocalFactorySweepCandidate | n
     psr: numberOrDefault(value.psr, 0),
     dsrApprox: numberOrDefault(value.dsrApprox, numberOrDefault(value.dsr, 0)),
     pboApprox: numberOrDefault(value.pboApprox, numberOrDefault(value.pbo, 1)),
+    realityCheckApproxPValue: numberOrNull(value.realityCheckApproxPValue) ?? undefined,
+    spaApproxPValue: numberOrNull(value.spaApproxPValue) ?? undefined,
     familyAdjustedPValue: numberOrDefault(value.familyAdjustedPValue, 1),
     globalAdjustedPValue: numberOrDefault(value.globalAdjustedPValue, 1),
     falseDiscoveryRisk: numberOrDefault(value.falseDiscoveryRisk, 1),
@@ -418,6 +432,7 @@ function normalizeSweepCandidate(value: unknown): LocalFactorySweepCandidate | n
     holdoutConservativeTotalPnl: numberOrDefault(value.holdoutConservativeTotalPnl, 0),
     holdoutLowerCi: numberOrNull(value.holdoutLowerCi),
     drift: normalizeFactoryDrift(value.drift),
+    executionTelemetry: isRecord(value.executionTelemetry) ? { ...value.executionTelemetry } as LocalFactorySweepCandidate["executionTelemetry"] : undefined,
     paperEvidence: normalizeFactoryPaperEvidence(value.paperEvidence),
   };
 }

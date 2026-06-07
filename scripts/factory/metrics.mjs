@@ -1,4 +1,4 @@
-import { average, dayKey, maxDrawdownFromEquity, median, roundMoney, roundRatio, seededRandom, stddev, unique } from "./utils.mjs";
+import { average, childSeed, dayKey, maxDrawdownFromEquity, median, roundMoney, roundRatio, seededRandom, stddev, unique } from "./utils.mjs";
 
 export function metricsForAlgo(algo, trades, options = {}) {
   const closed = trades
@@ -18,7 +18,10 @@ export function metricsForAlgo(algo, trades, options = {}) {
   const marketPnls = groupPnl(closed, (trade) => trade.marketTicker);
   const dayPnls = groupPnl(closed, (trade) => dayKey(trade.closedAt ?? trade.openedAt));
   const regimeBreakdown = regimeMetrics(closed);
-  const bootstrap = bootstrapConfidenceIntervals(closed, options);
+  const telemetry = executionTelemetryForTrades(trades);
+  const returnMoments = momentsFor(returns);
+  const bootstrapSeed = childSeed(options.seed ?? "factory-bootstrap", algo.id, options.seedScope ?? "full-sample");
+  const bootstrap = bootstrapConfidenceIntervals(closed, { ...options, seed: bootstrapSeed });
   return {
     algoId: algo.id,
     algoName: algo.name,
@@ -52,9 +55,20 @@ export function metricsForAlgo(algo, trades, options = {}) {
     capacityProxy: capacityProxy(closed),
     riskOfLossStreak: lossStreakProbability(closed),
     sharpeLike: risk > 0 && meanPnl !== null ? roundRatio((meanPnl / risk) * Math.sqrt(closed.length)) : 0,
+    returnMoments,
+    skewness: returnMoments.skewness,
+    kurtosis: returnMoments.kurtosis,
     averageEntryEdge: average(closed.map((trade) => trade.entryContext.edgeAfterFees)),
     averageEntrySpread: average(closed.map((trade) => trade.entryContext.selectedSpread).filter((value) => typeof value === "number")),
     averageSecondsToClose: average(closed.map((trade) => trade.entryContext.secondsToClose)),
+    averageSlippageCents: telemetry.averageSlippageCents,
+    averagePartialFillRatio: telemetry.averagePartialFillRatio,
+    averageFillProbability: telemetry.averageFillProbability,
+    averageFillDepthUtilization: telemetry.averageFillDepthUtilization,
+    queueResults: telemetry.queueResults,
+    latencyBuckets: telemetry.latencyBuckets,
+    executionTelemetry: telemetry,
+    bootstrapSeed,
     equityCurve,
     bootstrap,
     regimeBreakdown,
@@ -70,7 +84,21 @@ export function foldMetricsForAlgo(algo, trades, folds, options = {}) {
       validationEventCount: fold.validationEventIds.length,
       purgedEventCount: fold.purgedEventIds.length,
       embargoedEventCount: fold.embargoedEventIds.length,
-      ...metricsForAlgo(algo, trades.filter((trade) => validationIds.has(trade.marketTicker)), options),
+      ...metricsForAlgo(algo, trades.filter((trade) => validationIds.has(trade.marketTicker)), { ...options, seedScope: fold.id }),
+    };
+  });
+}
+
+export function trainMetricsForAlgo(algo, trades, folds, options = {}) {
+  return folds.map((fold) => {
+    const trainIds = new Set(fold.trainEventIds);
+    return {
+      foldId: fold.id,
+      trainEventCount: fold.trainEventIds.length,
+      validationEventCount: fold.validationEventIds.length,
+      purgedEventCount: fold.purgedEventIds.length,
+      embargoedEventCount: fold.embargoedEventIds.length,
+      ...metricsForAlgo(algo, trades.filter((trade) => trainIds.has(trade.marketTicker)), { ...options, seedScope: `${fold.id}:train` }),
     };
   });
 }
@@ -92,9 +120,29 @@ export function summarizeFoldMetrics(foldMetrics) {
 export function costComparisonMetrics(algo, byCostModel, options = {}) {
   const result = {};
   for (const [id, simulation] of Object.entries(byCostModel)) {
-    result[id] = metricsForAlgo(algo, simulation.trades, options);
+    result[id] = metricsForAlgo(algo, simulation.trades, { ...options, seedScope: `cost:${id}` });
   }
   return result;
+}
+
+export function executionTelemetryForSimulation(simulation) {
+  const tradeTelemetry = executionTelemetryForTrades(simulation?.trades ?? []);
+  const rejectReasons = {};
+  for (const reject of simulation?.rejects ?? []) {
+    rejectReasons[reject.reasonCode] = (rejectReasons[reject.reasonCode] ?? 0) + 1;
+  }
+  const fills = simulation?.trades?.length ?? 0;
+  const rejects = simulation?.rejects?.length ?? 0;
+  return {
+    ...tradeTelemetry,
+    fills,
+    rejects,
+    fillRate: fills + rejects > 0 ? roundRatio(fills / (fills + rejects)) : 1,
+    rejectReasons,
+    staleQuoteRejections: rejectReasons.stale_quote ?? 0,
+    queueMisses: rejectReasons.queue_miss ?? 0,
+    depthRejections: (rejectReasons.insufficient_depth ?? 0) + (rejectReasons.cannot_fill_full_size ?? 0),
+  };
 }
 
 function equityCurveForTrades(closed) {
@@ -185,6 +233,50 @@ function lossStreakProbability(trades) {
   if (!trades.length) return 1;
   const lossRate = trades.filter((trade) => trade.pnl < 0).length / trades.length;
   return roundRatio(1 - (1 - lossRate ** Math.min(5, trades.length)) ** Math.max(1, trades.length - 4));
+}
+
+function executionTelemetryForTrades(trades) {
+  const contexts = trades
+    .flatMap((trade) => [trade.entryContext, trade.exitContext])
+    .filter((context) => context && typeof context === "object");
+  const entries = trades.map((trade) => trade.entryContext).filter((context) => context && typeof context === "object");
+  return {
+    averageSlippageCents: roundMoney(average(contexts.map((context) => context.slippageCents).filter(Number.isFinite)) ?? 0),
+    averagePartialFillRatio: roundRatio(average(entries.map((context) => context.partialFillRatio).filter(Number.isFinite)) ?? 0),
+    averageFillProbability: roundRatio(average(contexts.map((context) => context.fillProbabilityUsed).filter(Number.isFinite)) ?? 0),
+    averageFillDepthUtilization: roundRatio(average(entries.map((context) => context.fillDepthUtilization).filter(Number.isFinite)) ?? 0),
+    queueResults: countBy(contexts, (context) => context.queueResult ?? "unknown"),
+    latencyBuckets: countBy(contexts, (context) => context.latencyBucket ?? "unknown"),
+  };
+}
+
+function countBy(items, keyFn) {
+  const counts = {};
+  for (const item of items) {
+    const key = String(keyFn(item));
+    counts[key] = (counts[key] ?? 0) + 1;
+  }
+  return counts;
+}
+
+function momentsFor(values) {
+  const finite = values.filter(Number.isFinite);
+  const n = finite.length;
+  const mean = average(finite) ?? 0;
+  const sd = stddev(finite) ?? 0;
+  if (n < 3 || sd <= 0) return { n, mean: roundMoney(mean), variance: roundMoney(sd ** 2), skewness: 0, kurtosis: 3 };
+  const centered = finite.map((value) => (value - mean) / sd);
+  const skewness = n > 2
+    ? (n / ((n - 1) * (n - 2))) * centered.reduce((total, value) => total + value ** 3, 0)
+    : 0;
+  const rawKurtosis = centered.reduce((total, value) => total + value ** 4, 0) / n;
+  return {
+    n,
+    mean: roundMoney(mean),
+    variance: roundMoney(sd ** 2),
+    skewness: roundRatio(skewness),
+    kurtosis: roundRatio(Math.max(1.0001, rawKurtosis)),
+  };
 }
 
 function regimeMetrics(trades) {
@@ -280,4 +372,3 @@ function emptyBootstrap() {
   const empty = { lower: null, median: null, upper: null };
   return { meanPnl: empty, hitRate: empty, roi: empty, sharpeLike: empty, maxDrawdown: empty, profitFactor: empty };
 }
-

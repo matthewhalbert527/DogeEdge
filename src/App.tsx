@@ -1895,6 +1895,7 @@ function App() {
             candidateAlgos={topTraderCandidateAlgos}
             executableState={topTradersExecutable}
             favoriteSourceIds={favoriteAlgoSourceIds}
+            latestSweep={latestSweep}
             mainArena={paperArena}
             mainArenaAlgos={visibleArenaAlgos}
             onPause={pauseTopTraders}
@@ -3716,6 +3717,7 @@ function TopTradersView({
   candidateAlgos,
   executableState,
   favoriteSourceIds,
+  latestSweep,
   mainArena,
   mainArenaAlgos,
   onPlay,
@@ -3730,6 +3732,7 @@ function TopTradersView({
   candidateAlgos: GeneratedPaperAlgo[];
   executableState: TopTraderExecutableState;
   favoriteSourceIds: string[];
+  latestSweep: LocalFactorySweep | null;
   mainArena: PaperArenaState;
   mainArenaAlgos: GeneratedPaperAlgo[];
   onPlay: (config: { startingBalance: number; maxBet: number; reset: boolean }) => void;
@@ -3769,6 +3772,7 @@ function TopTradersView({
   const selectedIds = useMemo(() => new Set(selectedIdList), [selectedIdList]);
   const selectedIdSignature = selectedIdList.join("|");
   const favoriteSourceSet = useMemo(() => new Set(favoriteSourceIds), [favoriteSourceIds]);
+  const factoryEvidenceBySource = useMemo(() => factoryResearchEvidenceBySource(latestSweep), [latestSweep]);
   const sortedRosterRows = sortTopTraderRows(
     rosterRows,
     topTraderSorts,
@@ -3975,6 +3979,7 @@ function TopTradersView({
                   const avgProfitPerTrade = topTraderAverageProfitPerTrade(execRow);
                   const acceptanceRate = topTraderExecutableAcceptanceRate(execStats);
                   const confidence = activatedConfidence(execRow, asOf);
+                  const research = factoryEvidenceForTopTraderRow(row, factoryEvidenceBySource);
                   const expanded = tradeViewer.sourceAlgoId === row.sourceAlgoId;
                   const executablePositions = expanded ? topTraderExecutablePositionsForSource(executableState.positions, row.sourceAlgoId) : [];
                   return (
@@ -3992,7 +3997,14 @@ function TopTradersView({
                           </button>
                         </td>
                         <td>#{row.rank}</td>
-                        <td><Badge tone={topTraderBucketTone(row.bucket)}>{topTraderBucketLabel(row.bucket)}</Badge></td>
+                        <td>
+                          <div className="confidence-cell">
+                            <Badge tone={topTraderBucketTone(row.bucket)}>{topTraderBucketLabel(row.bucket)}</Badge>
+                            {row.bucket === "champion" && (!research || research.nonPromotable) && (
+                              <Badge tone="warn">Dry-run champ</Badge>
+                            )}
+                          </div>
+                        </td>
                         <td><span className="algo-id-pill">{row.displayId}</span></td>
                         <td>
                           <div className="candidate-name compact-name">
@@ -4024,6 +4036,13 @@ function TopTradersView({
                           <div className="confidence-cell">
                             <Badge tone={isActive ? "good" : arena.status === "running" ? "info" : "neutral"}>{isActive ? "ACTIVE" : arena.status === "running" ? "QUEUED" : "READY"}</Badge>
                             <Badge tone={confidence.tone}>{confidence.label}</Badge>
+                            <Badge tone={topTraderResearchTone(research)}>{topTraderResearchLabel(research)}</Badge>
+                            {research && (
+                              <>
+                                <Badge tone={research.holdoutPass && research.holdoutStrictlyLater ? "good" : "bad"}>{research.holdoutPass ? "Holdout ok" : "Holdout fail"}</Badge>
+                                <Badge tone={!research.paperEvidence.available ? "neutral" : research.paperEvidence.driftOk ? "good" : "warn"}>{research.paperEvidence.available ? `Paper ${research.paperEvidence.status}` : "Paper req"}</Badge>
+                              </>
+                            )}
                             <button className="ghost-button table-button" type="button" onClick={() => toggleTradeViewer(row.sourceAlgoId)}>
                               {expanded ? "Hide Trades" : "Trades"}
                             </button>
@@ -6653,6 +6672,37 @@ function bestSweepCandidateByFamily(candidates: LocalFactorySweepCandidate[]): S
     });
   }
   return [...families.values()].sort((left, right) => right.best.robustScore - left.best.robustScore || right.best.candidateScore - left.best.candidateScore || right.best.totalPnl - left.best.totalPnl);
+}
+
+function factoryResearchEvidenceBySource(latestSweep: LocalFactorySweep | null) {
+  const map = new Map<string, LocalFactorySweepCandidate>();
+  if (!latestSweep) return map;
+  for (const candidate of [...latestSweep.topMetrics, ...latestSweep.candidates]) {
+    const current = map.get(candidate.algoId);
+    map.set(candidate.algoId, current ? betterSweepCandidate(candidate, current) : candidate);
+  }
+  return map;
+}
+
+function factoryEvidenceForTopTraderRow(row: TopTraderRow, evidence: Map<string, LocalFactorySweepCandidate>) {
+  return evidence.get(row.sourceAlgoId) ?? evidence.get(row.displayId) ?? null;
+}
+
+function topTraderResearchTone(candidate: LocalFactorySweepCandidate | null): "info" | "warn" | "good" | "bad" | "neutral" {
+  if (!candidate) return "neutral";
+  if (candidate.nonPromotable) return candidate.promotionVerdict === "insufficient_data" ? "warn" : "bad";
+  if (candidate.promotionVerdict === "paper_only" || candidate.promotionVerdict === "tiny_live_eligible") return "good";
+  if (candidate.promotionVerdict === "insufficient_data") return "warn";
+  return "bad";
+}
+
+function topTraderResearchLabel(candidate: LocalFactorySweepCandidate | null) {
+  if (!candidate) return "Research -";
+  if (candidate.nonPromotable && candidate.promotionVerdict === "insufficient_data") return "Insufficient";
+  if (candidate.nonPromotable) return "No promo";
+  if (candidate.promotionVerdict === "paper_only") return "Research ok";
+  if (candidate.promotionVerdict === "tiny_live_eligible") return "Tiny gated";
+  return candidate.promotionVerdict.replaceAll("_", " ");
 }
 
 function betterSweepCandidate(candidate: LocalFactorySweepCandidate, current: LocalFactorySweepCandidate) {

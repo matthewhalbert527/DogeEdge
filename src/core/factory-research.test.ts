@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -8,7 +8,7 @@ import { buildMarketEvents, deduplicateDecisionFrames } from "../../scripts/fact
 import { purgedEmbargoFolds } from "../../scripts/factory/splits.mjs";
 import { simulateAlgoEvents } from "../../scripts/factory/simulator.mjs";
 import { metricsForAlgo } from "../../scripts/factory/metrics.mjs";
-import { rankFactoryMetrics } from "../../scripts/factory/ranking.mjs";
+import { pboRankDegradationApprox, rankFactoryMetrics } from "../../scripts/factory/ranking.mjs";
 import { promotionReview } from "../../scripts/factory/promotion.mjs";
 import { runFactoryResearchPipeline } from "../../scripts/factory/pipeline.mjs";
 import { finalHoldoutSplit } from "../../scripts/factory/holdout.mjs";
@@ -16,6 +16,7 @@ import { detectEvidenceDrift } from "../../scripts/factory/drift.mjs";
 import { compareInputManifest, decisionFrameInputManifest } from "../../scripts/factory/repro.mjs";
 import { paperEvidenceForAlgo, readPaperEvidence } from "../../scripts/factory/paper-evidence.mjs";
 import { markdownReport, metricsCsv } from "../../scripts/factory/reporting.mjs";
+import { auditReviewExports } from "../../scripts/factory/audit-exports.mjs";
 
 const baseFrame = {
   id: "frame-1",
@@ -119,6 +120,9 @@ describe("factory research safeguards", () => {
     const stressMetric = metricsForAlgo(alwaysYesAlgo, stress.trades);
 
     expect(baseMetric.totalPnl).toBeGreaterThan(stressMetric.totalPnl);
+    expect(stress.trades[0]?.entryContext.slippageCents).toBeGreaterThan(0);
+    expect(stressMetric.averageSlippageCents).toBeGreaterThan(0);
+    expect(stressMetric.executionTelemetry.queueResults.filled).toBeGreaterThan(0);
   });
 
   it("rejects a one-lucky-trade candidate as insufficient data", () => {
@@ -147,6 +151,15 @@ describe("factory research safeguards", () => {
     const many = rankFactoryMetrics(Array.from({ length: 50 }, (_, index) => robustMetric(`algo-${index}`))).find((item) => item.algoId === "algo-0");
 
     expect(many?.multipleTestingPenalty).toBeGreaterThan(one.multipleTestingPenalty);
+  });
+
+  it("keeps statistical adjustments deterministic for the same root seed", () => {
+    const metrics = Array.from({ length: 6 }, (_, index) => robustMetric(`seeded-${index}`));
+    const first = rankFactoryMetrics(metrics, { seed: "same-seed", bootstrapIterations: 120 });
+    const second = rankFactoryMetrics(metrics, { seed: "same-seed", bootstrapIterations: 120 });
+
+    expect(first.map((row) => [row.algoId, row.dsrApprox, row.pboApprox, row.familyAdjustedPValue, row.globalAdjustedPValue]))
+      .toEqual(second.map((row) => [row.algoId, row.dsrApprox, row.pboApprox, row.familyAdjustedPValue, row.globalAdjustedPValue]));
   });
 
   it("requires paper evidence before tiny-live eligibility", () => {
@@ -228,6 +241,33 @@ describe("factory research safeguards", () => {
     const ranked = rankFactoryMetrics([weak, strong], { bootstrapIterations: 100 });
 
     expect(ranked[0].algoId).toBe("strong-cpcv");
+  });
+
+  it("flags train-vs-validation rank degradation in the PBO approximation", () => {
+    const overfit = {
+      ...robustMetric("overfit"),
+      cpcvTrainMetrics: [
+        { foldId: "cpcv-1", closed: 20, totalPnl: 10, roi: 0.5 },
+        { foldId: "cpcv-2", closed: 20, totalPnl: 9, roi: 0.45 },
+      ],
+      cpcvMetrics: [
+        { foldId: "cpcv-1", closed: 20, totalPnl: -2, roi: -0.1 },
+        { foldId: "cpcv-2", closed: 20, totalPnl: -1, roi: -0.05 },
+      ],
+    };
+    const stable = {
+      ...robustMetric("stable"),
+      cpcvTrainMetrics: [
+        { foldId: "cpcv-1", closed: 20, totalPnl: 4, roi: 0.2 },
+        { foldId: "cpcv-2", closed: 20, totalPnl: 4, roi: 0.2 },
+      ],
+      cpcvMetrics: [
+        { foldId: "cpcv-1", closed: 20, totalPnl: 3, roi: 0.15 },
+        { foldId: "cpcv-2", closed: 20, totalPnl: 3, roi: 0.15 },
+      ],
+    };
+
+    expect(pboRankDegradationApprox(overfit, [overfit, stable])).toBeGreaterThan(pboRankDegradationApprox(stable, [overfit, stable]));
   });
 
   it("detects paper/live-paper drift in pnl, regime, or fill quality", () => {
@@ -330,6 +370,21 @@ describe("factory research safeguards", () => {
     expect(validateConfig.validateMode).toBe(true);
   });
 
+  it("audits review export packets and writes fold diff artifacts", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "dogeedge-review-export-"));
+    const input = path.join(root, "review_exports");
+    const out = path.join(root, "artifacts", "factory-audit");
+    writeReviewExportFixture(input);
+
+    const audit = await auditReviewExports({ input, outDir: out, foldCount: 2, embargoMs: 60_000 });
+    const finalReview = readFileSync(path.join(out, "final-review.md"), "utf8");
+    const foldDiff = JSON.parse(readFileSync(path.join(out, "fold-diff.json"), "utf8"));
+
+    expect(audit.verdict).not.toBe("fail_closed");
+    expect(finalReview).toContain("Executive Summary");
+    expect(foldDiff.tables.foldCounts.recomputedPurged).toBeGreaterThan(0);
+  });
+
   it("reports holdout, CPCV, bootstrap, drift, and approximate metric fields", () => {
     const metric = rankFactoryMetrics([robustMetric("reporting")], { bootstrapIterations: 100 })[0];
     const csv = metricsCsv([metric]);
@@ -353,9 +408,12 @@ describe("factory research safeguards", () => {
     expect(csv).toContain("bootstrapMeanLower");
     expect(csv).toContain("driftOk");
     expect(csv).toContain("paperEvidenceStatus");
+    expect(csv).toContain("avgSlippageCents");
+    expect(csv).toContain("realityCheckApproxPValue");
     expect(csv).toContain("dsrApprox");
     expect(csv).toContain("pboApprox");
     expect(report).toContain("Approximation Notes");
+    expect(report).toContain("Simulator Telemetry");
     expect(Object.prototype.hasOwnProperty.call(metric, "dsrApprox")).toBe(true);
     expect(Object.prototype.hasOwnProperty.call(metric, "pboApprox")).toBe(true);
     expect(Object.prototype.hasOwnProperty.call(metric, "dsr")).toBe(false);
@@ -485,4 +543,106 @@ function permissivePromotionThresholds() {
     minHoldoutRoi: 0,
     minHoldoutExpectancyLowerBound: -1,
   };
+}
+
+function writeReviewExportFixture(input: string) {
+  for (const dir of [
+    "",
+    "factory",
+    "trades",
+    "frames",
+    "simulator",
+    "registry",
+    "ui",
+    "raw/one-week-sample",
+    "screens",
+  ]) {
+    mkdirSync(path.join(input, dir), { recursive: true });
+  }
+  const events = Array.from({ length: 8 }, (_, index) => ({
+    id: `m-${index}`,
+    start: Date.parse("2026-06-01T00:00:00.000Z") + index * 15 * 60_000,
+    end: Date.parse("2026-06-01T00:15:00.000Z") + index * 15 * 60_000,
+  }));
+  const frameLines = events.flatMap((item) => [
+    {
+      frame_id: `${item.id}:open`,
+      strategy_id: "fixture",
+      market_id: item.id,
+      frame_timestamp_utc: new Date(item.start).toISOString(),
+      feature_map: { estimate: 0.5, targetPrice: 0.49, yesAsk: 0.45, yesBid: 0.44, noAsk: 0.56, noBid: 0.55, secondsToClose: 900 },
+      feature_timestamps: { estimate: new Date(item.start).toISOString() },
+      label: "YES",
+      label_timestamp_utc: new Date(item.end).toISOString(),
+      market_close_timestamp_utc: new Date(item.end).toISOString(),
+      regime_tags: { timeToClose: "early" },
+    },
+  ]);
+  const purgedFolds = [
+    { id: "purged-1", trainEventIds: ["m-4"], validationEventIds: ["m-0", "m-1"], purgedEventIds: ["m-2"], embargoedEventIds: ["m-3"], embargoMs: 60_000 },
+    { id: "purged-2", trainEventIds: ["m-0", "m-1"], validationEventIds: ["m-4"], purgedEventIds: ["m-3", "m-5"], embargoedEventIds: [], embargoMs: 60_000 },
+  ];
+  const cpcvFolds = [
+    { id: "cpcv-1-2", trainEventIds: ["m-5"], validationEventIds: ["m-0", "m-1", "m-2"], purgedEventIds: ["m-3", "m-4"], embargoedEventIds: [], embargoMs: 60_000 },
+  ];
+  const metric = rankFactoryMetrics([{
+    ...robustMetric("fixture-algo"),
+    foldMetrics: [{ foldId: "purged-1", closed: 5, totalPnl: 1, roi: 0.1 }],
+    cpcvMetrics: [{ foldId: "cpcv-1-2", closed: 5, totalPnl: 1, roi: 0.1 }],
+    cpcvTrainMetrics: [{ foldId: "cpcv-1-2", closed: 5, totalPnl: 1, roi: 0.1 }],
+    executionTelemetry: { conservative: { fillRate: 0.9, averageSlippageCents: 1, averagePartialFillRatio: 1, averageFillProbability: 0.85, queueMisses: 1, staleQuoteRejections: 0, depthRejections: 0 } },
+  }], { seed: "fixture", bootstrapIterations: 100 })[0];
+  const fullRun = {
+    runId: "fixture-run",
+    mode: "sweep",
+    startedAt: "2026-06-01T00:00:00.000Z",
+    finishedAt: "2026-06-01T00:01:00.000Z",
+    dataRoot: "_DATA_ROOT_",
+    framesDir: "_DATA_ROOT_/features/decision-frames",
+    gitCommit: "abc",
+    codeVersion: "abc",
+    randomSeed: "fixture",
+    configHash: "cfg",
+    dataHash: "data",
+    dataQuality: { rawFrames: 8, usableFrames: 8, duplicateFramesRemoved: 0, overlappingFramesDownsampled: 0, marketEvents: 8, warningCount: 0, errorCount: 0 },
+    split: { trainEventIds: ["m-0", "m-1"], validationEventIds: ["m-2"], testEventIds: ["m-3"], holdoutEventIds: ["m-6", "m-7"] },
+    purgedFolds,
+    cpcvFolds,
+    holdoutDefinition: { immutable: true, strictlyLater: true, reason: "ok", holdoutEventIds: ["m-6", "m-7"] },
+    costModels: [costModel("base", 0, 1), costModel("conservative", 1, 0.85)],
+    metrics: [metric],
+    candidates: [],
+    registry: { inputManifestHash: "manifest", trialCount: 1 },
+  };
+  const registry = {
+    gitCommit: "abc",
+    codeVersion: "abc",
+    dataRoot: "_DATA_ROOT_",
+    framesDir: "_DATA_ROOT_/features/decision-frames",
+    inputManifestHash: "manifest",
+    inputFiles: [{ relativePath: "records.jsonl", byteSize: 1, sha256: "hash" }],
+    dataHash: "manifest",
+    configHash: "cfg",
+    trialCount: 1,
+    families: { test: 1 },
+    parameterHashes: { "fixture-algo": "hash" },
+    foldDefinitions: purgedFolds,
+    cpcvFoldDefinitions: cpcvFolds,
+    holdoutDefinition: { immutable: true, strictlyLater: true, reason: "ok", holdoutEventIds: ["m-6", "m-7"] },
+    costModel: [costModel("base", 0, 1)],
+    riskModel: { maxContractsPerTrade: 10 },
+    metricsVersion: "robust-v1",
+    randomSeed: "fixture",
+  };
+  writeFileSync(path.join(input, "repo-snapshot.txt"), "repo_path=_REPO_ROOT_\ngit_rev_parse_head=abc\ngit_status_porcelain=CLEAN\ngit_branch=main\nnode_version=v26.1.0\nnpm_version=10\nos=test\nexport_created_at_utc=2026-06-01T00:00:00.000Z\n");
+  writeFileSync(path.join(input, "factory", "factory-full-run.json"), `${JSON.stringify(fullRun)}\n`);
+  writeFileSync(path.join(input, "trades", "per-trade.csv"), "trade_id,strategy_id,market_id,side,size,price,timestamp_utc,fill_type,top_of_book_size,top_of_book_bid,top_of_book_ask,latency_ms\n");
+  writeFileSync(path.join(input, "frames", "decision-frames.sample.ndjson"), `${frameLines.map((row) => JSON.stringify(row)).join("\n")}\n`);
+  writeFileSync(path.join(input, "frames", "decision-frame-manifest.json"), JSON.stringify({ sourceFiles: ["records.jsonl"], rowCounts: { sample: frameLines.length } }));
+  writeFileSync(path.join(input, "simulator", "simulator-config.json"), JSON.stringify({ seed: "fixture", costModels: [costModel("base", 0, 1), costModel("conservative", 1, 0.85)] }));
+  writeFileSync(path.join(input, "registry", "experiment-registry.json"), `${JSON.stringify(registry)}\n`);
+  writeFileSync(path.join(input, "ui", "latest-sweep.json"), JSON.stringify({ runId: "fixture-run", mode: "sweep", topMetrics: [metric], candidates: [], algoCount: 1 }));
+  writeFileSync(path.join(input, "ui", "candidates.json"), "[]\n");
+  writeFileSync(path.join(input, "ui", "report.md"), "# Fixture\n");
+  writeFileSync(path.join(input, "raw", "one-week-sample", "sample-manifest.json"), JSON.stringify({ rowCounts: { snapshots: 0 } }));
 }

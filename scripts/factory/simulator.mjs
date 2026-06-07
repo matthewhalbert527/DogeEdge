@@ -1,4 +1,4 @@
-import { clamp, roundMoney, roundPrice, roundRatio, seededRandom } from "./utils.mjs";
+import { clamp, hashJson, roundMoney, roundPrice, roundRatio, seededRandom } from "./utils.mjs";
 
 export const defaultCostModels = [
   {
@@ -94,7 +94,7 @@ export function simulateAlgoEvents(algo, events, options = {}) {
               openTrade = null;
               managedClosedThisFrame = true;
             } else {
-              rejects.push(reject(frame, algo, "exit_no_fill", "No executable bid depth for managed exit."));
+              rejects.push(reject(frame, algo, "exit_no_fill", "No executable bid depth for managed exit.", fillTelemetry(frame, openTrade.side, "exit", costModel, { queueResult: "exit_no_fill", requestedContracts: openTrade.contracts })));
             }
           } else if (shouldFlip) {
             const closed = closeByExecutableBid(openTrade, frame, costModel, "Algo flipped to the opposite side.", rng);
@@ -102,7 +102,7 @@ export function simulateAlgoEvents(algo, events, options = {}) {
               trades.push(closed);
               openTrade = null;
             } else {
-              rejects.push(reject(frame, algo, "exit_no_fill", "No executable bid depth for flip exit."));
+              rejects.push(reject(frame, algo, "exit_no_fill", "No executable bid depth for flip exit.", fillTelemetry(frame, openTrade.side, "exit", costModel, { queueResult: "exit_no_fill", requestedContracts: openTrade.contracts })));
             }
           } else if (frame.secondsToClose <= 2) {
             trades.push(closeBySettlement(openTrade, event, frame, costModel, "Contract reached the close window."));
@@ -116,7 +116,7 @@ export function simulateAlgoEvents(algo, events, options = {}) {
         if (entry.ok) {
           openTrade = entry.trade;
         } else {
-          rejects.push(reject(frame, algo, entry.reasonCode, entry.reason));
+          rejects.push(reject(frame, algo, entry.reasonCode, entry.reason, entry.telemetry));
         }
       }
     }
@@ -159,6 +159,12 @@ function executionFrame(frame, costModel) {
   const adverse = (costModel.slippageCents + costModel.spreadPenaltyCents + costModel.stressSlippageCents) / 100;
   return {
     ...frame,
+    rawYesAsk: frame.yesAsk,
+    rawNoAsk: frame.noAsk,
+    rawYesBid: frame.yesBid,
+    rawNoBid: frame.noBid,
+    modeledAdversePriceMove: adverse,
+    modeledSlippageCents: roundRatio((costModel.slippageCents ?? 0) + (costModel.spreadPenaltyCents ?? 0) + (costModel.stressSlippageCents ?? 0)),
     yesAsk: addCost(frame.yesAsk, adverse),
     noAsk: addCost(frame.noAsk, adverse),
     yesBid: subtractCost(frame.yesBid, adverse),
@@ -169,18 +175,26 @@ function executionFrame(frame, costModel) {
 }
 
 function entryFill(algo, signal, frame, costModel, rng) {
-  if (staleFrame(frame, costModel)) return { ok: false, reasonCode: "stale_quote", reason: "Frame was stale under the execution cost model." };
+  if (staleFrame(frame, costModel)) return { ok: false, reasonCode: "stale_quote", reason: "Frame was stale under the execution cost model.", telemetry: fillTelemetry(frame, signal.side, "entry", costModel, { queueResult: "stale_quote" }) };
   const side = signal.side;
   const ask = askForSide(side, frame);
   const maxAsk = side === "BOTH" ? 1.1 : 1;
-  if (ask === null || ask <= 0 || ask >= maxAsk) return { ok: false, reasonCode: "no_ask", reason: "No executable ask price." };
-  if (rng() > costModel.minFillProbability) return { ok: false, reasonCode: "queue_miss", reason: "Queue/fill probability rejected the entry." };
+  if (ask === null || ask <= 0 || ask >= maxAsk) return { ok: false, reasonCode: "no_ask", reason: "No executable ask price.", telemetry: fillTelemetry(frame, side, "entry", costModel, { queueResult: "no_ask" }) };
+  const fillRoll = rng();
+  if (fillRoll > costModel.minFillProbability) return { ok: false, reasonCode: "queue_miss", reason: "Queue/fill probability rejected the entry.", telemetry: fillTelemetry(frame, side, "entry", costModel, { queueResult: "probability_miss", fillProbabilityRoll: roundRatio(fillRoll) }) };
   const requestedContracts = Math.max(1, Math.floor(signal.contracts || 1));
   const fillable = fillableContracts(side, "ask", frame, costModel, requestedContracts);
-  if (fillable <= 0) return { ok: false, reasonCode: "insufficient_depth", reason: "Top-of-book ask depth is insufficient." };
+  if (fillable <= 0) return { ok: false, reasonCode: "insufficient_depth", reason: "Top-of-book ask depth is insufficient.", telemetry: fillTelemetry(frame, side, "entry", costModel, { requestedContracts, fillableContracts: fillable, queueResult: "insufficient_depth" }) };
   const contracts = costModel.allowPartialFills ? Math.min(requestedContracts, fillable) : requestedContracts <= fillable ? requestedContracts : 0;
-  if (contracts <= 0) return { ok: false, reasonCode: "cannot_fill_full_size", reason: "Full requested size cannot fill at visible depth." };
+  if (contracts <= 0) return { ok: false, reasonCode: "cannot_fill_full_size", reason: "Full requested size cannot fill at visible depth.", telemetry: fillTelemetry(frame, side, "entry", costModel, { requestedContracts, fillableContracts: fillable, queueResult: "cannot_fill_full_size" }) };
   const feePaid = executionFee(ask, contracts, costModel);
+  const telemetry = fillTelemetry(frame, side, "entry", costModel, {
+    requestedContracts,
+    fillableContracts: fillable,
+    filledContracts: contracts,
+    queueResult: contracts < requestedContracts ? "partial_fill" : "filled",
+    fillProbabilityRoll: roundRatio(fillRoll),
+  });
   return {
     ok: true,
     trade: {
@@ -201,11 +215,15 @@ function entryFill(algo, signal, frame, costModel, rng) {
       feesPaid: feePaid,
       entryFrameId: frame.id,
       exitFrameId: null,
-      entryContext: tradeContext(frame, signal, side, costModel),
+      entryContext: tradeContext(frame, signal, side, costModel, telemetry),
       exitContext: null,
       lastFrame: frame,
       reason: signal.reason,
       costModelId: costModel.id,
+      executionTelemetry: {
+        entry: telemetry,
+        exit: null,
+      },
     },
   };
 }
@@ -233,6 +251,12 @@ function closeByPrice(trade, frame, exitPrice, reason, costModel, contracts) {
   const exitFee = exitPrice > 0 && exitPrice < 1 ? executionFee(exitPrice, closedContracts, costModel) : 0;
   const feesPaid = roundMoney(entryFee + exitFee);
   const pnl = roundMoney((exitPrice - trade.entryPrice) * closedContracts - feesPaid);
+  const telemetry = fillTelemetry(frame, trade.side, "exit", costModel, {
+    requestedContracts: trade.contracts,
+    fillableContracts: contracts,
+    filledContracts: closedContracts,
+    queueResult: closedContracts < trade.contracts ? "partial_exit" : "filled",
+  });
   return {
     ...trade,
     id: closedContracts === trade.contracts ? trade.id : `${trade.id}-partial-${Date.parse(frame.observedAt)}-${closedContracts}`,
@@ -245,12 +269,16 @@ function closeByPrice(trade, frame, exitPrice, reason, costModel, contracts) {
     feesPaid,
     reason,
     exitFrameId: frame.id,
-    exitContext: tradeContext(frame, contextSignalFromTrade(trade), trade.side, costModel),
+    exitContext: tradeContext(frame, contextSignalFromTrade(trade), trade.side, costModel, telemetry),
+    executionTelemetry: {
+      ...(trade.executionTelemetry ?? {}),
+      exit: telemetry,
+    },
     lastFrame: undefined,
   };
 }
 
-function tradeContext(frame, signal, side, costModel) {
+function tradeContext(frame, signal, side, costModel, telemetry = null) {
   const selectedAsk = askForSide(side, frame);
   const selectedBid = bidForSide(side, frame);
   return {
@@ -281,6 +309,21 @@ function tradeContext(frame, signal, side, costModel) {
     noSpread: spread(frame.noAsk, frame.noBid),
     costModelId: costModel.id,
     regime: frame.regime ?? null,
+    slippageCents: telemetry?.slippageCents ?? frame.modeledSlippageCents ?? 0,
+    modeledAdversePriceMove: frame.modeledAdversePriceMove ?? 0,
+    queueResult: telemetry?.queueResult ?? "unknown",
+    queueMissReason: telemetry?.queueMissReason ?? null,
+    partialFillRatio: telemetry?.partialFillRatio ?? 1,
+    fillProbabilityUsed: telemetry?.fillProbabilityUsed ?? costModel.minFillProbability,
+    fillProbabilityRoll: telemetry?.fillProbabilityRoll ?? null,
+    requestedContracts: telemetry?.requestedContracts ?? null,
+    fillableContracts: telemetry?.fillableContracts ?? null,
+    filledContracts: telemetry?.filledContracts ?? null,
+    fillDepthUtilization: telemetry?.fillDepthUtilization ?? null,
+    latencyMs: telemetry?.latencyMs ?? latencyMs(frame),
+    latencyBucket: telemetry?.latencyBucket ?? latencyBucket(latencyMs(frame)),
+    bookContextHash: telemetry?.bookContextHash ?? bookContextHash(frame, side),
+    bookContext: telemetry?.bookContext ?? bookContextSummary(frame, side),
   };
 }
 
@@ -344,7 +387,7 @@ function spread(ask, bid) {
   return ask === null || bid === null ? null : roundRatio(Math.max(0, ask - bid));
 }
 
-function reject(frame, algo, reasonCode, reason) {
+function reject(frame, algo, reasonCode, reason, telemetry = null) {
   return {
     algoId: algo.id,
     marketTicker: frame.marketTicker,
@@ -352,6 +395,85 @@ function reject(frame, algo, reasonCode, reason) {
     frameId: frame.id,
     reasonCode,
     reason,
+    costModelId: telemetry?.costModelId ?? null,
+    queueResult: telemetry?.queueResult ?? reasonCode,
+    slippageCents: telemetry?.slippageCents ?? frame.modeledSlippageCents ?? 0,
+    fillProbabilityUsed: telemetry?.fillProbabilityUsed ?? null,
+    latencyMs: telemetry?.latencyMs ?? latencyMs(frame),
+    latencyBucket: telemetry?.latencyBucket ?? latencyBucket(latencyMs(frame)),
+    bookContextHash: telemetry?.bookContextHash ?? bookContextHash(frame, null),
   };
 }
 
+function fillTelemetry(frame, side, action, costModel, extra = {}) {
+  const visibleDepth = visibleDepthFor(side, action === "exit" ? "bid" : "ask", frame);
+  const requestedContracts = Number(extra.requestedContracts ?? 0);
+  const filledContracts = Number(extra.filledContracts ?? 0);
+  const fillable = Number(extra.fillableContracts ?? 0);
+  const partialFillRatio = requestedContracts > 0 && filledContracts > 0 ? roundRatio(filledContracts / requestedContracts) : 0;
+  const depthUtilization = visibleDepth > 0 && filledContracts > 0 ? roundRatio(filledContracts / visibleDepth) : null;
+  const latency = latencyMs(frame);
+  return {
+    costModelId: costModel.id,
+    action,
+    side,
+    slippageCents: roundRatio(frame.modeledSlippageCents ?? 0),
+    queueResult: extra.queueResult ?? "unknown",
+    queueMissReason: extra.queueResult && !String(extra.queueResult).includes("fill") ? extra.queueResult : null,
+    partialFillRatio,
+    fillProbabilityUsed: roundRatio(costModel.minFillProbability ?? 1),
+    fillProbabilityRoll: extra.fillProbabilityRoll ?? null,
+    requestedContracts: requestedContracts || null,
+    fillableContracts: Number.isFinite(fillable) ? fillable : null,
+    filledContracts: filledContracts || null,
+    visibleDepth: Number.isFinite(visibleDepth) ? visibleDepth : null,
+    fillDepthUtilization: depthUtilization,
+    latencyMs: latency,
+    latencyBucket: latencyBucket(latency),
+    bookContextHash: bookContextHash(frame, side),
+    bookContext: bookContextSummary(frame, side),
+  };
+}
+
+function visibleDepthFor(side, bookSide, frame) {
+  if (side === "YES") return bookSide === "ask" ? frame.yesAskDepth : frame.yesBidDepth;
+  if (side === "NO") return bookSide === "ask" ? frame.noAskDepth : frame.noBidDepth;
+  if (side === "BOTH") return Math.min(frame.yesAskDepth ?? 0, frame.noAskDepth ?? 0);
+  return 0;
+}
+
+function latencyMs(frame) {
+  const captured = Date.parse(frame.capturedAt ?? "");
+  const observed = Date.parse(frame.observedAt ?? "");
+  return Number.isFinite(captured) && Number.isFinite(observed) ? Math.max(0, captured - observed) : null;
+}
+
+function latencyBucket(value) {
+  if (!Number.isFinite(value)) return "unknown";
+  if (value <= 500) return "0-500ms";
+  if (value <= 1_500) return "500-1500ms";
+  if (value <= 5_000) return "1500-5000ms";
+  return "5000ms+";
+}
+
+function bookContextSummary(frame, side) {
+  return {
+    side,
+    rawYesAsk: frame.rawYesAsk ?? frame.yesAsk,
+    rawNoAsk: frame.rawNoAsk ?? frame.noAsk,
+    rawYesBid: frame.rawYesBid ?? frame.yesBid,
+    rawNoBid: frame.rawNoBid ?? frame.noBid,
+    yesAsk: frame.yesAsk,
+    noAsk: frame.noAsk,
+    yesBid: frame.yesBid,
+    noBid: frame.noBid,
+    yesAskDepth: frame.yesAskDepth,
+    noAskDepth: frame.noAskDepth,
+    yesBidDepth: frame.yesBidDepth,
+    noBidDepth: frame.noBidDepth,
+  };
+}
+
+function bookContextHash(frame, side) {
+  return hashJson(bookContextSummary(frame, side)).slice(0, 16);
+}

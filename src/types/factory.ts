@@ -55,7 +55,19 @@ export interface FactoryResearchEvidence {
   psr: number;
   dsrApprox: number;
   pboApprox: number;
+  realityCheckApproxPValue?: number;
+  spaApproxPValue?: number;
   familyAdjustedPValue: number;
   globalAdjustedPValue: number;
   falseDiscoveryRisk: number;
+  executionTelemetry?: Record<string, {
+    fillRate?: number;
+    averageSlippageCents?: number;
+    averagePartialFillRatio?: number;
+    averageFillProbability?: number;
+    averageFillDepthUtilization?: number;
+    staleQuoteRejections?: number;
+    queueMisses?: number;
+    depthRejections?: number;
+  }>;
 }

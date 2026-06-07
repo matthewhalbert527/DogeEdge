@@ -1,4 +1,4 @@
-import { normalCdf, roundMoney, roundRatio, stddev, unique } from "./utils.mjs";
+import { average, normalCdf, normalInv, roundMoney, roundRatio, stddev, unique } from "./utils.mjs";
 import { defaultPromotionThresholds, promotionReview } from "./promotion.mjs";
 import { multipleTestingAdjustments } from "./multiple-testing.mjs";
 
@@ -8,12 +8,13 @@ export function rankFactoryMetrics(metrics, options = {}) {
     bootstrapIterations: options.bootstrapIterations,
     seed: options.seed,
   });
+  const pboByAlgo = pboRankDegradationMap(metrics);
   const withStats = metrics.map((metric) => {
     const familyTrials = trialSummary.byFamily[metric.family] ?? 1;
     const multipleTestingPenalty = multipleTestingPenaltyFor(metric, trialSummary.totalTrials, familyTrials);
     const psr = probabilisticSharpeRatio(metric);
-    const dsrApprox = deflatedSharpeRatioApprox(metric, multipleTestingPenalty);
-    const pboApprox = pboApproximation(metric);
+    const dsrApprox = deflatedSharpeRatioApprox(metric, trialSummary.totalTrials);
+    const pboApprox = pboByAlgo.get(metric.algoId) ?? pboRankDegradationApprox(metric, metrics);
     const adjusted = testingAdjustments[metric.algoId] ?? {
       familyAdjustedPValue: 1,
       globalAdjustedPValue: 1,
@@ -37,6 +38,7 @@ export function rankFactoryMetrics(metrics, options = {}) {
       psr,
       dsrApprox,
       pboApprox,
+      pboMethod: "cpcv_train_validation_rank_degradation_approx",
       ...adjusted,
       adjustedConfidence,
       concentration,
@@ -79,24 +81,124 @@ function robustScoreFor(metric, context) {
   return roundRatio(pnl + sampleBonus + consistency + cpcvScore + walkForwardScore + holdoutScore + paperScore + confidence - risk - concentrationPenalty - ciPenalty - context.multipleTestingPenalty * 20 - pValuePenalty);
 }
 
-function probabilisticSharpeRatio(metric) {
-  const sharpe = metric.sharpeLike ?? 0;
-  const n = Math.max(1, metric.closed ?? 0);
-  const denominator = Math.sqrt(Math.max(1e-9, 1 - 0 * sharpe + ((sharpe ** 2) / 4)));
-  return roundRatio(normalCdf((sharpe * Math.sqrt(Math.max(1, n - 1))) / denominator));
+export function probabilisticSharpeRatio(metric, benchmarkSharpe = 0) {
+  const sharpe = perTradeSharpe(metric);
+  const n = Math.max(1, metric.returnMoments?.n ?? metric.closed ?? 0);
+  const skew = Number(metric.returnMoments?.skewness ?? metric.skewness ?? momentsFromTrades(metric).skewness ?? 0);
+  const kurtosis = Math.max(1.0001, Number(metric.returnMoments?.kurtosis ?? metric.kurtosis ?? momentsFromTrades(metric).kurtosis ?? 3));
+  const numerator = (sharpe - benchmarkSharpe) * Math.sqrt(Math.max(1, n - 1));
+  const denominator = Math.sqrt(Math.max(1e-9, 1 - skew * sharpe + ((kurtosis - 1) / 4) * sharpe ** 2));
+  return roundRatio(normalCdf(numerator / denominator));
 }
 
-function deflatedSharpeRatioApprox(metric, penalty) {
-  const psr = probabilisticSharpeRatio(metric);
-  return roundRatio(Math.max(0, psr - penalty));
+export function deflatedSharpeRatioApprox(metric, totalTrials = 1) {
+  const n = Math.max(2, metric.returnMoments?.n ?? metric.closed ?? 0);
+  const effectiveTrials = Math.max(1, Number(metric.effectiveTotalTrials ?? totalTrials));
+  const skew = Number(metric.returnMoments?.skewness ?? metric.skewness ?? momentsFromTrades(metric).skewness ?? 0);
+  const kurtosis = Math.max(1.0001, Number(metric.returnMoments?.kurtosis ?? metric.kurtosis ?? momentsFromTrades(metric).kurtosis ?? 3));
+  const sharpe = perTradeSharpe(metric);
+  const srStd = Math.sqrt(Math.max(1e-9, 1 - skew * sharpe + ((kurtosis - 1) / 4) * sharpe ** 2)) / Math.sqrt(n - 1);
+  const eulerGamma = 0.5772156649015329;
+  const expectedMaxZ = effectiveTrials <= 1
+    ? 0
+    : (1 - eulerGamma) * normalInv(1 - 1 / effectiveTrials) + eulerGamma * normalInv(1 - 1 / (effectiveTrials * Math.E));
+  const benchmarkSharpe = Math.max(0, expectedMaxZ * srStd);
+  return probabilisticSharpeRatio(metric, benchmarkSharpe);
 }
 
-function pboApproximation(metric) {
+export function pboRankDegradationApprox(metric, menuMetrics) {
+  return pboRankDegradationMap(menuMetrics).get(metric.algoId) ?? fallbackFoldFailurePbo(metric);
+}
+
+function pboRankDegradationMap(menuMetrics) {
+  const foldIds = [...new Set(menuMetrics.flatMap((metric) => (Array.isArray(metric.cpcvMetrics) && metric.cpcvMetrics.length ? metric.cpcvMetrics : metric.foldMetrics ?? []).map((fold) => fold.foldId).filter(Boolean)))];
+  if (!foldIds.length || menuMetrics.length < 2) return new Map(menuMetrics.map((metric) => [metric.algoId, fallbackFoldFailurePbo(metric)]));
+  const ranksByFold = new Map(foldIds.map((foldId) => [foldId, {
+    train: rankByFold(menuMetrics, foldId, "cpcvTrainMetrics"),
+    validation: rankByFold(menuMetrics, foldId, "cpcvMetrics"),
+  }]));
+  const result = new Map();
+  for (const metric of menuMetrics) {
+    const validation = Array.isArray(metric.cpcvMetrics) && metric.cpcvMetrics.length ? metric.cpcvMetrics : metric.foldMetrics ?? [];
+    const train = Array.isArray(metric.cpcvTrainMetrics) && metric.cpcvTrainMetrics.length ? metric.cpcvTrainMetrics : [];
+    if (!validation.length || !train.length) {
+      result.set(metric.algoId, fallbackFoldFailurePbo(metric));
+      continue;
+    }
+    let eligiblePaths = 0;
+    let degradedPaths = 0;
+    for (const foldId of validation.map((fold) => fold.foldId).filter(Boolean)) {
+      const ranks = ranksByFold.get(foldId);
+      const trainRank = ranks?.train.get(metric.algoId);
+      const validationRank = ranks?.validation.get(metric.algoId);
+      if (!trainRank || !validationRank) continue;
+      if (trainRank.percentile >= 0.5) {
+        eligiblePaths += 1;
+        if (validationRank.percentile < 0.5 || validationRank.percentile < trainRank.percentile - 0.25) degradedPaths += 1;
+      }
+    }
+    result.set(metric.algoId, eligiblePaths ? roundRatio(degradedPaths / eligiblePaths) : fallbackFoldFailurePbo(metric));
+  }
+  return result;
+}
+
+function fallbackFoldFailurePbo(metric) {
   const folds = metric.foldMetrics ?? [];
   const tested = folds.filter((fold) => fold.closed > 0);
   if (!tested.length) return 1;
   const poor = tested.filter((fold) => fold.totalPnl <= 0 || (fold.roi ?? 0) <= 0).length;
   return roundRatio(poor / tested.length);
+}
+
+function rankByFold(metrics, foldId, field) {
+  const rows = metrics
+    .map((metric) => {
+      const fold = (metric[field] ?? []).find((item) => item.foldId === foldId);
+      if (!fold || fold.closed <= 0) return null;
+      return {
+        algoId: metric.algoId,
+        score: foldStatistic(fold),
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) => right.score - left.score);
+  const denominator = Math.max(1, rows.length - 1);
+  return new Map(rows.map((row, index) => [row.algoId, {
+    rank: index + 1,
+    percentile: roundRatio(1 - index / denominator),
+    score: row.score,
+  }]));
+}
+
+function foldStatistic(fold) {
+  const pnl = Number(fold.totalPnl ?? 0);
+  const roi = Number(fold.roi ?? 0);
+  const closed = Number(fold.closed ?? 0);
+  const drawdownPenalty = Math.abs(Math.min(0, Number(fold.maxDrawdown ?? 0))) * 0.2;
+  return pnl + roi * 2 + Math.log1p(closed) * 0.05 - drawdownPenalty;
+}
+
+function perTradeSharpe(metric) {
+  if (Array.isArray(metric.closedTrades) && metric.closedTrades.length > 1) {
+    const pnl = metric.closedTrades.map((trade) => Number(trade.pnl ?? 0)).filter(Number.isFinite);
+    const mean = average(pnl) ?? 0;
+    const risk = stddev(pnl) ?? 0;
+    return risk > 0 ? mean / risk : mean > 0 ? 10 : 0;
+  }
+  const n = Math.max(1, metric.closed ?? 0);
+  return Number(metric.sharpeLike ?? 0) / Math.sqrt(n);
+}
+
+function momentsFromTrades(metric) {
+  const values = (metric.closedTrades ?? []).map((trade) => Number(trade.pnl ?? 0)).filter(Number.isFinite);
+  const n = values.length;
+  const mean = average(values) ?? 0;
+  const risk = stddev(values) ?? 0;
+  if (n < 3 || risk <= 0) return { skewness: 0, kurtosis: 3 };
+  const normalized = values.map((value) => (value - mean) / risk);
+  const skewness = n / ((n - 1) * (n - 2)) * normalized.reduce((total, value) => total + value ** 3, 0);
+  const kurtosis = normalized.reduce((total, value) => total + value ** 4, 0) / n;
+  return { skewness, kurtosis };
 }
 
 function multipleTestingPenaltyFor(metric, totalTrials, familyTrials) {

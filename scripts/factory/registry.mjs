@@ -1,16 +1,17 @@
 import { readFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { hashJson } from "./utils.mjs";
+import { childSeed, hashJson } from "./utils.mjs";
 import { decisionFrameInputManifest } from "./repro.mjs";
 
 const execFileAsync = promisify(execFile);
 
 export async function experimentRegistryEntry({ repoRoot, dataRoot, framesDir, config, algos, folds, cpcvFolds = [], holdoutSplit = null, costModels, riskModel = defaultRiskModel(), metricsVersion = "robust-v1", seed = "dogeedge" }) {
   const inputManifest = await decisionFrameInputManifest(framesDir);
+  const commit = await gitCommit(repoRoot);
   return {
-    gitCommit: await gitCommit(repoRoot),
-    codeVersion: await gitCommit(repoRoot),
+    gitCommit: commit,
+    codeVersion: commit ?? "UNAVAILABLE",
     dataRoot,
     framesDir,
     inputManifestHash: inputManifest.manifestHash,
@@ -48,6 +49,20 @@ export async function experimentRegistryEntry({ repoRoot, dataRoot, framesDir, c
     riskModel,
     metricsVersion,
     randomSeed: seed,
+    seedPlan: {
+      rootSeed: seed,
+      bootstrapSeed: childSeed(seed, "metrics-bootstrap"),
+      multipleTestingSeed: childSeed(seed, "multiple-testing"),
+      simulatorSeed: childSeed(seed, "simulator"),
+      foldSeed: childSeed(seed, "folds"),
+      deterministic: true,
+    },
+    reproducibility: {
+      exactInputHashes: true,
+      gitAvailable: Boolean(commit),
+      partial: !commit,
+      versionState: commit ? "git_commit_recorded" : "git_unavailable",
+    },
   };
 }
 

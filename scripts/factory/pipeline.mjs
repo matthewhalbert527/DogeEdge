@@ -1,7 +1,7 @@
 import { dataQualitySummary, filterFramesByTime, buildMarketEvents } from "./data.mjs";
 import { chronologicalSplit, cpcvApproximationFolds, purgedEmbargoFolds } from "./splits.mjs";
 import { defaultCostModels, simulateAlgos } from "./simulator.mjs";
-import { costComparisonMetrics, foldMetricsForAlgo, metricsForAlgo, summarizeFoldMetrics } from "./metrics.mjs";
+import { costComparisonMetrics, executionTelemetryForSimulation, foldMetricsForAlgo, metricsForAlgo, summarizeFoldMetrics, trainMetricsForAlgo } from "./metrics.mjs";
 import { attachClosedTrades, candidateMetrics, rankFactoryMetrics } from "./ranking.mjs";
 import { finalHoldoutSplit, holdoutSummary } from "./holdout.mjs";
 import { paperEvidenceForAlgo } from "./paper-evidence.mjs";
@@ -44,6 +44,7 @@ export function runFactoryResearchPipeline({ algos, loadResult, since = null, un
     const foldMetrics = foldMetricsForAlgo(simulation.algo, conservative.trades, purgedFolds, options);
     const foldSummary = summarizeFoldMetrics(foldMetrics);
     const cpcvMetrics = foldMetricsForAlgo(simulation.algo, conservative.trades, cpcvFolds, options);
+    const cpcvTrainMetrics = trainMetricsForAlgo(simulation.algo, conservative.trades, cpcvFolds, options);
     const cpcvSummary = summarizeFoldMetrics(cpcvMetrics);
     const testEventIds = new Set(split.test.map((event) => event.id));
     const holdoutEventIds = new Set(holdoutSplit.holdoutEventIds);
@@ -88,6 +89,8 @@ export function runFactoryResearchPipeline({ algos, loadResult, since = null, un
       foldMetrics,
       foldSummary,
       purgedSummary: foldSummary,
+      cpcvMetrics,
+      cpcvTrainMetrics,
       cpcvSummary,
       walkForwardSummary,
       holdoutSummary: holdoutEvidence,
@@ -112,6 +115,8 @@ export function runFactoryResearchPipeline({ algos, loadResult, since = null, un
       holdoutLowerCi: holdoutEvidence.holdoutLowerCi,
       holdoutPass: holdoutEvidence.holdoutPass,
       rejects: Object.fromEntries(Object.entries(simulation.byCostModel).map(([id, result]) => [id, rejectSummary(result.rejects)])),
+      executionTelemetry: Object.fromEntries(Object.entries(simulation.byCostModel).map(([id, result]) => [id, executionTelemetryForSimulation(result)])),
+      fillQuality: fillQualityFromSimulation(conservative),
       dataQuality: {
         ...dataQualitySummary({
           ...loadResult,
@@ -163,8 +168,87 @@ export function runFactoryResearchPipeline({ algos, loadResult, since = null, un
 }
 
 function publicMetric(metric) {
-  const { closedTrades: _closedTrades, ...rest } = metric;
-  return rest;
+  const {
+    closedTrades: _closedTrades,
+    foldMetrics,
+    cpcvMetrics,
+    cpcvTrainMetrics,
+    costModels,
+    equityCurve: _equityCurve,
+    regimeBreakdown,
+    ...rest
+  } = metric;
+  return {
+    ...rest,
+    costModels: compactCostModels(costModels),
+    foldMetrics: compactFoldMetrics(foldMetrics),
+    cpcvMetrics: compactFoldMetrics(cpcvMetrics),
+    cpcvPathMetrics: compactCpcvPathMetrics(cpcvMetrics, cpcvTrainMetrics),
+    regimeBreakdown: compactRegimeBreakdown(regimeBreakdown),
+  };
+}
+
+function compactCostModels(costModels = {}) {
+  return Object.fromEntries(Object.entries(costModels).map(([id, metric]) => [id, {
+    closed: metric.closed,
+    independentClosedMarkets: metric.independentClosedMarkets,
+    daysRepresented: metric.daysRepresented,
+    wins: metric.wins,
+    losses: metric.losses,
+    winRate: metric.winRate,
+    averagePnl: metric.averagePnl,
+    totalPnl: metric.totalPnl,
+    totalCost: metric.totalCost,
+    roi: metric.roi,
+    maxDrawdown: metric.maxDrawdown,
+    downsideDeviation: metric.downsideDeviation,
+    profitFactor: metric.profitFactor,
+    bootstrap: metric.bootstrap,
+    averageSlippageCents: metric.averageSlippageCents,
+    averagePartialFillRatio: metric.averagePartialFillRatio,
+    averageFillProbability: metric.averageFillProbability,
+    averageFillDepthUtilization: metric.averageFillDepthUtilization,
+  }]));
+}
+
+function compactFoldMetrics(folds = []) {
+  return folds.map((fold) => ({
+    foldId: fold.foldId,
+    trainEventCount: fold.trainEventCount,
+    validationEventCount: fold.validationEventCount,
+    purgedEventCount: fold.purgedEventCount,
+    embargoedEventCount: fold.embargoedEventCount,
+    closed: fold.closed,
+    independentClosedMarkets: fold.independentClosedMarkets,
+    wins: fold.wins,
+    losses: fold.losses,
+    winRate: fold.winRate,
+    averagePnl: fold.averagePnl,
+    totalPnl: fold.totalPnl,
+    totalCost: fold.totalCost,
+    roi: fold.roi,
+    maxDrawdown: fold.maxDrawdown,
+  }));
+}
+
+function compactCpcvPathMetrics(validationFolds = [], trainFolds = []) {
+  const trainById = new Map(trainFolds.map((fold) => [fold.foldId, fold]));
+  return validationFolds.map((fold) => {
+    const train = trainById.get(fold.foldId);
+    return {
+      foldId: fold.foldId,
+      trainClosed: train?.closed ?? 0,
+      trainTotalPnl: train?.totalPnl ?? 0,
+      trainRoi: train?.roi ?? 0,
+      validationClosed: fold.closed,
+      validationTotalPnl: fold.totalPnl,
+      validationRoi: fold.roi,
+    };
+  });
+}
+
+function compactRegimeBreakdown(regimeBreakdown = {}) {
+  return regimeBreakdown;
 }
 
 function rejectSummary(rejects) {
@@ -186,10 +270,13 @@ function regimeShareFromTrades(trades) {
 }
 
 function fillQualityFromSimulation(simulation) {
-  const rejects = simulation.rejects?.length ?? 0;
-  const fills = simulation.trades?.length ?? 0;
+  const telemetry = executionTelemetryForSimulation(simulation);
   return {
-    fillRate: fills + rejects > 0 ? fills / (fills + rejects) : 1,
-    avgSlippage: 0,
+    fillRate: telemetry.fillRate,
+    avgSlippage: telemetry.averageSlippageCents,
+    averagePartialFillRatio: telemetry.averagePartialFillRatio,
+    staleQuoteRejections: telemetry.staleQuoteRejections,
+    queueMisses: telemetry.queueMisses,
+    depthRejections: telemetry.depthRejections,
   };
 }

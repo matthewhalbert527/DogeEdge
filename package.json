@@ -15,6 +15,7 @@
     "factory:replay-run": "node scripts/dogeedge-backtest.mjs --replay-run",
     "factory:compare": "node scripts/dogeedge-backtest.mjs --compare",
     "factory:promote-check": "node scripts/dogeedge-backtest.mjs --sweep --promote-check",
+    "factory:audit-exports": "node scripts/factory/audit-exports.mjs",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",

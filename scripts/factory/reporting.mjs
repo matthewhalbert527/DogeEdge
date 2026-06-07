@@ -33,9 +33,18 @@ export function metricsCsv(metrics) {
     "paperEvidenceStatus",
     "paperEvidenceClosedMarkets",
     "paperEvidencePnl",
+    "avgSlippageCents",
+    "avgPartialFillRatio",
+    "avgFillProbability",
+    "avgFillDepthUtilization",
+    "staleQuoteRejections",
+    "queueMisses",
+    "depthRejections",
     "psr",
     "dsrApprox",
     "pboApprox",
+    "realityCheckApproxPValue",
+    "spaApproxPValue",
     "familyAdjustedPValue",
     "globalAdjustedPValue",
     "falseDiscoveryRisk",
@@ -54,6 +63,12 @@ export function markdownReport({ runId, startedAt, finishedAt, dataRoot, framesD
   const top = candidates[0] ?? metrics[0] ?? null;
   return [
     "# DogeEdge Algo Factory Report",
+    "",
+    "## Executive Summary",
+    "",
+    top
+      ? `${top.algoName}: ${top.promotionVerdict ?? "unknown"} with robust score ${formatNumber(top.robustScore)}. ${trustExplanation(top)}`
+      : "No strategies produced usable closed trades.",
     "",
     `- Run: ${runId}`,
     `- Mode: ${sweepMode ? "sweep" : "backtest"}`,
@@ -100,11 +115,33 @@ export function markdownReport({ runId, startedAt, finishedAt, dataRoot, framesD
     "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
     ...metrics.slice(0, 100).map((metric) => `| ${metric.algoName} | ${metric.family} | ${metric.promotionVerdict} | ${metric.closed} | ${metric.independentClosedMarkets} | ${metric.daysRepresented} | ${money(metric.totalPnl)} | ${percent(metric.roi)} | ${money(metric.costModels?.conservative?.totalPnl ?? 0)} | ${money(metric.costModels?.stress?.totalPnl ?? 0)} | ${metric.walkForwardPass ? "pass" : "fail"} | ${percent(metric.cpcvSummary?.positiveFoldRate ?? 0)} | ${metric.holdoutPass ? "pass" : "fail"} | ${money(metric.holdoutConservativeTotalPnl ?? 0)} | ${money(metric.holdoutLowerCi)} | ${paperEvidenceLabel(metric)} | ${percent(metric.dsrApprox ?? 0)} | ${percent(metric.pboApprox ?? 0)} | ${percent(metric.falseDiscoveryRisk ?? 1)} | ${percent(metric.globalAdjustedPValue ?? 1)} | ${money(metric.maxDrawdown)} | ${formatNumber(metric.robustScore)} | ${(metric.warnings ?? []).join(" ")} |`),
     "",
+    "## Simulator Telemetry",
+    "",
+    "| Algo | Fill Rate | Avg Slippage | Partial Fill | Fill Prob | Queue Miss | Stale | Depth Reject |",
+    "|---|---:|---:|---:|---:|---:|---:|---:|",
+    ...metrics.slice(0, 50).map((metric) => {
+      const telemetry = metric.executionTelemetry?.conservative ?? metric.executionTelemetry?.base ?? {};
+      return `| ${metric.algoName} | ${percent(telemetry.fillRate ?? 1)} | ${formatNumber(telemetry.averageSlippageCents ?? 0)}c | ${percent(telemetry.averagePartialFillRatio ?? 0)} | ${percent(telemetry.averageFillProbability ?? 0)} | ${telemetry.queueMisses ?? 0} | ${telemetry.staleQuoteRejections ?? 0} | ${telemetry.depthRejections ?? 0} |`;
+    }),
+    "",
+    "## Promotion Timeline",
+    "",
+    "```mermaid",
+    "timeline",
+    "  title DogeEdge Promotion Stages",
+    "  Research candidate : Backtest output only : deterministic config and ID",
+    "  Validation candidate : purged/CPCV/walk-forward/holdout evidence : conservative costs pass",
+    "  Paper candidate : live paper shadow evidence : drift checks pass",
+    "  Tiny-live eligible : manual approval only : backend gates still required",
+    "  Retired or demoted : drawdown, drift, stale data, or regime mismatch",
+    "```",
+    "",
     "## Approximation Notes",
     "",
-    "- `dsrApprox` is PSR minus a transparent multiple-testing/complexity penalty, not a canonical Deflated Sharpe Ratio.",
-    "- `pboApprox` is the share of purged validation folds with non-positive OOS P/L/ROI, not a full CPCV logit-rank PBO implementation.",
-    "- `familyAdjustedPValue` and `globalAdjustedPValue` use centered trade-P/L bootstrap null distributions inspired by Reality Check / SPA logic.",
+    "- `psr` uses the Bailey/Lopez de Prado-style Probabilistic Sharpe Ratio denominator with observed sample length, skew, and kurtosis.",
+    "- `dsrApprox` deflates PSR using an expected maximum Sharpe threshold from the tested strategy count; it is not a full canonical DSR implementation.",
+    "- `pboApprox` uses CPCV train-vs-validation rank degradation when CPCV train metrics are available, with fold-failure fallback.",
+    "- `familyAdjustedPValue` and `globalAdjustedPValue` use market-block strategy-menu bootstrap distributions inspired by White Reality Check and Hansen SPA.",
     "",
     "Review-only. These results replay local paper market frames and do not place real orders.",
   ].flat().join("\n");
@@ -125,6 +162,13 @@ function csvMetricValue(metric, key) {
   if (key === "paperEvidenceStatus") return metric.paperEvidence?.status ?? "missing";
   if (key === "paperEvidenceClosedMarkets") return metric.paperEvidence?.closedMarkets ?? 0;
   if (key === "paperEvidencePnl") return metric.paperEvidence?.totalPnl ?? "";
+  if (key === "avgSlippageCents") return metric.executionTelemetry?.conservative?.averageSlippageCents ?? metric.averageSlippageCents ?? 0;
+  if (key === "avgPartialFillRatio") return metric.executionTelemetry?.conservative?.averagePartialFillRatio ?? metric.averagePartialFillRatio ?? 0;
+  if (key === "avgFillProbability") return metric.executionTelemetry?.conservative?.averageFillProbability ?? metric.averageFillProbability ?? 0;
+  if (key === "avgFillDepthUtilization") return metric.executionTelemetry?.conservative?.averageFillDepthUtilization ?? metric.averageFillDepthUtilization ?? 0;
+  if (key === "staleQuoteRejections") return metric.executionTelemetry?.conservative?.staleQuoteRejections ?? 0;
+  if (key === "queueMisses") return metric.executionTelemetry?.conservative?.queueMisses ?? 0;
+  if (key === "depthRejections") return metric.executionTelemetry?.conservative?.depthRejections ?? 0;
   if (key === "reasonCodes") return (metric.reasonCodes ?? []).join(" ");
   return metric[key];
 }

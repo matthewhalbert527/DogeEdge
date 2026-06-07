@@ -86,9 +86,23 @@ npm run factory:validate
 npm run factory:replay-run
 npm run factory:compare
 npm run factory:promote-check
+npm run factory:audit-exports -- --input review_exports
 ```
 
 `factory:validate` runs the full integrity, split, holdout, and reporting pipeline without installing sweep output. `factory:replay-run -- --config <run>\config.json` reruns the saved deterministic config and fails if the decision-frame input manifest no longer matches, unless `--permissive-debug` is explicitly used. `factory:promote-check` emits promotion-ready and non-promotable sets in the saved config and terminal output. `factory:compare` is read-only and compares saved result files. These commands write only local research outputs and never place orders.
+
+`factory:audit-exports` validates a local review packet such as `review_exports/`, accepts split `latest.json`/`metrics.json` manifests, recomputes split/fold/holdout evidence from the frame sample, and writes:
+
+```text
+artifacts\factory-audit\audit-report.json
+artifacts\factory-audit\audit-report.md
+artifacts\factory-audit\fold-diff.json
+artifacts\factory-audit\fold-diff.md
+artifacts\factory-audit\final-review.json
+artifacts\factory-audit\final-review.md
+artifacts\factory-audit\metrics-compare.csv
+artifacts\factory-audit\promotion-stages.mmd
+```
 
 Each run writes:
 
@@ -148,12 +162,21 @@ Candidates are no longer ranked by ROI alone. Each strategy receives a `robustSc
 - family-level and global bootstrap multiple-testing p-value approximations;
 - concentration penalties for one market, day, side, or narrow regime.
 
-`dsrApprox` is PSR minus transparent complexity and multiple-testing penalties. It is not a canonical Deflated Sharpe Ratio. `pboApprox` is the share of validation folds with non-positive out-of-sample P/L/ROI. It is not a full CPCV logit-rank PBO. The names include `Approx` intentionally so reports do not imply exact academic implementations.
+The statistical fields are inspectable, deterministic approximations of published methods:
+
+- `psr` follows the Bailey/Lopez de Prado Probabilistic Sharpe Ratio shape using sample length, observed skewness, and kurtosis.
+- `dsrApprox` deflates PSR against an expected maximum Sharpe threshold from the effective trial count. It is closer to the Bailey/Lopez de Prado Deflated Sharpe Ratio than a simple penalty, but remains approximate because DogeEdge uses short event-level trade samples rather than full return series.
+- `pboApprox` uses CPCV train-vs-validation rank degradation when CPCV train metrics are present, with fold-failure fallback when older outputs lack CPCV train rows.
+- `familyAdjustedPValue` and `globalAdjustedPValue` use market-block strategy-menu bootstrap distributions inspired by White's Reality Check and Hansen's Superior Predictive Ability test. The SPA approximation is studentized and the bootstrap resamples 15-minute market/event blocks, not pooled individual trades.
+
+The `Approx` suffix is intentional for DSR/PBO/RC/SPA-style fields because these are practical local implementations, not canonical academic test packages.
 
 Multiple-testing outputs are:
 
-- `familyAdjustedPValue`: centered trade-P/L bootstrap null for the strategy family;
-- `globalAdjustedPValue`: centered trade-P/L bootstrap null across all tested strategies;
+- `familyAdjustedPValue`: family-level market-block menu bootstrap p-value;
+- `globalAdjustedPValue`: global market-block menu bootstrap p-value;
+- `realityCheckApproxPValue`: White Reality Check-style global menu p-value approximation;
+- `spaApproxPValue`: Hansen SPA-style studentized global menu p-value approximation;
 - `falseDiscoveryRisk`: simple combined risk from family/global adjusted p-values.
 
 These approximations are designed to penalize sweep-heavy research. They are conservative controls, not proof of profitability.
@@ -180,7 +203,21 @@ Suggested conservative defaults currently implemented:
 - concentration warnings/rejections for excessive one-day, one-market, or one-regime P/L;
 - multiple-testing-adjusted confidence required before paper candidacy.
 
-## Paper Evidence And Drift Detection
+## Simulator Telemetry, Paper Evidence, And Drift Detection
+
+Simulation trades now carry execution telemetry into `metrics.json`, `metrics.csv`, drift checks, and reports:
+
+- modeled slippage in cents;
+- queue result and queue miss reason;
+- requested, fillable, and filled contracts;
+- partial fill ratio;
+- fill probability used and deterministic fill roll where relevant;
+- fill-depth utilization;
+- stale-quote rejects;
+- latency bucket;
+- compact book context/hash.
+
+This prevents reports from silently showing `avgSlippage=0` when conservative or stress cost models actually applied slippage.
 
 Holdout evidence and paper evidence are separate. The final holdout proves that a candidate survived a strictly later replay slice. Paper evidence comes from `local-worker\paper-trades.jsonl` after a generated algo runs in the app's paper or dry-live paths. Missing paper evidence keeps the candidate at `paper_only`/validation status and prevents tiny-live eligibility.
 
@@ -208,9 +245,11 @@ Each run writes an `experiment-registry.json` with:
 - immutable holdout event IDs;
 - cost/risk model;
 - metrics version;
-- random seed.
+- root random seed and child seed plan.
 
 Use a saved `config.json` plus the same local decision-frame files to rerun the same experiment. If any input file bytes change, `factory:replay-run` reports an input manifest mismatch and stops by default. Use `npm run factory:compare -- --left <path> --right <path>` to compare two saved JSON outputs and explain major ranking changes.
+
+All bootstrap, multiple-testing, simulator, and fold-comparison streams derive from the recorded root seed. If Git is unavailable, the registry records `codeVersion: "UNAVAILABLE"` and marks reproducibility as partial rather than pretending the run is exact.
 
 ## Reports And UI
 
@@ -244,3 +283,14 @@ Sweep winners that include replayable parameters can be promoted only if the rob
 5. Keep real trading disabled until live trading has separate risk limits, backend credentials, and manual approval.
 
 Backtests are review-only and do not place real Kalshi orders.
+
+## Statistical References
+
+The factory uses lightweight local approximations inspired by these primary methods:
+
+- Bailey and Lopez de Prado, "The Deflated Sharpe Ratio: Correcting for Selection Bias, Backtest Overfitting and Non-Normality" (Journal of Portfolio Management, 2014): https://ssrn.com/abstract=2460551
+- Bailey, Borwein, Lopez de Prado, and Zhu, "The Probability of Backtest Overfitting" (Journal of Computational Finance, 2016): https://ssrn.com/abstract=2326253
+- White, "A Reality Check for Data Snooping" (Econometrica, 2000): https://doi.org/10.1111/1468-0262.00152
+- Hansen, "A Test for Superior Predictive Ability" (Journal of Business & Economic Statistics, 2005): https://ssrn.com/abstract=264569
+
+These references motivate the safeguards. DogeEdge does not claim canonical, publication-grade implementations of DSR, PBO, Reality Check, or SPA.

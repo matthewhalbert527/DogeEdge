@@ -40,6 +40,11 @@ data/raw/
 data/backtests/
 tmp/
 
+# Local review/export packets and generated audit reports
+review_exports/
+dogeedge-review-export-*.zip
+artifacts/factory-audit/
+
 # Tauri/Rust build artifacts and installers
 src-tauri/target/
 src-tauri/gen/
