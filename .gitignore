@@ -1,0 +1,50 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+.env
+.env.*
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+.vercel
+
+# Local DogeEdge worker output
+data/local-worker/*.json
+data/local-worker/*.jsonl
+data/local-worker/*.bak*
+data/local-worker/.seen.json
+data/local-worker/summary.md
+data/local-worker/snapshots/
+!data/local-worker/README.md
+data/events/
+data/features/
+data/raw/
+data/backtests/
+tmp/
+
+# Tauri/Rust build artifacts and installers
+src-tauri/target/
+src-tauri/gen/
+src-tauri/icons/backup-*/
+*.msi
+*.exe
+
+.vercel
