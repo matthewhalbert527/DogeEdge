@@ -87,6 +87,8 @@ npm run factory:replay-run
 npm run factory:compare
 npm run factory:promote-check
 npm run factory:audit-exports -- --input review_exports
+npm run eval:snapshot
+npm run eval:bundle
 ```
 
 `factory:validate` runs the full integrity, split, holdout, and reporting pipeline without installing sweep output. `factory:replay-run -- --config <run>\config.json` reruns the saved deterministic config and fails if the decision-frame input manifest no longer matches, unless `--permissive-debug` is explicitly used. `factory:promote-check` emits promotion-ready and non-promotable sets in the saved config and terminal output. `factory:compare` is read-only and compares saved result files. These commands write only local research outputs and never place orders.
@@ -103,6 +105,53 @@ artifacts\factory-audit\final-review.md
 artifacts\factory-audit\metrics-compare.csv
 artifacts\factory-audit\promotion-stages.mmd
 ```
+
+`eval:snapshot` writes a local `dogeedge.eval.snapshot.v1` packet for the most recent 30-minute review window. `eval:bundle` writes a two-hour review bundle containing the latest half-hour snapshot JSON files, TSV evidence, a repo artifact bundle, and an experiment-registry tarball. Both commands are local-only, deterministic, and review-oriented. They do not upload files, install strategies, change live-routing settings, or place orders.
+
+Default Windows output:
+
+```text
+D:\DogeEdge\data\gpt-review-packets\snapshots\snap-YYYYMMDDTHHMMSSZ\
+D:\DogeEdge\data\gpt-review-packets\bundles\dogeedge-review-bundle-YYYYMMDDTHHMMSSZ\
+D:\DogeEdge\data\gpt-review-packets\bundles\dogeedge-review-bundle-YYYYMMDDTHHMMSSZ.zip
+```
+
+Useful exporter options:
+
+```powershell
+npm run eval:snapshot -- --max-row-lines 1000
+npm run eval:bundle -- --max-row-lines 1000
+npm run eval:bundle -- --no-rows
+npm run eval:bundle -- --out D:\DogeEdge\data\gpt-review-packets
+```
+
+The row-level decision/trade extracts are capped by `--max-row-lines` so the packet does not accidentally include the full paper-trade log. Increase the cap only for first-upload audits or when a reject/drift alert needs row-level debugging.
+
+## Continuous Improvement Review Loop
+
+The recommended loop keeps DogeEdge's normal app and local-worker cadence intact and layers review packets on top:
+
+- every 30 minutes: run `npm run eval:snapshot`;
+- every 2 hours: run `npm run eval:bundle`;
+- after each two-hour bundle: review the machine-readable snapshot, TSVs, repo bundle, registry tarball, and safety alerts;
+- apply only safe local-file improvements to exporter reliability, evidence quality, validation coverage, alerting, reports, tests, and UI visibility;
+- run `npm test`, `npm run lint`, and `npm run build` before committing changes;
+- keep live trading disabled by default and require manual approval for any live-router or real-order-related change.
+
+The review bundle includes:
+
+- `manifest.json` with SHA-256 hashes, byte counts, safety status, alerts, and snapshot IDs;
+- `snapshots/snap-*.json.gz` using schema `dogeedge.eval.snapshot.v1`;
+- `snapshots/algoMetrics.tsv.gz`;
+- `snapshots/foldMetrics.tsv.gz`;
+- `snapshots/decisionAggregates.tsv.gz`;
+- `snapshots/tradeAggregates.tsv.gz`;
+- `snapshots/warnings.tsv.gz`;
+- capped `decisionRows.tsv.gz` and `tradeRows.tsv.gz` unless `--no-rows` is used;
+- `repo/` files needed to interpret the packet against the exact local code snapshot;
+- `registry/experiment-registry.tar.gz`.
+
+The exporter redacts absolute metadata paths in packet JSON to `_REPO_ROOT_` and `_DATA_ROOT_`. Market tickers, algo IDs, timestamps, prices, sizes, hashes, and git commits remain plain because they are needed for replay and audit.
 
 Each run writes:
 

@@ -43,6 +43,8 @@ tmp/
 # Local review/export packets and generated audit reports
 review_exports/
 dogeedge-review-export-*.zip
+dogeedge-review-bundle-*.zip
+gpt-review-packets/
 artifacts/factory-audit/
 
 # Tauri/Rust build artifacts and installers
