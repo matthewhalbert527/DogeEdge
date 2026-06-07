@@ -89,6 +89,7 @@ npm run factory:promote-check
 npm run factory:audit-exports -- --input review_exports
 npm run eval:snapshot
 npm run eval:bundle
+npm run eval:loop
 ```
 
 `factory:validate` runs the full integrity, split, holdout, and reporting pipeline without installing sweep output. `factory:replay-run -- --config <run>\config.json` reruns the saved deterministic config and fails if the decision-frame input manifest no longer matches, unless `--permissive-debug` is explicitly used. `factory:promote-check` emits promotion-ready and non-promotable sets in the saved config and terminal output. `factory:compare` is read-only and compares saved result files. These commands write only local research outputs and never place orders.
@@ -108,6 +109,8 @@ artifacts\factory-audit\promotion-stages.mmd
 
 `eval:snapshot` writes a local `dogeedge.eval.snapshot.v1` packet for the most recent 30-minute review window. `eval:bundle` writes a two-hour review bundle containing the latest half-hour snapshot JSON files, TSV evidence, a repo artifact bundle, and an experiment-registry tarball. Both commands are local-only, deterministic, and review-oriented. They do not upload files, install strategies, change live-routing settings, or place orders.
 
+`eval:loop` leaves a foreground terminal process running. It writes a bundle immediately, then keeps writing snapshots every 30 minutes and bundles every 2 hours. Use `Ctrl+C` to stop it. For a Windows restart-proof setup, run this command from Task Scheduler at logon; the command itself stays local-only and paper-safe.
+
 Default Windows output:
 
 ```text
@@ -121,6 +124,7 @@ Useful exporter options:
 ```powershell
 npm run eval:snapshot -- --max-row-lines 1000
 npm run eval:bundle -- --max-row-lines 1000
+npm run eval:loop -- --max-row-lines 1000
 npm run eval:bundle -- --no-rows
 npm run eval:bundle -- --out D:\DogeEdge\data\gpt-review-packets
 ```

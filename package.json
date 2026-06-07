@@ -18,6 +18,7 @@
     "factory:audit-exports": "node scripts/factory/audit-exports.mjs",
     "eval:snapshot": "node scripts/export-eval-snapshot.mjs --window-minutes 30",
     "eval:bundle": "node scripts/export-eval-snapshot.mjs --bundle --window-minutes 30 --bundle-hours 2",
+    "eval:loop": "node scripts/run-eval-loop.mjs --snapshot-minutes 30 --bundle-hours 2",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",

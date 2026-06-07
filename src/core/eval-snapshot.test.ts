@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildReviewBundle, exportEvaluationSnapshot, validateEvaluationSnapshot } from "../../scripts/export-eval-snapshot.mjs";
+import { nextEvalAction } from "../../scripts/run-eval-loop.mjs";
 
 describe("continuous evaluation snapshot exporter", () => {
   it("writes a schema-valid local review snapshot with manifest hashes and row extracts", async () => {
@@ -79,6 +80,14 @@ describe("continuous evaluation snapshot exporter", () => {
       "registry/experiment-registry.tar.gz",
     ]));
     expect(manifest.safetyStatus.liveTradingEnabled).toBe(false);
+  });
+
+  it("chooses bundle work only at the configured two-hour cadence", () => {
+    const bundleEveryMs = 2 * 60 * 60_000;
+
+    expect(nextEvalAction({ nowMs: 1000, lastBundleMs: Number.NaN, bundleEveryMs })).toBe("bundle");
+    expect(nextEvalAction({ nowMs: bundleEveryMs - 1, lastBundleMs: 0, bundleEveryMs })).toBe("snapshot");
+    expect(nextEvalAction({ nowMs: bundleEveryMs, lastBundleMs: 0, bundleEveryMs })).toBe("bundle");
   });
 });
 
