@@ -5251,48 +5251,51 @@ function LiveTradingView({
     if (betCap <= 0 || betCap > routerStatus.maxOrderDollars) return;
     if (dryLiveReadyAlgos.length === 0) return;
 
-    const rosterIds = dryLiveReadyAlgos.map((algo) => algo.id);
-    completedLiveOrderKeysRef.current = new Set();
-    lastLiveOrderAttemptAtRef.current = {};
-    lastLiveSellAttemptAtRef.current = {};
-    liveSignalSeenRef.current = {};
-    liveExecutionBlockedUntilRef.current = {};
-    liveRosterCursorRef.current = 0;
-    setSelectedLiveAlgoIds(rosterIds);
-    setSelectedAlgoId(rosterIds[0] ?? "");
-    if (dryLiveReadyAlgos[0]) setLookupAlgoId(dryLiveReadyAlgos[0].displayId);
-    const startedAt = new Date().toISOString();
-    setLiveRunner((current) => ({
-      ...current,
-      status: "running",
-      selectedAlgoId: rosterIds[0] ?? null,
-      selectedAlgoIds: rosterIds,
-      maxBet: betCap,
-      allowRepeatBuys: allowLiveRepeatBuys,
-      autoDryLiveEnabled: true,
-      dryLiveProbation: dryLiveReadyAlgos.reduce((records, algo) => {
-        const currentRecord = records[algo.sourceAlgoId];
-        if (currentRecord && currentRecord.status !== "failed") return records;
-        return {
-          ...records,
-          [algo.sourceAlgoId]: defaultDryLiveProbationRecord(algo, startedAt),
-        };
-      }, current.dryLiveProbation),
-      startedAt,
-      stoppedAt: null,
-    }));
-    const message = `${dryLiveReadyAlgos.length} dry-live ready algo${dryLiveReadyAlgos.length === 1 ? "" : "s"} auto-armed from Top Traders.`;
-    setSubmitState({ status: "idle", message, clientOrderId: null, dryRun: true });
-    addLiveLog({
-      event: "ARMED",
-      orderAction: null,
-      algo: dryLiveReadyAlgos.length === 1 ? dryLiveReadyAlgos[0].displayId : `${dryLiveReadyAlgos.length} algos`,
-      ticker: activeTicker,
-      side: null,
-      contracts: null,
-      cost: null,
-      message,
-    });
+    const timeoutId = window.setTimeout(() => {
+      const rosterIds = dryLiveReadyAlgos.map((algo) => algo.id);
+      completedLiveOrderKeysRef.current = new Set();
+      lastLiveOrderAttemptAtRef.current = {};
+      lastLiveSellAttemptAtRef.current = {};
+      liveSignalSeenRef.current = {};
+      liveExecutionBlockedUntilRef.current = {};
+      liveRosterCursorRef.current = 0;
+      setSelectedLiveAlgoIds(rosterIds);
+      setSelectedAlgoId(rosterIds[0] ?? "");
+      if (dryLiveReadyAlgos[0]) setLookupAlgoId(dryLiveReadyAlgos[0].displayId);
+      const startedAt = new Date().toISOString();
+      setLiveRunner((current) => ({
+        ...current,
+        status: "running",
+        selectedAlgoId: rosterIds[0] ?? null,
+        selectedAlgoIds: rosterIds,
+        maxBet: betCap,
+        allowRepeatBuys: allowLiveRepeatBuys,
+        autoDryLiveEnabled: true,
+        dryLiveProbation: dryLiveReadyAlgos.reduce((records, algo) => {
+          const currentRecord = records[algo.sourceAlgoId];
+          if (currentRecord && currentRecord.status !== "failed") return records;
+          return {
+            ...records,
+            [algo.sourceAlgoId]: defaultDryLiveProbationRecord(algo, startedAt),
+          };
+        }, current.dryLiveProbation),
+        startedAt,
+        stoppedAt: null,
+      }));
+      const message = `${dryLiveReadyAlgos.length} dry-live ready algo${dryLiveReadyAlgos.length === 1 ? "" : "s"} auto-armed from Top Traders.`;
+      setSubmitState({ status: "idle", message, clientOrderId: null, dryRun: true });
+      addLiveLog({
+        event: "ARMED",
+        orderAction: null,
+        algo: dryLiveReadyAlgos.length === 1 ? dryLiveReadyAlgos[0].displayId : `${dryLiveReadyAlgos.length} algos`,
+        ticker: activeTicker,
+        side: null,
+        contracts: null,
+        cost: null,
+        message,
+      });
+    }, 0);
+    return () => window.clearTimeout(timeoutId);
   }, [activeTicker, addLiveLog, allowLiveRepeatBuys, betCap, dryLiveReadyAlgos, dryLiveReadySignature, liveEntriesEnabled, liveRunner.autoDryLiveEnabled, routerStatus.dryRun, routerStatus.maxOrderDollars, runStatus]);
 
   useEffect(() => {
@@ -5306,34 +5309,37 @@ function LiveTradingView({
       .filter((algo) => !selectedIdSet.has(algo.id))
       .slice(0, dryLivePromotionMaxAlgos - selectedLiveAlgoIds.length);
     if (additions.length === 0) return;
-    const nextIds = uniqueStringList([...selectedLiveAlgoIds, ...additions.map((algo) => algo.id)]).slice(0, dryLivePromotionMaxAlgos);
-    const startedAt = new Date().toISOString();
-    setSelectedLiveAlgoIds(nextIds);
-    if (!selectedAlgoId && nextIds[0]) setSelectedAlgoId(nextIds[0]);
-    setLiveRunner((current) => ({
-      ...current,
-      selectedAlgoId: current.selectedAlgoId ?? nextIds[0] ?? null,
-      selectedAlgoIds: nextIds,
-      maxBet: betCap,
-      allowRepeatBuys: allowLiveRepeatBuys,
-      autoDryLiveEnabled: true,
-      dryLiveProbation: additions.reduce((records, algo) => ({
-        ...records,
-        [algo.sourceAlgoId]: records[algo.sourceAlgoId] ?? defaultDryLiveProbationRecord(algo, startedAt),
-      }), current.dryLiveProbation),
-    }));
-    const message = `${additions.length} newly eligible algo${additions.length === 1 ? "" : "s"} added to dry-live probation; ${nextIds.length} of ${dryLivePromotionMaxAlgos} slots filled.`;
-    setSubmitState({ status: "accepted", message, clientOrderId: null, dryRun: true });
-    addLiveLog({
-      event: "ARMED",
-      orderAction: null,
-      algo: additions.length === 1 ? additions[0].displayId : `${additions.length} algos`,
-      ticker: activeTicker,
-      side: null,
-      contracts: null,
-      cost: null,
-      message,
-    });
+    const timeoutId = window.setTimeout(() => {
+      const nextIds = uniqueStringList([...selectedLiveAlgoIds, ...additions.map((algo) => algo.id)]).slice(0, dryLivePromotionMaxAlgos);
+      const startedAt = new Date().toISOString();
+      setSelectedLiveAlgoIds(nextIds);
+      if (!selectedAlgoId && nextIds[0]) setSelectedAlgoId(nextIds[0]);
+      setLiveRunner((current) => ({
+        ...current,
+        selectedAlgoId: current.selectedAlgoId ?? nextIds[0] ?? null,
+        selectedAlgoIds: nextIds,
+        maxBet: betCap,
+        allowRepeatBuys: allowLiveRepeatBuys,
+        autoDryLiveEnabled: true,
+        dryLiveProbation: additions.reduce((records, algo) => ({
+          ...records,
+          [algo.sourceAlgoId]: records[algo.sourceAlgoId] ?? defaultDryLiveProbationRecord(algo, startedAt),
+        }), current.dryLiveProbation),
+      }));
+      const message = `${additions.length} newly eligible algo${additions.length === 1 ? "" : "s"} added to dry-live probation; ${nextIds.length} of ${dryLivePromotionMaxAlgos} slots filled.`;
+      setSubmitState({ status: "accepted", message, clientOrderId: null, dryRun: true });
+      addLiveLog({
+        event: "ARMED",
+        orderAction: null,
+        algo: additions.length === 1 ? additions[0].displayId : `${additions.length} algos`,
+        ticker: activeTicker,
+        side: null,
+        contracts: null,
+        cost: null,
+        message,
+      });
+    }, 0);
+    return () => window.clearTimeout(timeoutId);
   }, [activeTicker, addLiveLog, allowLiveRepeatBuys, betCap, dryLiveReadyAlgos, dryLiveReadySignature, liveEntriesEnabled, liveRunner.autoDryLiveEnabled, routerStatus.dryRun, routerStatus.maxOrderDollars, runStatus, selectedAlgoId, selectedLiveAlgoIds]);
 
   useEffect(() => {
@@ -5358,38 +5364,41 @@ function LiveTradingView({
     }
 
     if (decisions.length === 0) return;
-    setSelectedLiveAlgoIds(nextSelectedIds);
-    setSelectedAlgoId(nextSelectedIds[0] ?? "");
-    setLiveRunner((current) => ({
-      ...current,
-      status: runStatus === "running" && nextSelectedIds.length === 0 ? "idle" : current.status,
-      selectedAlgoId: nextSelectedIds[0] ?? null,
-      selectedAlgoIds: nextSelectedIds,
-      autoDryLiveEnabled: current.autoDryLiveEnabled,
-      dryLiveProbation: nextRecords,
-      stoppedAt: runStatus === "running" && nextSelectedIds.length === 0 ? reviewedAt : current.stoppedAt,
-    }));
-    for (const decision of decisions) {
-      addLiveLog({
-        event: decision.status === "passed" ? "PROBATION PASS" : "PROBATION FAIL",
-        orderAction: null,
-        algo: decision.displayId,
-        ticker: activeTicker,
-        side: null,
-        contracts: null,
-        cost: null,
-        profit: decision.totalPnl,
-        message: decision.reason ?? `Dry-live probation ${decision.status}.`,
+    const timeoutId = window.setTimeout(() => {
+      setSelectedLiveAlgoIds(nextSelectedIds);
+      setSelectedAlgoId(nextSelectedIds[0] ?? "");
+      setLiveRunner((current) => ({
+        ...current,
+        status: runStatus === "running" && nextSelectedIds.length === 0 ? "idle" : current.status,
+        selectedAlgoId: nextSelectedIds[0] ?? null,
+        selectedAlgoIds: nextSelectedIds,
+        autoDryLiveEnabled: current.autoDryLiveEnabled,
+        dryLiveProbation: nextRecords,
+        stoppedAt: runStatus === "running" && nextSelectedIds.length === 0 ? reviewedAt : current.stoppedAt,
+      }));
+      for (const decision of decisions) {
+        addLiveLog({
+          event: decision.status === "passed" ? "PROBATION PASS" : "PROBATION FAIL",
+          orderAction: null,
+          algo: decision.displayId,
+          ticker: activeTicker,
+          side: null,
+          contracts: null,
+          cost: null,
+          profit: decision.totalPnl,
+          message: decision.reason ?? `Dry-live probation ${decision.status}.`,
+        });
+      }
+      const failed = decisions.filter((decision) => decision.status === "failed").length;
+      const passed = decisions.filter((decision) => decision.status === "passed").length;
+      setSubmitState({
+        status: failed > 0 ? "rejected" : "accepted",
+        message: `Dry-live review: ${passed} passed, ${failed} failed.`,
+        clientOrderId: null,
+        dryRun: true,
       });
-    }
-    const failed = decisions.filter((decision) => decision.status === "failed").length;
-    const passed = decisions.filter((decision) => decision.status === "passed").length;
-    setSubmitState({
-      status: failed > 0 ? "rejected" : "accepted",
-      message: `Dry-live review: ${passed} passed, ${failed} failed.`,
-      clientOrderId: null,
-      dryRun: true,
-    });
+    }, 0);
+    return () => window.clearTimeout(timeoutId);
   }, [activeTicker, addLiveLog, availableLiveAlgos, liveRunner.dryLiveProbation, nowLivePnlBySource, routerStatus.dryRun, runStatus, selectedLiveAlgoIds]);
 
   const runLabel = runStatus === "running"
@@ -6519,10 +6528,11 @@ function bestSweepCandidateByFamily(candidates: LocalFactorySweepCandidate[]): S
       best: betterSweepCandidate(candidate, current.best),
     });
   }
-  return [...families.values()].sort((left, right) => right.best.candidateScore - left.best.candidateScore || right.best.totalPnl - left.best.totalPnl);
+  return [...families.values()].sort((left, right) => right.best.robustScore - left.best.robustScore || right.best.candidateScore - left.best.candidateScore || right.best.totalPnl - left.best.totalPnl);
 }
 
 function betterSweepCandidate(candidate: LocalFactorySweepCandidate, current: LocalFactorySweepCandidate) {
+  if (candidate.robustScore !== current.robustScore) return candidate.robustScore > current.robustScore ? candidate : current;
   if (candidate.candidateScore !== current.candidateScore) return candidate.candidateScore > current.candidateScore ? candidate : current;
   if (candidate.totalPnl !== current.totalPnl) return candidate.totalPnl > current.totalPnl ? candidate : current;
   if (candidate.roi !== current.roi) return candidate.roi > current.roi ? candidate : current;
@@ -6664,6 +6674,9 @@ function sweepCandidateAutomationReview(
   learningReport: LearningReport,
   paperState: PaperState,
 ) {
+  if (candidate.nonPromotable) {
+    return { type: "hold" as const, detail: `Factory marked this candidate non-promotable: ${candidate.reasonCodes.join(", ") || candidate.promotionVerdict}.` };
+  }
   if (!generatedPaperAlgoSupportsFamily(candidate.family)) return { type: "hold" as const, detail: "Family is not supported by the generated paper runner." };
   if (!isFocusedSweepCandidate(candidate)) return { type: "hold" as const, detail: "Outside the current focus families." };
   if (candidate.family === "sweep-managed-scalp") {

@@ -104,6 +104,23 @@ export interface LocalFactorySweepCandidate {
   walkForwardRoi: number;
   walkForwardMaxDrawdown: number;
   candidateScore: number;
+  robustScore: number;
+  promotionVerdict: string;
+  promotionStage: string;
+  nonPromotable: boolean;
+  reasonCodes: string[];
+  warnings: string[];
+  independentClosedMarkets: number;
+  daysRepresented: number;
+  conservativeTotalPnl: number;
+  stressTotalPnl: number;
+  foldConsistency: number;
+  psr: number;
+  dsr: number;
+  pbo: number;
+  adjustedConfidence: number;
+  costModels: Record<string, unknown>;
+  foldSummary: Record<string, unknown>;
 }
 
 export interface LocalFactorySweep {
@@ -305,6 +322,7 @@ function normalizeSweepCandidates(value: unknown): LocalFactorySweepCandidate[] 
 }
 
 function betterSweepCandidate(candidate: LocalFactorySweepCandidate, current: LocalFactorySweepCandidate) {
+  if (candidate.robustScore !== current.robustScore) return candidate.robustScore > current.robustScore ? candidate : current;
   if (candidate.candidateScore !== current.candidateScore) return candidate.candidateScore > current.candidateScore ? candidate : current;
   if (candidate.totalPnl !== current.totalPnl) return candidate.totalPnl > current.totalPnl ? candidate : current;
   if (candidate.roi !== current.roi) return candidate.roi > current.roi ? candidate : current;
@@ -340,6 +358,23 @@ function normalizeSweepCandidate(value: unknown): LocalFactorySweepCandidate | n
     walkForwardRoi: numberOrDefault(value.walkForwardRoi, 0),
     walkForwardMaxDrawdown: numberOrDefault(value.walkForwardMaxDrawdown, 0),
     candidateScore: numberOrDefault(value.candidateScore, 0),
+    robustScore: numberOrDefault(value.robustScore, numberOrDefault(value.candidateScore, 0)),
+    promotionVerdict: stringOrDefault(value.promotionVerdict, "unknown"),
+    promotionStage: stringOrDefault(value.promotionStage, "research_candidate"),
+    nonPromotable: Boolean(value.nonPromotable),
+    reasonCodes: Array.isArray(value.reasonCodes) ? value.reasonCodes.filter((item): item is string => typeof item === "string") : [],
+    warnings: Array.isArray(value.warnings) ? value.warnings.filter((item): item is string => typeof item === "string") : [],
+    independentClosedMarkets: numberOrDefault(value.independentClosedMarkets, numberOrDefault(value.closed, 0)),
+    daysRepresented: numberOrDefault(value.daysRepresented, 0),
+    conservativeTotalPnl: numberOrDefault(value.conservativeTotalPnl, isRecord(value.costModels) && isRecord(value.costModels.conservative) ? numberOrDefault(value.costModels.conservative.totalPnl, 0) : 0),
+    stressTotalPnl: numberOrDefault(value.stressTotalPnl, isRecord(value.costModels) && isRecord(value.costModels.stress) ? numberOrDefault(value.costModels.stress.totalPnl, 0) : 0),
+    foldConsistency: isRecord(value.foldSummary) ? numberOrDefault(value.foldSummary.foldConsistency, numberOrDefault(value.foldSummary.positiveFoldRate, 0)) : 0,
+    psr: numberOrDefault(value.psr, 0),
+    dsr: numberOrDefault(value.dsr, 0),
+    pbo: numberOrDefault(value.pbo, 1),
+    adjustedConfidence: numberOrDefault(value.adjustedConfidence, 0),
+    costModels: isRecord(value.costModels) ? { ...value.costModels } : {},
+    foldSummary: isRecord(value.foldSummary) ? { ...value.foldSummary } : {},
   };
 }
 

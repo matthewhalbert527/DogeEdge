@@ -1,6 +1,10 @@
 import { access, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { readFactoryDecisionFrames } from "./factory/data.mjs";
+import { runFactoryResearchPipeline } from "./factory/pipeline.mjs";
+import { metricsCsv as robustMetricsCsv, markdownReport as robustMarkdownReport } from "./factory/reporting.mjs";
+import { experimentRegistryEntry, compareRuns } from "./factory/registry.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const args = parseArgs(process.argv.slice(2));
@@ -19,6 +23,21 @@ const until = typeof args.until === "string" ? Date.parse(args.until) : null;
 const minCandidateClosed = Math.max(1, Number(args["min-closed"] ?? 3));
 const walkForwardRatio = clamp(Number(args["walk-forward-ratio"] ?? 0.3), 0.1, 0.5);
 const minWalkForwardClosed = Math.max(1, Number(args["min-walk-closed"] ?? 2));
+const permissiveDebug = Boolean(args["permissive-debug"]);
+const randomSeed = String(args.seed ?? "dogeedge-factory-v1");
+const embargoMs = Math.max(0, Number(args["embargo-ms"] ?? 15 * 60_000));
+const foldCount = Math.max(2, Number(args.folds ?? 5));
+const bootstrapIterations = Math.max(100, Number(args["bootstrap-iterations"] ?? 400));
+
+if (args.compare) {
+  const [leftPath, rightPath] = await comparePaths(backtestsDir, args);
+  const changes = await compareRuns(leftPath, rightPath);
+  console.log(`DogeEdge factory comparison`);
+  console.log(`Left: ${leftPath}`);
+  console.log(`Right: ${rightPath}`);
+  console.log(changes.map((change) => `${change.algoName}: rank ${change.previousRank ?? "-"} -> ${change.currentRank}, robust ${change.previousRobustScore ?? "-"} -> ${change.currentRobustScore ?? "-"}, ${change.reason}`).join("\n") || "No comparable candidate changes.");
+  process.exit(0);
+}
 
 await Promise.all([
   mkdir(runDir, { recursive: true }),
@@ -39,27 +58,52 @@ await writeJsonIfMissing(path.join(algosDir, "registry.json"), {
   algos: allAlgos.map(({ signal: _signal, ...algo }) => algo),
 });
 
-const frames = await readDecisionFrames(framesDir);
-const filteredFrames = frames
-  .filter((frame) => {
-    const time = Date.parse(frame.observedAt ?? frame.capturedAt ?? "");
-    if (!Number.isFinite(time)) return false;
-    if (since !== null && time < since) return false;
-    if (until !== null && time > until) return false;
-    return true;
-  })
-  .sort((left, right) => Date.parse(left.observedAt) - Date.parse(right.observedAt) || String(left.id).localeCompare(String(right.id)));
-const walkForwardStartIndex = Math.max(0, Math.floor(filteredFrames.length * (1 - walkForwardRatio)));
-const walkForwardFrames = filteredFrames.slice(walkForwardStartIndex);
-
 const startedAt = new Date().toISOString();
-const runs = algos.map((algo) => runBacktest(algo, filteredFrames, walkForwardFrames));
-const metrics = runs.map((run) => run.metrics)
-  .sort((left, right) => right.roi - left.roi || right.totalPnl - left.totalPnl || right.closed - left.closed);
-const candidates = candidateMetrics(metrics, minCandidateClosed, minWalkForwardClosed);
-const trades = runs.flatMap((run) => run.trades.map((trade) => ({ algoId: run.algo.id, algoName: run.algo.name, ...trade })))
-  .sort((left, right) => String(left.algoName).localeCompare(String(right.algoName)) || Date.parse(left.openedAt) - Date.parse(right.openedAt));
+const loadResult = await readFactoryDecisionFrames(framesDir, { permissiveDebug });
+const pipeline = runFactoryResearchPipeline({
+  algos,
+  loadResult,
+  since,
+  until,
+  options: {
+    permissiveDebug,
+    seed: randomSeed,
+    embargoMs,
+    foldCount,
+    bootstrapIterations,
+    testRatio: walkForwardRatio,
+    minCandidateClosed,
+    minWalkForwardClosed,
+  },
+});
+const filteredFrames = pipeline.frames;
+const metrics = pipeline.metrics;
+const candidates = pipeline.candidates;
+const trades = pipeline.trades;
 const finishedAt = new Date().toISOString();
+const registry = await experimentRegistryEntry({
+  repoRoot,
+  dataRoot,
+  framesDir,
+  config: {
+    runId,
+    mode: modeLabel,
+    since: args.since ?? null,
+    until: args.until ?? null,
+    permissiveDebug,
+    randomSeed,
+    embargoMs,
+    foldCount,
+    bootstrapIterations,
+    walkForwardRatio,
+    minCandidateClosed,
+    minWalkForwardClosed,
+  },
+  algos,
+  folds: pipeline.purgedFolds,
+  costModels: pipeline.costModels,
+  seed: randomSeed,
+});
 
 await writeFile(path.join(runDir, "config.json"), `${JSON.stringify({
   runId,
@@ -68,34 +112,59 @@ await writeFile(path.join(runDir, "config.json"), `${JSON.stringify({
   finishedAt,
   dataRoot,
   framesDir,
+  dataQuality: pipeline.dataQuality,
+  eventCount: pipeline.events.length,
   frameCount: filteredFrames.length,
-  walkForwardFrameCount: walkForwardFrames.length,
+  walkForwardFrameCount: pipeline.split.testEventIds.length,
   walkForwardRatio,
   algoCount: algos.length,
   deepSweepMode,
   minCandidateClosed,
   minWalkForwardClosed,
+  permissiveDebug,
+  randomSeed,
+  embargoMs,
+  foldCount,
+  bootstrapIterations,
+  registry,
+  split: pipeline.split,
+  purgedFolds: pipeline.purgedFolds.map((fold) => ({
+    id: fold.id,
+    trainEventCount: fold.trainEventIds.length,
+    validationEventCount: fold.validationEventIds.length,
+    purgedEventCount: fold.purgedEventIds.length,
+    embargoedEventCount: fold.embargoedEventIds.length,
+    embargoMs: fold.embargoMs,
+  })),
   since: args.since ?? null,
   until: args.until ?? null,
   algos: algos.map(({ signal: _signal, ...algo }) => algo),
 }, null, 2)}\n`);
 await writeFile(path.join(runDir, "metrics.json"), `${JSON.stringify(metrics, null, 2)}\n`);
-await writeFile(path.join(runDir, "metrics.csv"), `${metricsCsv(metrics)}\n`);
+await writeFile(path.join(runDir, "metrics.csv"), `${robustMetricsCsv(metrics)}\n`);
 await writeFile(path.join(runDir, "candidates.json"), `${JSON.stringify(candidates, null, 2)}\n`);
-await writeFile(path.join(runDir, "candidates.csv"), `${metricsCsv(candidates)}\n`);
+await writeFile(path.join(runDir, "candidates.csv"), `${robustMetricsCsv(candidates)}\n`);
 await writeFile(path.join(runDir, "trades.jsonl"), trades.map((trade) => JSON.stringify(trade)).join("\n") + (trades.length ? "\n" : ""));
-await writeFile(path.join(runDir, "report.md"), `${markdownReport({ runId, startedAt, finishedAt, dataRoot, framesDir, frameCount: filteredFrames.length, algoCount: algos.length, sweepMode, minCandidateClosed, metrics, candidates })}\n`);
+await writeFile(path.join(runDir, "experiment-registry.json"), `${JSON.stringify(registry, null, 2)}\n`);
+await writeFile(path.join(runDir, "report.md"), `${robustMarkdownReport({ runId, startedAt, finishedAt, dataRoot, framesDir, frameCount: filteredFrames.length, eventCount: pipeline.events.length, algoCount: algos.length, sweepMode, dataQuality: pipeline.dataQuality, metrics, candidates })}\n`);
 await writeFile(path.join(backtestsDir, "latest.json"), `${JSON.stringify({
   runId,
   mode: modeLabel,
   runDir,
   finishedAt,
   dataRoot,
+  dataQuality: pipeline.dataQuality,
+  eventCount: pipeline.events.length,
   frameCount: filteredFrames.length,
-  walkForwardFrameCount: walkForwardFrames.length,
+  walkForwardFrameCount: pipeline.split.testEventIds.length,
   walkForwardRatio,
   algoCount: algos.length,
   deepSweepMode,
+  permissiveDebug,
+  randomSeed,
+  embargoMs,
+  foldCount,
+  registry,
   metrics,
   candidates,
 }, null, 2)}\n`);
@@ -106,13 +175,20 @@ if (sweepMode) {
     runDir,
     finishedAt,
     dataRoot,
+    dataQuality: pipeline.dataQuality,
+    eventCount: pipeline.events.length,
     frameCount: filteredFrames.length,
-    walkForwardFrameCount: walkForwardFrames.length,
+    walkForwardFrameCount: pipeline.split.testEventIds.length,
     walkForwardRatio,
     algoCount: algos.length,
     deepSweepMode,
     minCandidateClosed,
     minWalkForwardClosed,
+    permissiveDebug,
+    randomSeed,
+    embargoMs,
+    foldCount,
+    registry,
     candidates,
     topMetrics: metrics.slice(0, 50),
   }, null, 2)}\n`);
@@ -120,9 +196,10 @@ if (sweepMode) {
 
 console.log(`DogeEdge ${sweepMode ? deepSweepMode ? "deep sweep" : "sweep" : "backtest"} complete`);
 console.log(`Frames: ${filteredFrames.length}`);
+console.log(`Market events: ${pipeline.events.length}`);
 console.log(`Algos: ${algos.length}`);
 console.log(`Run: ${runDir}`);
-console.log((candidates.length ? candidates : metrics).slice(0, 8).map((metric) => `${metric.algoName}: ${money(metric.totalPnl)} P/L, ${percent(metric.roi)} ROI, ${metric.closed} closed`).join("\n"));
+console.log((candidates.length ? candidates : metrics).slice(0, 8).map((metric) => `${metric.algoName}: ${money(metric.totalPnl)} P/L, ${percent(metric.roi)} ROI, ${metric.independentClosedMarkets ?? metric.closed} markets, ${metric.promotionVerdict ?? "review"} verdict, robust ${metric.robustScore?.toFixed(2) ?? "-"}`).join("\n"));
 
 async function defaultDataRoot() {
   if (process.platform === "win32") {
@@ -151,6 +228,20 @@ function parseArgs(values) {
     index += 1;
   }
   return parsed;
+}
+
+async function comparePaths(baseDir, parsedArgs) {
+  if (typeof parsedArgs.left === "string" && typeof parsedArgs.right === "string") {
+    return [path.resolve(parsedArgs.left), path.resolve(parsedArgs.right)];
+  }
+  const latest = path.join(baseDir, "latest.json");
+  const latestSweep = path.join(baseDir, "latest-sweep.json");
+  try {
+    await access(latestSweep);
+    return [latest, latestSweep];
+  } catch {
+    return [latest, latest];
+  }
 }
 
 async function readDecisionFrames(baseDir) {
