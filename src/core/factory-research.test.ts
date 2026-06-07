@@ -1,3 +1,7 @@
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { normalizeDecisionFrame } from "../../scripts/factory/schema.mjs";
 import { buildMarketEvents, deduplicateDecisionFrames } from "../../scripts/factory/data.mjs";
@@ -7,6 +11,11 @@ import { metricsForAlgo } from "../../scripts/factory/metrics.mjs";
 import { rankFactoryMetrics } from "../../scripts/factory/ranking.mjs";
 import { promotionReview } from "../../scripts/factory/promotion.mjs";
 import { runFactoryResearchPipeline } from "../../scripts/factory/pipeline.mjs";
+import { finalHoldoutSplit } from "../../scripts/factory/holdout.mjs";
+import { detectEvidenceDrift } from "../../scripts/factory/drift.mjs";
+import { compareInputManifest, decisionFrameInputManifest } from "../../scripts/factory/repro.mjs";
+import { paperEvidenceForAlgo, readPaperEvidence } from "../../scripts/factory/paper-evidence.mjs";
+import { markdownReport, metricsCsv } from "../../scripts/factory/reporting.mjs";
 
 const baseFrame = {
   id: "frame-1",
@@ -55,6 +64,21 @@ describe("factory research safeguards", () => {
 
     expect(result.frame).toBeNull();
     expect(result.errors.join(" ")).toContain("future/outcome");
+  });
+
+  it("warns instead of failing on stale non-live post-close frames", () => {
+    const result = normalizeDecisionFrame({
+      ...baseFrame,
+      marketLive: false,
+      observedAt: "2026-06-01T00:01:00.000Z",
+      capturedAt: "2026-06-01T00:01:00.000Z",
+      marketCloseTime: "2026-06-01T00:00:00.000Z",
+      secondsToClose: 0,
+    });
+
+    expect(result.frame).not.toBeNull();
+    expect(result.errors).toHaveLength(0);
+    expect(result.warnings.join(" ")).toContain("non-live");
   });
 
   it("deduplicates exact and near-identical overlapping frames", () => {
@@ -142,6 +166,201 @@ describe("factory research safeguards", () => {
     expect(review.promotionVerdict).toBe("paper_only");
     expect(review.reasonCodes).toContain("paper_evidence_required");
   });
+
+  it("keeps final holdout events strictly later than research windows", () => {
+    const events = Array.from({ length: 10 }, (_, index) => event(
+      `m-${index}`,
+      `2026-06-01T${String(index).padStart(2, "0")}:00:00.000Z`,
+      `2026-06-01T${String(index).padStart(2, "0")}:15:00.000Z`,
+    ));
+
+    const split = finalHoldoutSplit(events, { holdoutRatio: 0.2, minHoldoutEvents: 2 });
+    const latestResearchEnd = Math.max(...split.researchEvents.map((item) => item.labelWindowEndMs));
+    const earliestHoldoutStart = Math.min(...split.holdoutEvents.map((item) => item.labelWindowStartMs));
+
+    expect(split.holdoutEvents).toHaveLength(2);
+    expect(split.strictlyLater).toBe(true);
+    expect(earliestHoldoutStart).toBeGreaterThanOrEqual(latestResearchEnd);
+  });
+
+  it("blocks promotion above research candidate when final holdout fails", () => {
+    const metric = robustMetric("holdout-fails");
+    const review = promotionReview({
+      ...metric,
+      holdoutPass: false,
+      holdoutSummary: {
+        ...metric.holdoutSummary,
+        holdoutPass: false,
+        holdoutConservativeTotalPnl: -1,
+        holdoutLowerCi: -0.1,
+      },
+    }, permissivePromotionThresholds());
+
+    expect(review.promotionStage).toBe("research_candidate");
+    expect(review.nonPromotable).toBe(true);
+    expect(review.reasonCodes).toContain("holdout_failed");
+  });
+
+  it("treats walk-forward failure as a hard promotion veto", () => {
+    const review = promotionReview({
+      ...robustMetric("walk-fails"),
+      walkForwardPass: false,
+      walkForwardClosed: 20,
+      walkForwardTotalPnl: -0.5,
+    }, permissivePromotionThresholds());
+
+    expect(review.promotionStage).toBe("research_candidate");
+    expect(review.reasonCodes).toContain("walk_forward_failed");
+  });
+
+  it("lets CPCV evidence affect ranking order", () => {
+    const weak = {
+      ...robustMetric("weak-cpcv"),
+      totalPnl: 10,
+      cpcvSummary: { positiveFoldRate: 0.1, medianFoldPnl: -2 },
+    };
+    const strong = {
+      ...robustMetric("strong-cpcv"),
+      totalPnl: 10,
+      cpcvSummary: { positiveFoldRate: 1, medianFoldPnl: 2 },
+    };
+
+    const ranked = rankFactoryMetrics([weak, strong], { bootstrapIterations: 100 });
+
+    expect(ranked[0].algoId).toBe("strong-cpcv");
+  });
+
+  it("detects paper/live-paper drift in pnl, regime, or fill quality", () => {
+    const stable = detectEvidenceDrift({
+      paperTrades: Array.from({ length: 10 }, () => ({ pnl: 0.02 })),
+      validationRegimes: { final_60s: 1 },
+      paperRegimes: { final_60s: 1 },
+      validationFill: { fillRate: 0.9, avgSlippage: 0.01 },
+      paperFill: { fillRate: 0.88, avgSlippage: 0.01 },
+    });
+    const drifted = detectEvidenceDrift({
+      paperTrades: Array.from({ length: 10 }, () => ({ pnl: -0.2 })),
+      validationRegimes: { final_60s: 1 },
+      paperRegimes: { early: 1 },
+      validationFill: { fillRate: 0.95, avgSlippage: 0.01 },
+      paperFill: { fillRate: 0.2, avgSlippage: 0.08 },
+    });
+
+    expect(stable.driftOk).toBe(true);
+    expect(drifted.driftOk).toBe(false);
+    expect(drifted.driftReasons).toEqual(expect.arrayContaining(["regime_share_drift", "fill_quality_drift"]));
+  });
+
+  it("hashes exact decision-frame files and changes when bytes change", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "dogeedge-repro-"));
+    const file = path.join(dir, "frames.jsonl");
+    writeFileSync(file, `${JSON.stringify(baseFrame)}\n`);
+    const first = await decisionFrameInputManifest(dir);
+
+    writeFileSync(file, `${JSON.stringify({ ...baseFrame, id: "changed" })}\n`);
+    const second = await decisionFrameInputManifest(dir);
+
+    expect(first.files).toHaveLength(1);
+    expect(first.files[0].sha256).not.toBe(second.files[0].sha256);
+    expect(first.manifestHash).not.toBe(second.manifestHash);
+  });
+
+  it("detects replay input manifest mismatches exactly", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "dogeedge-replay-manifest-"));
+    const file = path.join(dir, "frames.jsonl");
+    writeFileSync(file, `${JSON.stringify(baseFrame)}\n`);
+    const saved = await decisionFrameInputManifest(dir);
+
+    writeFileSync(file, `${JSON.stringify({ ...baseFrame, id: "changed" })}\n`);
+    const current = await decisionFrameInputManifest(dir);
+    const check = compareInputManifest({ inputManifestHash: saved.manifestHash, inputFiles: saved.files }, current);
+
+    expect(check.matches).toBe(false);
+    expect(check.reasonCodes).toEqual(expect.arrayContaining(["input_manifest_hash_changed", "input_file_changed:frames.jsonl"]));
+  });
+
+  it("matches real paper evidence back to generated factory algo ids", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "dogeedge-paper-evidence-"));
+    writeFileSync(path.join(dir, "paper-trades.jsonl"), `${JSON.stringify({
+      id: "paper-1",
+      strategyId: "generated:always-yes:1780000000000",
+      marketTicker: "KXDOGE15M-PAPER",
+      side: "YES",
+      contracts: 2,
+      entryPrice: 0.4,
+      exitPrice: 0.46,
+      openedAt: "2026-06-02T00:00:00.000Z",
+      closedAt: "2026-06-02T00:01:00.000Z",
+      status: "closed",
+      pnl: 0.12,
+      feesPaid: 0,
+      entryContext: { secondsToClose: 45 },
+    })}\n`);
+
+    const evidence = await readPaperEvidence({ storageDir: dir });
+    const summary = paperEvidenceForAlgo("always-yes", evidence, {
+      validationTrades: [{ pnl: 0.12 }],
+      validationRegimes: { final_60s: 1 },
+      validationFill: { fillRate: 1, avgSlippage: 0 },
+    });
+
+    expect(evidence.byAlgoId["always-yes"]).toHaveLength(1);
+    expect(summary.available).toBe(true);
+    expect(summary.closedMarkets).toBe(1);
+    expect(summary.totalPnl).toBe(0.12);
+  });
+
+  it("runs validate, replay-run, and promote-check CLI modes", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "dogeedge-cli-"));
+    const framesDir = path.join(root, "frames");
+    const outDir = path.join(root, "backtests");
+    const dataRoot = path.join(root, "data");
+    const script = path.resolve("scripts/dogeedge-backtest.mjs");
+    const common = ["--data-root", dataRoot, "--frames", framesDir, "--out", outDir, "--algo", "final60-lock-v1", "--bootstrap-iterations", "100"];
+
+    const validateOutput = execFileSync(process.execPath, [script, ...common, "--validate", "--run-id", "cli-validate"], { cwd: path.resolve("."), encoding: "utf8" });
+    const configPath = path.join(outDir, "runs", "cli-validate", "config.json");
+    const replayOutput = execFileSync(process.execPath, [script, ...common, "--replay-run", "--config", configPath, "--run-id", "cli-replay"], { cwd: path.resolve("."), encoding: "utf8" });
+    const promoteOutput = execFileSync(process.execPath, [script, ...common, "--sweep", "--promote-check", "--run-id", "cli-promote"], { cwd: path.resolve("."), encoding: "utf8" });
+    const validateConfig = JSON.parse(readFileSync(configPath, "utf8"));
+
+    expect(validateOutput).toContain("Validation mode");
+    expect(replayOutput).toContain("Replay-run mode");
+    expect(promoteOutput).toContain("Promotion check");
+    expect(validateConfig.validateMode).toBe(true);
+  });
+
+  it("reports holdout, CPCV, bootstrap, drift, and approximate metric fields", () => {
+    const metric = rankFactoryMetrics([robustMetric("reporting")], { bootstrapIterations: 100 })[0];
+    const csv = metricsCsv([metric]);
+    const report = markdownReport({
+      runId: "report-test",
+      startedAt: "2026-06-01T00:00:00.000Z",
+      finishedAt: "2026-06-01T00:01:00.000Z",
+      dataRoot: "data",
+      framesDir: "frames",
+      frameCount: 1,
+      eventCount: 1,
+      algoCount: 1,
+      sweepMode: true,
+      dataQuality: null,
+      metrics: [metric],
+      candidates: [metric],
+    });
+
+    expect(csv).toContain("holdoutPass");
+    expect(csv).toContain("cpcvPositivePathRate");
+    expect(csv).toContain("bootstrapMeanLower");
+    expect(csv).toContain("driftOk");
+    expect(csv).toContain("paperEvidenceStatus");
+    expect(csv).toContain("dsrApprox");
+    expect(csv).toContain("pboApprox");
+    expect(report).toContain("Approximation Notes");
+    expect(Object.prototype.hasOwnProperty.call(metric, "dsrApprox")).toBe(true);
+    expect(Object.prototype.hasOwnProperty.call(metric, "pboApprox")).toBe(true);
+    expect(Object.prototype.hasOwnProperty.call(metric, "dsr")).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(metric, "pbo")).toBe(false);
+  });
 });
 
 function marketEvents() {
@@ -209,6 +428,32 @@ function robustMetric(algoId: string) {
       stress: { totalPnl: 1 },
     },
     foldSummary: { positiveFoldRate: 0.8, foldConsistency: 0.8 },
+    cpcvSummary: { positiveFoldRate: 0.8, medianFoldPnl: 1, foldConsistency: 0.8 },
+    walkForwardPass: true,
+    walkForwardClosed: 20,
+    walkForwardTotalPnl: 1,
+    walkForwardRoi: 0.1,
+    holdoutPass: true,
+    holdoutStrictlyLater: true,
+    holdoutConservativeTotalPnl: 1,
+    holdoutLowerCi: 0.01,
+    holdoutSummary: {
+      holdoutPass: true,
+      holdoutClosed: 20,
+      holdoutMarkets: 20,
+      holdoutConservativeClosed: 20,
+      holdoutConservativeMarkets: 20,
+      holdoutConservativeTotalPnl: 1,
+      holdoutConservativeRoi: 0.1,
+      holdoutLowerCi: 0.01,
+      strictlyLater: true,
+    },
+    paperEvidence: { available: false, status: "missing", closedMarkets: 0, closedTrades: 0, totalPnl: null, roi: null, driftOk: true, driftReasons: [], driftScore: 0 },
+    familyAdjustedPValue: 0.01,
+    globalAdjustedPValue: 0.01,
+    falseDiscoveryRisk: 0.01,
+    adjustedConfidence: 0.8,
+    drift: { driftOk: true, driftReasons: [], driftScore: 0 },
     foldMetrics: [{ closed: 10, totalPnl: 1, roi: 0.1 }],
     closedTrades: Array.from({ length: 100 }, (_, index) => ({
       marketTicker: `m-${index}`,
@@ -221,3 +466,23 @@ function robustMetric(algoId: string) {
   };
 }
 
+function permissivePromotionThresholds() {
+  return {
+    minResearchMarkets: 1,
+    preferredPaperMarkets: 2,
+    minDays: 1,
+    minPositiveFoldRate: 0.5,
+    minConservativeTotalPnl: 0,
+    minExpectancyLowerBound: -1,
+    maxDrawdown: -100,
+    maxConcentrationShare: 1,
+    minAdjustedConfidence: 0,
+    minClosedTrades: 1,
+    minWalkForwardClosed: 1,
+    minCpcvPositivePathRate: 0.5,
+    minHoldoutClosed: 1,
+    minHoldoutMarkets: 1,
+    minHoldoutRoi: 0,
+    minHoldoutExpectancyLowerBound: -1,
+  };
+}

@@ -3173,6 +3173,7 @@ function FactoryArenaView({
       <PanelTitle title="Factory & Arena" icon={<BrainCircuit size={18} />} />
       <div className="factory-grid">
         <FactoryBatchPanel arena={arena} arenaArchives={arenaArchives} asOf={asOf} batches={factoryAlgoBatches} onGenerateFactoryBatch={onGenerateFactoryBatch} savedTradeSummaries={savedTradeSummaries} />
+        <FactoryResearchEvidencePanel latestSweep={latestSweep} />
       </div>
       <TestingArenaView
         arena={arena}
@@ -3300,6 +3301,129 @@ function FactoryBatchPanel({
       <p className="panel-note">Each generation trains on Arena results that match the current testing mode. Older and repeat-buy samples stay visible in Activated Algos but are skipped for parent selection.</p>
     </section>
   );
+}
+
+function FactoryResearchEvidencePanel({ latestSweep }: { latestSweep: LocalFactorySweep | null }) {
+  const rows = useMemo(() => {
+    if (!latestSweep) return [];
+    const byId = new Map<string, LocalFactorySweepCandidate>();
+    for (const candidate of [...latestSweep.topMetrics, ...latestSweep.candidates]) {
+      const current = byId.get(candidate.algoId);
+      byId.set(candidate.algoId, current ? betterSweepCandidate(candidate, current) : candidate);
+    }
+    return bestSweepCandidateByFamily([...byId.values()]).slice(0, 12).map((row) => row.best);
+  }, [latestSweep]);
+  const promotableCount = rows.filter((row) => !row.nonPromotable).length;
+  const holdoutPassCount = rows.filter((row) => row.holdoutPass).length;
+  const driftOkCount = rows.filter((row) => row.paperEvidence.available && row.paperEvidence.driftOk).length;
+  const paperEvidenceCount = rows.filter((row) => row.paperEvidence.available).length;
+
+  return (
+    <section className="panel factory-panel full generated-algos-panel">
+      <div className="panel-heading compact">
+        <div>
+          <h2>Factory Research Evidence</h2>
+          <span className="panel-subtitle">Top family rows ranked by robust validation score</span>
+        </div>
+        <div className="heading-actions">
+          <Badge tone={latestSweep ? "info" : "neutral"}>{latestSweep?.mode ?? "no run"}</Badge>
+          <Badge tone={promotableCount > 0 ? "good" : "neutral"}>{promotableCount} promotable</Badge>
+        </div>
+      </div>
+      {latestSweep && (
+        <div className="stat-row compact">
+          <Stat label="Algos" value={countOrDash(latestSweep.algoCount)} />
+          <Stat label="Families" value={countOrDash(rows.length)} />
+          <Stat label="Holdout Pass" value={`${holdoutPassCount} / ${rows.length}`} tone={holdoutPassCount > 0 ? "positive" : undefined} />
+          <Stat label="Paper Proof" value={`${paperEvidenceCount} / ${rows.length}`} tone={paperEvidenceCount > 0 ? "positive" : undefined} />
+          <Stat label="Drift OK" value={`${driftOkCount} / ${rows.length}`} tone={driftOkCount === rows.length && rows.length > 0 ? "positive" : undefined} />
+        </div>
+      )}
+      <div className="upgrade-table-wrap">
+        <table className="factory-batch-table">
+          <thead>
+            <tr>
+              <th>Algo</th>
+              <th>Verdict</th>
+              <th>Robust</th>
+              <th>Adj Conf</th>
+              <th>WF</th>
+              <th>CPCV</th>
+              <th>Holdout</th>
+              <th>Paper</th>
+              <th>Cost P/L</th>
+              <th>Reasons</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length === 0 ? (
+              <tr>
+                <td className="empty-cell" colSpan={10}>No factory sweep evidence has been loaded yet.</td>
+              </tr>
+            ) : rows.map((row) => {
+              const cpcvPositive = recordNumber(row.cpcvSummary, "positiveFoldRate", 0);
+              const cpcvMedian = recordNumber(row.cpcvSummary, "medianFoldPnl", 0);
+              const reasons = row.reasonCodes.length ? row.reasonCodes.slice(0, 4).join(", ") : "none";
+              return (
+                <tr key={row.algoId}>
+                  <td>
+                    <div className="factory-runtime-cell">
+                      <strong>{shortAlgoName(row.algoName)}</strong>
+                      <span>{familyLabel(row.family)}</span>
+                    </div>
+                  </td>
+                  <td><Badge tone={factoryVerdictTone(row)}>{row.promotionVerdict.replaceAll("_", " ")}</Badge></td>
+                  <td>{row.robustScore.toFixed(1)}</td>
+                  <td>{percent(row.adjustedConfidence)}</td>
+                  <td><Badge tone={row.walkForwardPass ? "good" : "bad"}>{row.walkForwardPass ? "pass" : "fail"}</Badge></td>
+                  <td>
+                    <div className="factory-runtime-cell">
+                      <strong>{percent(cpcvPositive)}</strong>
+                      <span>{signedMoney(cpcvMedian)} median</span>
+                    </div>
+                  </td>
+                  <td>
+                    <div className="factory-runtime-cell">
+                      <Badge tone={row.holdoutPass && row.holdoutStrictlyLater ? "good" : "bad"}>{row.holdoutPass ? "pass" : "fail"}</Badge>
+                      <span>{signedMoney(row.holdoutConservativeTotalPnl)} cons</span>
+                      <span>{row.holdoutLowerCi === null ? "CI -" : `${signedMoney(row.holdoutLowerCi)} CI`}</span>
+                    </div>
+                  </td>
+                  <td>
+                    <div className="factory-runtime-cell">
+                      <Badge tone={!row.paperEvidence.available ? "neutral" : row.paperEvidence.driftOk ? "good" : "warn"}>{row.paperEvidence.available ? row.paperEvidence.status : "missing"}</Badge>
+                      <span>{row.paperEvidence.available ? `${countOrDash(row.paperEvidence.closedMarkets)} markets` : "needs live paper"}</span>
+                      <span>{row.paperEvidence.available && row.paperEvidence.totalPnl !== null ? signedMoney(row.paperEvidence.totalPnl) : ""}</span>
+                    </div>
+                  </td>
+                  <td>
+                    <div className="factory-runtime-cell">
+                      <strong className={row.conservativeTotalPnl >= 0 ? "positive" : "negative"}>{signedMoney(row.conservativeTotalPnl)}</strong>
+                      <span className={row.stressTotalPnl >= 0 ? "positive" : "negative"}>{signedMoney(row.stressTotalPnl)} stress</span>
+                    </div>
+                  </td>
+                  <td>{reasons}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <p className="panel-note">Promotion is blocked unless walk-forward, CPCV consistency, and the strictly later conservative holdout all pass. Real orders remain disabled unless explicitly enabled outside the Factory.</p>
+    </section>
+  );
+}
+
+function factoryVerdictTone(row: LocalFactorySweepCandidate): "info" | "warn" | "good" | "bad" | "neutral" {
+  if (row.promotionVerdict === "tiny_live_eligible" || row.promotionVerdict === "paper_only") return "good";
+  if (row.promotionVerdict === "insufficient_data") return "warn";
+  if (row.promotionVerdict === "reject") return "bad";
+  return "neutral";
+}
+
+function recordNumber(record: Record<string, unknown>, key: string, fallback: number) {
+  const value = record[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
 function TestingArenaView({

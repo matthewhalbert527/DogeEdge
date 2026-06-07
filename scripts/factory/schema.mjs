@@ -63,8 +63,10 @@ export function normalizeDecisionFrame(value, options = {}) {
     : null;
   const marketCloseMs = explicitCloseMs ?? inferredCloseMs;
   if (marketTicker && marketCloseMs === null) errors.push("market close timestamp cannot be inferred");
-  if (featureMs !== null && marketCloseMs !== null && marketCloseMs + 5_000 < featureMs) {
+  if (featureMs !== null && marketCloseMs !== null && marketCloseMs + 5_000 < featureMs && marketLive) {
     errors.push("marketCloseTimestamp is earlier than featureTimestamp");
+  } else if (featureMs !== null && marketCloseMs !== null && marketCloseMs + 5_000 < featureMs) {
+    warnings.push("non-live frame was captured after market close");
   }
 
   const targetPrice = numberOrNull(value.targetPrice);
@@ -149,4 +151,3 @@ function nestedNumberOrNull(value, key) {
 function nullableSpread(ask, bid) {
   return ask === null || bid === null ? null : roundRatio(Math.max(0, ask - bid));
 }
-

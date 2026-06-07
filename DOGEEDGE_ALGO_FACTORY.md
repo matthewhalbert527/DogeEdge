@@ -88,7 +88,7 @@ npm run factory:compare
 npm run factory:promote-check
 ```
 
-`factory:compare` is read-only and compares saved result files. The other commands write normal local backtest outputs and never place orders.
+`factory:validate` runs the full integrity, split, holdout, and reporting pipeline without installing sweep output. `factory:replay-run -- --config <run>\config.json` reruns the saved deterministic config and fails if the decision-frame input manifest no longer matches, unless `--permissive-debug` is explicitly used. `factory:promote-check` emits promotion-ready and non-promotable sets in the saved config and terminal output. `factory:compare` is read-only and compares saved result files. These commands write only local research outputs and never place orders.
 
 Each run writes:
 
@@ -114,24 +114,49 @@ The validation pipeline:
 - splits chronologically by contract/market, not raw frame index;
 - runs purged and embargoed folds so training evidence cannot overlap validation label windows;
 - runs a practical CPCV-style fold approximation for rank-degradation checks;
+- reserves an immutable final holdout made from the latest market events, strictly later than all research, walk-forward, purged, and CPCV windows;
 - simulates fills with ask-side entries, bid-side exits, visible-depth limits, partial fills, stale-quote rejection, queue/fill probability, fees, slippage, and adverse-selection stress;
 - evaluates base, conservative, and stress cost models.
 
 No code can guarantee consistent profitability. The goal is to reduce false positives and keep promoted algos statistically honest, cost-aware, and conservative.
+
+## Final Holdout
+
+The final holdout is not used to choose parameters, build CPCV folds, or compute the walk-forward slice. It is the last event-based slice of the local decision-frame history. Promotion above `research_candidate` requires positive conservative-cost holdout evidence:
+
+- `holdoutPass` must be true;
+- the split must be `strictlyLater`;
+- `holdoutConservativeTotalPnl` must be positive;
+- `holdoutLowerCi` must clear the configured lower-bound threshold;
+- holdout closed trades and independent markets must meet `minHoldoutClosed` and `minHoldoutMarkets`.
+
+If the local dataset is too small, the correct output is `insufficient_data` or `reject`, not a profitable-looking promotion.
 
 ## Ranking And Promotion
 
 Candidates are no longer ranked by ROI alone. Each strategy receives a `robustScore` that includes:
 
 - out-of-sample and purged-fold consistency;
+- walk-forward pass/fail and P/L;
+- CPCV positive-path rate and median out-of-sample P/L;
+- immutable final holdout pass/fail and conservative holdout P/L;
 - conservative/stress cost P/L;
 - drawdown and downside risk;
 - sample size and independent market count;
 - bootstrap confidence intervals;
-- PSR/DSR-style confidence approximations;
-- PBO-style fold degradation approximation;
-- multiple-testing and parameter-complexity penalties;
+- `psr`, `dsrApprox`, and `pboApprox` confidence/degradation fields;
+- family-level and global bootstrap multiple-testing p-value approximations;
 - concentration penalties for one market, day, side, or narrow regime.
+
+`dsrApprox` is PSR minus transparent complexity and multiple-testing penalties. It is not a canonical Deflated Sharpe Ratio. `pboApprox` is the share of validation folds with non-positive out-of-sample P/L/ROI. It is not a full CPCV logit-rank PBO. The names include `Approx` intentionally so reports do not imply exact academic implementations.
+
+Multiple-testing outputs are:
+
+- `familyAdjustedPValue`: centered trade-P/L bootstrap null for the strategy family;
+- `globalAdjustedPValue`: centered trade-P/L bootstrap null across all tested strategies;
+- `falseDiscoveryRisk`: simple combined risk from family/global adjusted p-values.
+
+These approximations are designed to penalize sweep-heavy research. They are conservative controls, not proof of profitability.
 
 Promotion verdicts are:
 
@@ -147,10 +172,25 @@ Suggested conservative defaults currently implemented:
 - at least 50 independent closed markets for research validation;
 - at least 7 represented days when available;
 - at least 70% positive conservative expectancy folds;
+- at least 70% positive CPCV paths;
+- positive walk-forward evidence;
+- positive conservative-cost final holdout evidence;
 - positive conservative-cost P/L;
 - non-negative lower confidence bound for conservative expectancy;
 - concentration warnings/rejections for excessive one-day, one-market, or one-regime P/L;
 - multiple-testing-adjusted confidence required before paper candidacy.
+
+## Paper Evidence And Drift Detection
+
+Holdout evidence and paper evidence are separate. The final holdout proves that a candidate survived a strictly later replay slice. Paper evidence comes from `local-worker\paper-trades.jsonl` after a generated algo runs in the app's paper or dry-live paths. Missing paper evidence keeps the candidate at `paper_only`/validation status and prevents tiny-live eligibility.
+
+Paper/live-paper evidence now has real drift checks. The factory matches generated strategy IDs back to factory algo IDs and compares validation evidence with later paper-style evidence using:
+
+- Page-Hinkley style drift on the P/L stream;
+- regime-share drift, such as a strategy validated mostly in one time-to-close bucket but running in another;
+- fill-quality drift, including closed/open trade rate and slippage-like fields when the paper rows contain them.
+
+The output fields are `paperEvidence`, `driftOk`, `driftReasons`, and `driftScore`. Material drift blocks or demotes promotion evidence. The current paper trade log does not contain a full reject stream, so fill-quality drift is intentionally conservative and documents that limitation in run output.
 
 ## Reproducibility
 
@@ -158,15 +198,36 @@ Each run writes an `experiment-registry.json` with:
 
 - git commit when available;
 - data root and frame path;
+- exact input manifest hash;
+- every input decision-frame file path, byte size, and SHA-256 hash;
 - config hash;
 - strategy family and parameter hashes;
 - trial count;
 - fold definitions;
+- CPCV fold definitions;
+- immutable holdout event IDs;
 - cost/risk model;
 - metrics version;
 - random seed.
 
-Use a saved `config.json` plus the local decision-frame files to rerun the same experiment. Use `npm run factory:compare -- --left <path> --right <path>` to compare two saved JSON outputs and explain major ranking changes.
+Use a saved `config.json` plus the same local decision-frame files to rerun the same experiment. If any input file bytes change, `factory:replay-run` reports an input manifest mismatch and stops by default. Use `npm run factory:compare -- --left <path> --right <path>` to compare two saved JSON outputs and explain major ranking changes.
+
+## Reports And UI
+
+`metrics.json`, `metrics.csv`, `candidates.json`, `candidates.csv`, and `report.md` include the major research evidence:
+
+- walk-forward summary;
+- purged fold summary;
+- CPCV summary;
+- final holdout summary;
+- conservative and stress cost P/L;
+- bootstrap confidence intervals;
+- adjusted p-values and false-discovery risk;
+- `dsrApprox` and `pboApprox`;
+- paper evidence and drift status;
+- rejection reasons and warnings.
+
+The Factory page shows a `Factory Research Evidence` table with top family rows sorted by robust score. Unsafe candidates remain programmatically non-promotable.
 
 ## In-App Promotion
 

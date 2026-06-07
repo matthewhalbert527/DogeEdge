@@ -1,21 +1,21 @@
-import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { hashJson } from "./utils.mjs";
+import { decisionFrameInputManifest } from "./repro.mjs";
 
 const execFileAsync = promisify(execFile);
 
-export async function experimentRegistryEntry({ repoRoot, dataRoot, framesDir, config, algos, folds, costModels, metricsVersion = "robust-v1", seed = "dogeedge" }) {
+export async function experimentRegistryEntry({ repoRoot, dataRoot, framesDir, config, algos, folds, cpcvFolds = [], holdoutSplit = null, costModels, riskModel = defaultRiskModel(), metricsVersion = "robust-v1", seed = "dogeedge" }) {
+  const inputManifest = await decisionFrameInputManifest(framesDir);
   return {
     gitCommit: await gitCommit(repoRoot),
+    codeVersion: await gitCommit(repoRoot),
     dataRoot,
     framesDir,
-    dataHash: hashJson({
-      framesDir,
-      // The full data file hash can be expensive; config and frame count are included in run config.
-      note: "Use rerun config plus local frame files for exact reproduction.",
-    }),
+    inputManifestHash: inputManifest.manifestHash,
+    inputFiles: inputManifest.files,
+    dataHash: inputManifest.manifestHash,
     configHash: hashJson(config),
     trialCount: algos.length,
     families: familyCounts(algos),
@@ -28,11 +28,24 @@ export async function experimentRegistryEntry({ repoRoot, dataRoot, framesDir, c
       embargoedEventIds: fold.embargoedEventIds,
       embargoMs: fold.embargoMs,
     })),
+    cpcvFoldDefinitions: cpcvFolds.map((fold) => ({
+      id: fold.id,
+      trainEventIds: fold.trainEventIds,
+      validationEventIds: fold.validationEventIds,
+      purgedEventIds: fold.purgedEventIds,
+      embargoedEventIds: fold.embargoedEventIds,
+      embargoMs: fold.embargoMs,
+    })),
+    holdoutDefinition: holdoutSplit ? {
+      immutable: holdoutSplit.immutable,
+      strictlyLater: holdoutSplit.strictlyLater,
+      reason: holdoutSplit.reason,
+      latestResearchEnd: holdoutSplit.latestResearchEnd,
+      earliestHoldoutStart: holdoutSplit.earliestHoldoutStart,
+      holdoutEventIds: holdoutSplit.holdoutEventIds,
+    } : null,
     costModel: costModels,
-    riskModel: {
-      maxPerTrade: "reported only; live router keeps separate hard caps",
-      dailyLossStop: "reported only; no live orders enabled by factory",
-    },
+    riskModel,
     metricsVersion,
     randomSeed: seed,
   };
@@ -62,12 +75,24 @@ export async function compareRuns(leftPath, rightPath) {
 }
 
 async function gitCommit(repoRoot) {
-  try {
-    const { stdout } = await execFileAsync("git", ["-C", repoRoot, "rev-parse", "HEAD"], { windowsHide: true });
-    return stdout.trim();
-  } catch {
-    return null;
+  for (const gitBinary of gitCandidates()) {
+    try {
+      const { stdout } = await execFileAsync(gitBinary, ["-C", repoRoot, "rev-parse", "HEAD"], { windowsHide: true });
+      return stdout.trim();
+    } catch {
+      // Try the next common Git location.
+    }
   }
+  return null;
+}
+
+function gitCandidates() {
+  if (process.platform !== "win32") return ["git"];
+  return [
+    "git",
+    "C:\\Program Files\\Git\\cmd\\git.exe",
+    "C:\\Program Files (x86)\\Git\\cmd\\git.exe",
+  ];
 }
 
 async function readJson(file) {
@@ -91,3 +116,16 @@ function explainRankChange(left, right) {
   return reasons.join("; ") || "Tie-break order changed.";
 }
 
+function defaultRiskModel() {
+  return {
+    maxContractsPerTrade: 10,
+    maxCostPerTradeDollars: 5,
+    maxCostPerMarketDollars: 10,
+    maxCostPerStrategyDollars: 25,
+    dailyLossStopDollars: 10,
+    rollingDrawdownKillSwitchDollars: 15,
+    lossStreakCooldownTrades: 3,
+    fractionalKellyCap: 0.02,
+    liveOrdersEnabledByFactory: false,
+  };
+}

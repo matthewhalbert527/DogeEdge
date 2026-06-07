@@ -9,6 +9,12 @@ export const defaultPromotionThresholds = {
   maxConcentrationShare: 0.55,
   minAdjustedConfidence: 0.6,
   minClosedTrades: 20,
+  minWalkForwardClosed: 2,
+  minCpcvPositivePathRate: 0.7,
+  minHoldoutClosed: 10,
+  minHoldoutMarkets: 10,
+  minHoldoutRoi: 0,
+  minHoldoutExpectancyLowerBound: 0,
 };
 
 export function promotionReview(metric, thresholds = defaultPromotionThresholds) {
@@ -20,12 +26,23 @@ export function promotionReview(metric, thresholds = defaultPromotionThresholds)
   const stress = metric.costModels?.stress ?? null;
   const expectancyCi = conservative?.bootstrap?.meanPnl ?? metric.bootstrap?.meanPnl ?? null;
   const fold = metric.foldSummary ?? {};
+  const cpcv = metric.cpcvSummary ?? {};
+  const holdout = metric.holdoutSummary ?? {};
+  const paperEvidence = metric.paperEvidence ?? {};
 
   if (metric.dataQuality?.permissiveDebug) reasonCodes.push("permissive_debug_not_promotable");
   if ((metric.closed ?? 0) < thresholds.minClosedTrades) reasonCodes.push("too_few_closed_trades");
   if (closedMarkets < thresholds.minResearchMarkets) reasonCodes.push("insufficient_independent_markets");
   if (days > 0 && days < thresholds.minDays) reasonCodes.push("insufficient_days");
   if ((fold.positiveFoldRate ?? 0) < thresholds.minPositiveFoldRate) reasonCodes.push("poor_fold_consistency");
+  if ((cpcv.positiveFoldRate ?? 0) < thresholds.minCpcvPositivePathRate) reasonCodes.push("poor_cpcv_consistency");
+  if (!metric.walkForwardPass || (metric.walkForwardClosed ?? 0) < thresholds.minWalkForwardClosed) reasonCodes.push("walk_forward_failed");
+  if (holdout.strictlyLater === false || metric.holdoutStrictlyLater === false) reasonCodes.push("holdout_not_strictly_later");
+  if (!holdout.holdoutPass) reasonCodes.push("holdout_failed");
+  if ((holdout.holdoutConservativeClosed ?? 0) < thresholds.minHoldoutClosed) reasonCodes.push("insufficient_holdout_closed");
+  if ((holdout.holdoutConservativeMarkets ?? 0) < thresholds.minHoldoutMarkets) reasonCodes.push("insufficient_holdout_markets");
+  if ((holdout.holdoutConservativeRoi ?? 0) < thresholds.minHoldoutRoi) reasonCodes.push("holdout_roi_too_low");
+  if (holdout.holdoutLowerCi !== null && holdout.holdoutLowerCi < thresholds.minHoldoutExpectancyLowerBound) reasonCodes.push("holdout_expectancy_ci_below_zero");
   if (!conservative || conservative.totalPnl <= thresholds.minConservativeTotalPnl) reasonCodes.push("fails_conservative_costs");
   if (stress && stress.totalPnl <= 0) warnings.push("fails_stress_costs");
   if (expectancyCi?.lower !== null && expectancyCi?.lower < thresholds.minExpectancyLowerBound) reasonCodes.push("expectancy_ci_below_zero");
@@ -34,6 +51,10 @@ export function promotionReview(metric, thresholds = defaultPromotionThresholds)
   if ((metric.concentration?.maxDayShare ?? 0) > thresholds.maxConcentrationShare) reasonCodes.push("day_concentration");
   if ((metric.concentration?.maxRegimeShare ?? 0) > thresholds.maxConcentrationShare) warnings.push("narrow_regime");
   if ((metric.adjustedConfidence ?? 0) < thresholds.minAdjustedConfidence) reasonCodes.push("multiple_testing_adjusted_confidence_low");
+  if ((metric.familyAdjustedPValue ?? 1) > 0.2) reasonCodes.push("family_adjusted_p_value_too_high");
+  if ((metric.globalAdjustedPValue ?? 1) > 0.35) reasonCodes.push("global_adjusted_p_value_too_high");
+  if ((metric.falseDiscoveryRisk ?? 1) > 0.35) reasonCodes.push("false_discovery_risk_too_high");
+  if (paperEvidence.closedMarkets > 0 && !paperEvidence.driftOk) reasonCodes.push("paper_evidence_drift");
   if ((metric.totalPnl ?? 0) <= 0) reasonCodes.push("non_positive_full_sample_pnl");
 
   if (closedMarkets < thresholds.minResearchMarkets) {
@@ -42,7 +63,7 @@ export function promotionReview(metric, thresholds = defaultPromotionThresholds)
   if (reasonCodes.length) {
     return verdict("reject", "research_candidate", reasonCodes, warnings, true);
   }
-  if ((metric.paperEvidence?.closedMarkets ?? 0) >= thresholds.preferredPaperMarkets && metric.paperEvidence?.driftOk) {
+  if ((paperEvidence.closedMarkets ?? 0) >= thresholds.preferredPaperMarkets && paperEvidence.driftOk) {
     return verdict("tiny_live_eligible", "tiny_live_eligible", ["manual_approval_required", "live_disabled_by_default"], warnings, false);
   }
   return verdict("paper_only", "validation_candidate", ["paper_evidence_required"], warnings, false);
@@ -57,4 +78,3 @@ function verdict(promotionVerdict, promotionStage, reasonCodes, warnings, nonPro
     nonPromotable,
   };
 }
-

@@ -116,16 +116,45 @@ export interface LocalFactorySweepCandidate {
   stressTotalPnl: number;
   foldConsistency: number;
   psr: number;
-  dsr: number;
-  pbo: number;
+  dsrApprox: number;
+  pboApprox: number;
+  familyAdjustedPValue: number;
+  globalAdjustedPValue: number;
+  falseDiscoveryRisk: number;
   adjustedConfidence: number;
   costModels: Record<string, unknown>;
   foldSummary: Record<string, unknown>;
+  cpcvSummary: Record<string, unknown>;
+  walkForwardSummary: Record<string, unknown>;
+  holdoutSummary: Record<string, unknown>;
+  holdoutPass: boolean;
+  holdoutStrictlyLater: boolean;
+  holdoutClosed: number;
+  holdoutTotalPnl: number;
+  holdoutRoi: number;
+  holdoutConservativeTotalPnl: number;
+  holdoutLowerCi: number | null;
+  drift: {
+    driftOk: boolean;
+    driftReasons: string[];
+    driftScore: number;
+  };
+  paperEvidence: {
+    available: boolean;
+    status: string;
+    closedMarkets: number;
+    closedTrades: number;
+    totalPnl: number | null;
+    roi: number | null;
+    driftOk: boolean;
+    driftReasons: string[];
+    driftScore: number;
+  };
 }
 
 export interface LocalFactorySweep {
   runId: string;
-  mode: "sweep" | "deep-sweep";
+  mode: "default" | "sweep" | "deep-sweep" | "validate" | "replay-run" | "promote-check";
   runDir: string;
   finishedAt: string;
   dataRoot: string;
@@ -370,11 +399,52 @@ function normalizeSweepCandidate(value: unknown): LocalFactorySweepCandidate | n
     stressTotalPnl: numberOrDefault(value.stressTotalPnl, isRecord(value.costModels) && isRecord(value.costModels.stress) ? numberOrDefault(value.costModels.stress.totalPnl, 0) : 0),
     foldConsistency: isRecord(value.foldSummary) ? numberOrDefault(value.foldSummary.foldConsistency, numberOrDefault(value.foldSummary.positiveFoldRate, 0)) : 0,
     psr: numberOrDefault(value.psr, 0),
-    dsr: numberOrDefault(value.dsr, 0),
-    pbo: numberOrDefault(value.pbo, 1),
+    dsrApprox: numberOrDefault(value.dsrApprox, numberOrDefault(value.dsr, 0)),
+    pboApprox: numberOrDefault(value.pboApprox, numberOrDefault(value.pbo, 1)),
+    familyAdjustedPValue: numberOrDefault(value.familyAdjustedPValue, 1),
+    globalAdjustedPValue: numberOrDefault(value.globalAdjustedPValue, 1),
+    falseDiscoveryRisk: numberOrDefault(value.falseDiscoveryRisk, 1),
     adjustedConfidence: numberOrDefault(value.adjustedConfidence, 0),
     costModels: isRecord(value.costModels) ? { ...value.costModels } : {},
     foldSummary: isRecord(value.foldSummary) ? { ...value.foldSummary } : {},
+    cpcvSummary: isRecord(value.cpcvSummary) ? { ...value.cpcvSummary } : {},
+    walkForwardSummary: isRecord(value.walkForwardSummary) ? { ...value.walkForwardSummary } : {},
+    holdoutSummary: isRecord(value.holdoutSummary) ? { ...value.holdoutSummary } : {},
+    holdoutPass: Boolean(value.holdoutPass),
+    holdoutStrictlyLater: typeof value.holdoutStrictlyLater === "boolean" ? value.holdoutStrictlyLater : true,
+    holdoutClosed: numberOrDefault(value.holdoutClosed, 0),
+    holdoutTotalPnl: numberOrDefault(value.holdoutTotalPnl, 0),
+    holdoutRoi: numberOrDefault(value.holdoutRoi, 0),
+    holdoutConservativeTotalPnl: numberOrDefault(value.holdoutConservativeTotalPnl, 0),
+    holdoutLowerCi: numberOrNull(value.holdoutLowerCi),
+    drift: normalizeFactoryDrift(value.drift),
+    paperEvidence: normalizeFactoryPaperEvidence(value.paperEvidence),
+  };
+}
+
+function normalizeFactoryDrift(value: unknown): LocalFactorySweepCandidate["drift"] {
+  if (!isRecord(value)) return { driftOk: true, driftReasons: [], driftScore: 0 };
+  return {
+    driftOk: typeof value.driftOk === "boolean" ? value.driftOk : true,
+    driftReasons: Array.isArray(value.driftReasons) ? value.driftReasons.filter((item): item is string => typeof item === "string") : [],
+    driftScore: numberOrDefault(value.driftScore, 0),
+  };
+}
+
+function normalizeFactoryPaperEvidence(value: unknown): LocalFactorySweepCandidate["paperEvidence"] {
+  if (!isRecord(value)) {
+    return { available: false, status: "missing", closedMarkets: 0, closedTrades: 0, totalPnl: null, roi: null, driftOk: true, driftReasons: [], driftScore: 0 };
+  }
+  return {
+    available: Boolean(value.available),
+    status: stringOrDefault(value.status, "missing"),
+    closedMarkets: numberOrDefault(value.closedMarkets, 0),
+    closedTrades: numberOrDefault(value.closedTrades, 0),
+    totalPnl: numberOrNull(value.totalPnl),
+    roi: numberOrNull(value.roi),
+    driftOk: typeof value.driftOk === "boolean" ? value.driftOk : true,
+    driftReasons: Array.isArray(value.driftReasons) ? value.driftReasons.filter((item): item is string => typeof item === "string") : [],
+    driftScore: numberOrDefault(value.driftScore, 0),
   };
 }
 
@@ -412,7 +482,8 @@ function stringOrDefault(value: unknown, fallback: string) {
 }
 
 function normalizeSweepMode(value: unknown): LocalFactorySweep["mode"] {
-  return value === "deep-sweep" ? "deep-sweep" : "sweep";
+  if (value === "default" || value === "deep-sweep" || value === "validate" || value === "replay-run" || value === "promote-check") return value;
+  return "sweep";
 }
 
 function numberOrDefault(value: unknown, fallback: number) {

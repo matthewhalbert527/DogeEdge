@@ -1,33 +1,50 @@
-import { access, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { readFactoryDecisionFrames } from "./factory/data.mjs";
 import { runFactoryResearchPipeline } from "./factory/pipeline.mjs";
 import { metricsCsv as robustMetricsCsv, markdownReport as robustMarkdownReport } from "./factory/reporting.mjs";
 import { experimentRegistryEntry, compareRuns } from "./factory/registry.mjs";
+import { assertReplayInputManifest } from "./factory/repro.mjs";
+import { readPaperEvidence } from "./factory/paper-evidence.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const args = parseArgs(process.argv.slice(2));
-const dataRoot = path.resolve(args["data-root"] ?? process.env.DOGEEDGE_DATA_ROOT ?? await defaultDataRoot());
-const framesDir = path.resolve(args.frames ?? path.join(dataRoot, "features", "decision-frames"));
+const validateMode = Boolean(args.validate);
+const replayRunMode = Boolean(args["replay-run"]);
+const promoteCheckMode = Boolean(args["promote-check"]);
+const replayConfig = replayRunMode && typeof args.config === "string" ? await readReplayConfig(args.config) : null;
+const dataRoot = path.resolve(args["data-root"] ?? replayConfig?.dataRoot ?? process.env.DOGEEDGE_DATA_ROOT ?? await defaultDataRoot());
+const framesDir = path.resolve(args.frames ?? replayConfig?.framesDir ?? path.join(dataRoot, "features", "decision-frames"));
 const backtestsDir = path.resolve(args.out ?? path.join(dataRoot, "backtests"));
 const algosDir = path.resolve(process.env.DOGEEDGE_ALGOS_DIR ?? path.join(path.dirname(dataRoot), "algos"));
+const paperDataDir = path.resolve(args["paper-data"] ?? process.env.DOGEEDGE_DATA_DIR ?? path.join(dataRoot, "local-worker"));
 const runId = args["run-id"] ?? new Date().toISOString().replaceAll(":", "-").replace(/\.\d{3}Z$/, "Z");
 const sweepMode = Boolean(args.sweep);
 const deepSweepMode = sweepMode && Boolean(args.deep);
-const modeLabel = sweepMode ? deepSweepMode ? "deep-sweep" : "sweep" : "default";
+const modeLabel = replayRunMode ? "replay-run" : validateMode ? "validate" : promoteCheckMode ? "promote-check" : sweepMode ? deepSweepMode ? "deep-sweep" : "sweep" : "default";
 const runDir = path.join(backtestsDir, sweepMode ? "sweeps" : "runs", runId);
 const selectedAlgoIds = args.algo ? new Set(String(args.algo).split(",").map((item) => item.trim()).filter(Boolean)) : null;
-const since = typeof args.since === "string" ? Date.parse(args.since) : null;
-const until = typeof args.until === "string" ? Date.parse(args.until) : null;
-const minCandidateClosed = Math.max(1, Number(args["min-closed"] ?? 3));
-const walkForwardRatio = clamp(Number(args["walk-forward-ratio"] ?? 0.3), 0.1, 0.5);
-const minWalkForwardClosed = Math.max(1, Number(args["min-walk-closed"] ?? 2));
+const sinceArg = args.since ?? replayConfig?.since ?? null;
+const untilArg = args.until ?? replayConfig?.until ?? null;
+const since = typeof sinceArg === "string" ? Date.parse(sinceArg) : null;
+const until = typeof untilArg === "string" ? Date.parse(untilArg) : null;
+const minCandidateClosed = Math.max(1, Number(args["min-closed"] ?? replayConfig?.minCandidateClosed ?? 3));
+const walkForwardRatio = clamp(Number(args["walk-forward-ratio"] ?? replayConfig?.walkForwardRatio ?? 0.3), 0.1, 0.5);
+const minWalkForwardClosed = Math.max(1, Number(args["min-walk-closed"] ?? replayConfig?.minWalkForwardClosed ?? 2));
 const permissiveDebug = Boolean(args["permissive-debug"]);
-const randomSeed = String(args.seed ?? "dogeedge-factory-v1");
-const embargoMs = Math.max(0, Number(args["embargo-ms"] ?? 15 * 60_000));
-const foldCount = Math.max(2, Number(args.folds ?? 5));
-const bootstrapIterations = Math.max(100, Number(args["bootstrap-iterations"] ?? 400));
+const randomSeed = String(args.seed ?? replayConfig?.randomSeed ?? "dogeedge-factory-v1");
+const embargoMs = Math.max(0, Number(args["embargo-ms"] ?? replayConfig?.embargoMs ?? 15 * 60_000));
+const foldCount = Math.max(2, Number(args.folds ?? replayConfig?.foldCount ?? 5));
+const bootstrapIterations = Math.max(100, Number(args["bootstrap-iterations"] ?? replayConfig?.bootstrapIterations ?? 400));
+const thresholds = {
+  minClosedTrades: Math.max(20, minCandidateClosed),
+  minWalkForwardClosed: Math.max(2, minWalkForwardClosed),
+  minHoldoutClosed: Math.max(5, Number(args["min-holdout-closed"] ?? replayConfig?.thresholds?.minHoldoutClosed ?? 10)),
+  minHoldoutMarkets: Math.max(5, Number(args["min-holdout-markets"] ?? replayConfig?.thresholds?.minHoldoutMarkets ?? 10)),
+  minHoldoutRoi: Number(args["min-holdout-roi"] ?? replayConfig?.thresholds?.minHoldoutRoi ?? 0),
+  minHoldoutExpectancyLowerBound: Number(args["min-holdout-lower-ci"] ?? replayConfig?.thresholds?.minHoldoutExpectancyLowerBound ?? 0),
+};
 
 if (args.compare) {
   const [leftPath, rightPath] = await comparePaths(backtestsDir, args);
@@ -59,6 +76,14 @@ await writeJsonIfMissing(path.join(algosDir, "registry.json"), {
 });
 
 const startedAt = new Date().toISOString();
+const replayManifestCheck = replayRunMode && replayConfig
+  ? await assertReplayInputManifest(framesDir, replayConfig.registry, { permissiveDebug })
+  : null;
+const paperEvidence = await readPaperEvidence({
+  storageDir: paperDataDir,
+  since,
+  until,
+});
 const loadResult = await readFactoryDecisionFrames(framesDir, { permissiveDebug });
 const pipeline = runFactoryResearchPipeline({
   algos,
@@ -74,6 +99,8 @@ const pipeline = runFactoryResearchPipeline({
     testRatio: walkForwardRatio,
     minCandidateClosed,
     minWalkForwardClosed,
+    thresholds,
+    paperEvidence,
   },
 });
 const filteredFrames = pipeline.frames;
@@ -88,8 +115,8 @@ const registry = await experimentRegistryEntry({
   config: {
     runId,
     mode: modeLabel,
-    since: args.since ?? null,
-    until: args.until ?? null,
+    since: sinceArg,
+    until: untilArg,
     permissiveDebug,
     randomSeed,
     embargoMs,
@@ -98,9 +125,16 @@ const registry = await experimentRegistryEntry({
     walkForwardRatio,
     minCandidateClosed,
     minWalkForwardClosed,
+    thresholds,
+    paperDataDir,
+    paperEvidence: paperEvidence.summary,
+    replayManifestCheck,
+    replayConfigHash: replayConfig?.registry?.configHash ?? null,
   },
   algos,
   folds: pipeline.purgedFolds,
+  cpcvFolds: pipeline.cpcvFolds,
+  holdoutSplit: pipeline.holdoutSplit,
   costModels: pipeline.costModels,
   seed: randomSeed,
 });
@@ -112,7 +146,9 @@ await writeFile(path.join(runDir, "config.json"), `${JSON.stringify({
   finishedAt,
   dataRoot,
   framesDir,
+  paperDataDir,
   dataQuality: pipeline.dataQuality,
+  paperEvidence: paperEvidence.summary,
   eventCount: pipeline.events.length,
   frameCount: filteredFrames.length,
   walkForwardFrameCount: pipeline.split.testEventIds.length,
@@ -121,12 +157,20 @@ await writeFile(path.join(runDir, "config.json"), `${JSON.stringify({
   deepSweepMode,
   minCandidateClosed,
   minWalkForwardClosed,
+  thresholds,
+  validateMode,
+  replayRunMode,
+  promoteCheckMode,
+  replayConfigPath: replayRunMode ? args.config ?? null : null,
+  replayConfigHash: replayConfig?.registry?.configHash ?? null,
+  replayManifestCheck,
   permissiveDebug,
   randomSeed,
   embargoMs,
   foldCount,
   bootstrapIterations,
   registry,
+  promoteCheck: promoteCheckSummary(metrics, candidates),
   split: pipeline.split,
   purgedFolds: pipeline.purgedFolds.map((fold) => ({
     id: fold.id,
@@ -136,8 +180,24 @@ await writeFile(path.join(runDir, "config.json"), `${JSON.stringify({
     embargoedEventCount: fold.embargoedEventIds.length,
     embargoMs: fold.embargoMs,
   })),
-  since: args.since ?? null,
-  until: args.until ?? null,
+  cpcvFolds: pipeline.cpcvFolds.map((fold) => ({
+    id: fold.id,
+    trainEventCount: fold.trainEventIds.length,
+    validationEventCount: fold.validationEventIds.length,
+    purgedEventCount: fold.purgedEventIds.length,
+    embargoedEventCount: fold.embargoedEventIds.length,
+    embargoMs: fold.embargoMs,
+  })),
+  holdout: {
+    immutable: pipeline.holdoutSplit.immutable,
+    strictlyLater: pipeline.holdoutSplit.strictlyLater,
+    reason: pipeline.holdoutSplit.reason,
+    latestResearchEnd: pipeline.holdoutSplit.latestResearchEnd,
+    earliestHoldoutStart: pipeline.holdoutSplit.earliestHoldoutStart,
+    holdoutEventIds: pipeline.holdoutSplit.holdoutEventIds,
+  },
+  since: sinceArg,
+  until: untilArg,
   algos: algos.map(({ signal: _signal, ...algo }) => algo),
 }, null, 2)}\n`);
 await writeFile(path.join(runDir, "metrics.json"), `${JSON.stringify(metrics, null, 2)}\n`);
@@ -153,7 +213,9 @@ await writeFile(path.join(backtestsDir, "latest.json"), `${JSON.stringify({
   runDir,
   finishedAt,
   dataRoot,
+  paperDataDir,
   dataQuality: pipeline.dataQuality,
+  paperEvidence: paperEvidence.summary,
   eventCount: pipeline.events.length,
   frameCount: filteredFrames.length,
   walkForwardFrameCount: pipeline.split.testEventIds.length,
@@ -165,6 +227,8 @@ await writeFile(path.join(backtestsDir, "latest.json"), `${JSON.stringify({
   embargoMs,
   foldCount,
   registry,
+  replayManifestCheck,
+  promoteCheck: promoteCheckSummary(metrics, candidates),
   metrics,
   candidates,
 }, null, 2)}\n`);
@@ -175,7 +239,9 @@ if (sweepMode) {
     runDir,
     finishedAt,
     dataRoot,
+    paperDataDir,
     dataQuality: pipeline.dataQuality,
+    paperEvidence: paperEvidence.summary,
     eventCount: pipeline.events.length,
     frameCount: filteredFrames.length,
     walkForwardFrameCount: pipeline.split.testEventIds.length,
@@ -189,12 +255,20 @@ if (sweepMode) {
     embargoMs,
     foldCount,
     registry,
+    replayManifestCheck,
+    promoteCheck: promoteCheckSummary(metrics, candidates),
     candidates,
     topMetrics: metrics.slice(0, 50),
   }, null, 2)}\n`);
 }
 
 console.log(`DogeEdge ${sweepMode ? deepSweepMode ? "deep sweep" : "sweep" : "backtest"} complete`);
+if (validateMode) console.log(`Validation mode: integrity, split, holdout, and report checks completed`);
+if (replayRunMode) console.log(`Replay-run mode: ${replayConfig ? `loaded saved config hash ${replayConfig.registry?.configHash ?? "unknown"}; input manifest ${replayManifestCheck?.matches ? "matched" : "not checked"}` : "no saved config supplied; ran deterministic replay defaults"}`);
+if (promoteCheckMode) {
+  const summary = promoteCheckSummary(metrics, candidates);
+  console.log(`Promotion check: ${summary.promotionReady.length} ready, ${summary.nonPromotable.length} non-promotable`);
+}
 console.log(`Frames: ${filteredFrames.length}`);
 console.log(`Market events: ${pipeline.events.length}`);
 console.log(`Algos: ${algos.length}`);
@@ -244,72 +318,29 @@ async function comparePaths(baseDir, parsedArgs) {
   }
 }
 
-async function readDecisionFrames(baseDir) {
-  const files = await listFiles(baseDir);
-  const jsonlFiles = files.filter((file) => file.endsWith(".jsonl"));
-  const frames = [];
-  for (const file of jsonlFiles) {
-    const text = await readFile(file, "utf8");
-    for (const line of text.split(/\r?\n/)) {
-      if (!line.trim()) continue;
-      try {
-        const parsed = JSON.parse(line);
-        const frame = normalizeFrame(parsed);
-        if (frame) frames.push(frame);
-      } catch {
-        // Skip malformed rows so one partial write does not poison the whole run.
-      }
-    }
-  }
-  return frames;
+async function readReplayConfig(configPath) {
+  const resolved = path.resolve(configPath);
+  return JSON.parse(await readFile(resolved, "utf8"));
 }
 
-async function listFiles(dir) {
-  try {
-    const entries = await readdir(dir, { withFileTypes: true });
-    const nested = await Promise.all(entries.map(async (entry) => {
-      const fullPath = path.join(dir, entry.name);
-      return entry.isDirectory() ? listFiles(fullPath) : [fullPath];
-    }));
-    return nested.flat();
-  } catch {
-    return [];
-  }
-}
-
-function normalizeFrame(value) {
-  if (!value || typeof value !== "object") return null;
-  const observedAt = stringOrNull(value.observedAt) ?? stringOrNull(value.capturedAt);
-  if (!observedAt || !Number.isFinite(Date.parse(observedAt))) return null;
+function promoteCheckSummary(metrics, candidates) {
+  const candidateIds = new Set(candidates.map((candidate) => candidate.algoId));
   return {
-    id: stringOrNull(value.id) ?? `${value.marketTicker ?? "NO_MARKET"}:${Date.parse(observedAt)}`,
-    capturedAt: stringOrNull(value.capturedAt) ?? observedAt,
-    observedAt,
-    marketLive: Boolean(value.marketLive),
-    marketTicker: stringOrNull(value.marketTicker),
-    marketTitle: stringOrNull(value.marketTitle),
-    targetPrice: numberOrNull(value.targetPrice),
-    estimate: numberOrNull(value.estimate),
-    spotPrice: numberOrNull(value.spotPrice),
-    oneMinuteChange: numberOrDefault(value.oneMinuteChange, 0),
-    oneMinuteMovePercent: numberOrDefault(value.oneMinuteMovePercent, 0),
-    distanceFromTarget: numberOrNull(value.distanceFromTarget),
-    secondsToClose: numberOrDefault(value.secondsToClose, 900),
-    fairProbability: numberOrDefault(value.fairProbability, 0.5),
-    modelAction: stringOrNull(value.modelAction) ?? "skip",
-    modelConfidence: numberOrDefault(value.modelConfidence, 0),
-    modelEdgeAfterFees: numberOrDefault(value.modelEdgeAfterFees, 0),
-    modelSizeContracts: numberOrDefault(value.modelSizeContracts, 1),
-    yesAsk: numberOrNull(value.yesAsk),
-    noAsk: numberOrNull(value.noAsk),
-    yesBid: numberOrNull(value.yesBid),
-    noBid: numberOrNull(value.noBid),
-    yesSpread: numberOrNull(value.yesSpread),
-    noSpread: numberOrNull(value.noSpread),
-    yesBidDepth: nestedNumberOrNull(value.yesTopDepth, "bidSize"),
-    yesAskDepth: nestedNumberOrNull(value.yesTopDepth, "askSize"),
-    noBidDepth: nestedNumberOrNull(value.noTopDepth, "bidSize"),
-    noAskDepth: nestedNumberOrNull(value.noTopDepth, "askSize"),
+    promotionReady: candidates.map((candidate) => ({
+      algoId: candidate.algoId,
+      algoName: candidate.algoName,
+      verdict: candidate.promotionVerdict,
+      robustScore: candidate.robustScore,
+    })),
+    nonPromotable: metrics
+      .filter((metric) => !candidateIds.has(metric.algoId))
+      .slice(0, 200)
+      .map((metric) => ({
+        algoId: metric.algoId,
+        algoName: metric.algoName,
+        verdict: metric.promotionVerdict,
+        reasonCodes: metric.reasonCodes ?? [],
+      })),
   };
 }
 
@@ -914,93 +945,6 @@ function dualYesNoSweep() {
   return algos;
 }
 
-function runBacktest(algo, frames, walkForwardFrames = []) {
-  const trades = runTrades(algo, frames);
-  const walkForwardTrades = walkForwardFrames.length ? runTrades(algo, walkForwardFrames) : [];
-  return {
-    algo,
-    trades,
-    metrics: {
-      ...metricsFor(algo, trades),
-      ...walkForwardMetricFields(metricsFor(algo, walkForwardTrades)),
-    },
-  };
-}
-
-function runTrades(algo, frames) {
-  const trades = [];
-  let openTrade = null;
-
-  for (const frame of frames) {
-    if (!frame.marketLive || !frame.marketTicker || frame.estimate === null || frame.targetPrice === null) continue;
-    const currentSignal = algo.signal(frame);
-    let managedClosedThisFrame = false;
-
-    if (openTrade) {
-      if (openTrade.marketTicker !== frame.marketTicker) {
-        trades.push(closeBySettlement(openTrade, openTrade.lastFrame ?? frame, "Contract rolled to a new ticker."));
-        openTrade = null;
-      } else {
-        openTrade.lastFrame = frame;
-        const exitDecision = typeof algo.exit === "function" ? algo.exit(openTrade, frame, currentSignal) : null;
-        const ageMs = Date.parse(frame.observedAt) - Date.parse(openTrade.openedAt);
-        const shouldFlip = currentSignal.side
-          && currentSignal.side !== openTrade.side
-          && currentSignal.edgeAfterFees > 0
-          && ageMs >= 10_000;
-        if (exitDecision) {
-          trades.push(closeByPrice(openTrade, frame, exitDecision.price, exitDecision.reason));
-          openTrade = null;
-          managedClosedThisFrame = true;
-        } else if (shouldFlip) {
-          trades.push(closeByPrice(openTrade, frame, bidForSide(openTrade.side, frame, currentSignal), "Algo flipped to the opposite side."));
-          openTrade = null;
-        } else if (frame.secondsToClose <= 2) {
-          trades.push(closeBySettlement(openTrade, frame, "Contract reached the close window."));
-          openTrade = null;
-        }
-      }
-    }
-
-    if (!openTrade && !managedClosedThisFrame && currentSignal.side && currentSignal.edgeAfterFees > 0 && frame.secondsToClose > 8) {
-      const ask = askForSide(currentSignal.side, frame);
-      const maxAsk = currentSignal.side === "BOTH" ? 1.1 : 1;
-      if (ask !== null && ask > 0 && ask < maxAsk) {
-        openTrade = {
-          id: `${algo.id}-${frame.marketTicker}-${currentSignal.side}-${Date.parse(frame.observedAt)}`,
-          marketTicker: frame.marketTicker,
-          marketTitle: frame.marketTitle,
-          side: currentSignal.side,
-          contracts: Math.max(1, Math.floor(currentSignal.contracts || 1)),
-          entryPrice: roundPrice(ask),
-          exitPrice: null,
-          targetPrice: frame.targetPrice,
-          openedAt: frame.observedAt,
-          closedAt: null,
-          status: "open",
-          result: "-",
-          pnl: null,
-          entryFrameId: frame.id,
-          exitFrameId: null,
-          entryContext: tradeContext(frame, currentSignal, currentSignal.side),
-          exitContext: null,
-          lastFrame: frame,
-          reason: currentSignal.reason,
-        };
-      }
-    }
-  }
-
-  if (openTrade) {
-    trades.push({
-      ...openTrade,
-      lastFrame: undefined,
-    });
-  }
-
-  return trades;
-}
-
 function thresholdDistanceSignal(minDistance) {
   return (frame) => {
     const estimate = frame.estimate ?? 0;
@@ -1072,189 +1016,6 @@ function sideCandidate(side, frame, feeBuffer) {
     edge,
     confidence,
   };
-}
-
-function closeBySettlement(trade, frame, reason) {
-  if (trade.side === "BOTH") return closeByPrice(trade, frame, 1, reason);
-  const yesWon = (frame.estimate ?? trade.entryContext.estimate) >= trade.targetPrice;
-  const sideWon = trade.side === "YES" ? yesWon : !yesWon;
-  return closeByPrice(trade, frame, sideWon ? 1 : 0, reason);
-}
-
-function closeByPrice(trade, frame, exitPrice, reason) {
-  const pnl = roundMoney((exitPrice - trade.entryPrice) * trade.contracts);
-  return {
-    ...trade,
-    exitPrice: roundPrice(exitPrice),
-    closedAt: frame.observedAt,
-    status: "closed",
-    result: pnl > 0 ? "Win" : "Loss",
-    pnl,
-    exitFrameId: frame.id,
-    exitContext: tradeContext(frame, {
-      fairProbability: trade.entryContext.fairProbability,
-      edgeAfterFees: trade.entryContext.edgeAfterFees,
-      confidence: trade.entryContext.confidence,
-    }, trade.side),
-    lastFrame: undefined,
-    reason,
-  };
-}
-
-function tradeContext(frame, currentSignal, side) {
-  const selectedAsk = askForSide(side, frame);
-  const selectedBid = bidValueForSide(side, frame);
-  return {
-    observedAt: frame.observedAt,
-    side,
-    targetPrice: frame.targetPrice,
-    estimate: frame.estimate,
-    spotPrice: frame.spotPrice,
-    oneMinuteChange: frame.oneMinuteChange,
-    oneMinuteMovePercent: frame.oneMinuteMovePercent,
-    distanceFromTarget: frame.distanceFromTarget,
-    fairProbability: roundRatio(currentSignal.fairProbability),
-    edgeAfterFees: roundRatio(currentSignal.edgeAfterFees),
-    confidence: currentSignal.confidence,
-    secondsToClose: frame.secondsToClose,
-    yesAsk: frame.yesAsk,
-    noAsk: frame.noAsk,
-    yesBid: frame.yesBid,
-    noBid: frame.noBid,
-    selectedAsk,
-    selectedBid,
-    selectedSpread: nullableSpread(selectedAsk, selectedBid),
-    yesSpread: spreadForSide("YES", frame, null),
-    noSpread: spreadForSide("NO", frame, null),
-  };
-}
-
-function metricsFor(algo, trades) {
-  const closed = trades.filter((trade) => trade.status === "closed" && typeof trade.pnl === "number");
-  const wins = closed.filter((trade) => trade.pnl > 0).length;
-  const losses = closed.filter((trade) => trade.pnl < 0).length;
-  const totalPnl = roundMoney(closed.reduce((total, trade) => total + trade.pnl, 0));
-  const totalCost = roundMoney(closed.reduce((total, trade) => total + trade.entryPrice * trade.contracts, 0));
-  const equity = [];
-  let running = 0;
-  for (const trade of closed.sort((left, right) => Date.parse(left.closedAt) - Date.parse(right.closedAt))) {
-    running = roundMoney(running + trade.pnl);
-    equity.push(running);
-  }
-  return {
-    algoId: algo.id,
-    algoName: algo.name,
-    family: algo.family,
-    params: algo.params ?? {},
-    closed: closed.length,
-    open: trades.filter((trade) => trade.status === "open").length,
-    wins,
-    losses,
-    winRate: closed.length ? roundRatio(wins / closed.length) : null,
-    averagePnl: closed.length ? roundMoney(totalPnl / closed.length) : null,
-    totalPnl,
-    totalCost,
-    roi: totalCost > 0 ? roundRatio(totalPnl / totalCost) : 0,
-    maxDrawdown: maxDrawdown(equity),
-    averageEntryEdge: average(closed.map((trade) => trade.entryContext.edgeAfterFees)),
-    averageEntrySpread: average(closed.map((trade) => trade.entryContext.selectedSpread).filter((value) => typeof value === "number")),
-    averageSecondsToClose: average(closed.map((trade) => trade.entryContext.secondsToClose)),
-  };
-}
-
-function walkForwardMetricFields(metric) {
-  return {
-    walkForwardClosed: metric.closed,
-    walkForwardWins: metric.wins,
-    walkForwardLosses: metric.losses,
-    walkForwardWinRate: metric.winRate,
-    walkForwardTotalPnl: metric.totalPnl,
-    walkForwardTotalCost: metric.totalCost,
-    walkForwardRoi: metric.roi,
-    walkForwardMaxDrawdown: metric.maxDrawdown,
-  };
-}
-
-function candidateMetrics(metrics, minClosed, minWalkClosed) {
-  return metrics
-    .filter((metric) => metric.closed >= minClosed && metric.totalPnl > 0 && metric.roi > 0 && walkForwardPasses(metric, minWalkClosed))
-    .map((metric) => ({
-      ...metric,
-      walkForwardPass: true,
-      candidateScore: candidateScore(metric),
-    }))
-    .sort((left, right) => right.candidateScore - left.candidateScore || right.totalPnl - left.totalPnl || right.closed - left.closed);
-}
-
-function walkForwardPasses(metric, minWalkClosed) {
-  const requiredClosed = metric.family === "sweep-managed-scalp" ? Math.max(5, minWalkClosed + 2) : minWalkClosed;
-  return metric.walkForwardClosed >= requiredClosed
-    && metric.walkForwardTotalPnl > 0
-    && metric.walkForwardRoi > 0;
-}
-
-function candidateScore(metric) {
-  const base = metric.roi * 65
-    + metric.walkForwardRoi * 55
-    + metric.totalPnl
-    + metric.walkForwardTotalPnl * 2
-    + (metric.winRate ?? 0) * 2
-    + Math.log10(metric.closed + 1)
-    - Math.abs(metric.maxDrawdown) * 0.5
-    - Math.abs(metric.walkForwardMaxDrawdown) * 0.75;
-  return roundRatio(base + familyFocusScore(metric.family));
-}
-
-function familyFocusScore(family) {
-  if (family === "sweep-momentum" || family === "paper-variant" || family === "shadow") return 18;
-  if (family === "sweep-distance" || family === "paper") return 14;
-  if (family === "sweep-target-revert") return 10;
-  if (family === "sweep-cheap-longshot") return 16;
-  if (family === "sweep-managed-scalp") return -18;
-  return 0;
-}
-
-function metricsCsv(metrics) {
-  const headers = ["algoId", "algoName", "family", "closed", "open", "wins", "losses", "winRate", "averagePnl", "totalPnl", "totalCost", "roi", "maxDrawdown", "walkForwardPass", "walkForwardClosed", "walkForwardWins", "walkForwardLosses", "walkForwardWinRate", "walkForwardTotalPnl", "walkForwardRoi", "walkForwardMaxDrawdown", "averageEntryEdge", "averageEntrySpread", "averageSecondsToClose", "candidateScore"];
-  return [
-    headers.join(","),
-    ...metrics.map((metric) => headers.map((key) => csvValue(metric[key])).join(",")),
-  ].join("\n");
-}
-
-function markdownReport({ runId, startedAt, finishedAt, dataRoot, framesDir, frameCount, algoCount, sweepMode, minCandidateClosed, metrics, candidates }) {
-  return [
-    `# DogeEdge Algo Factory ${sweepMode ? "Sweep" : "Backtest"}`,
-    "",
-    `Run: ${runId}`,
-    `Started: ${startedAt}`,
-    `Finished: ${finishedAt}`,
-    `Data root: ${dataRoot}`,
-    `Frames: ${frameCount}`,
-    `Algos tested: ${algoCount}`,
-    `Frame source: ${framesDir}`,
-    `Candidate minimum closed trades: ${minCandidateClosed}`,
-    "Candidates must now pass the newest walk-forward frame slice with positive P/L and ROI before they can rank.",
-    "Scoring favors momentum, threshold-distance, target-reversion, and cheap-longshot families; managed scalp is penalized unless it proves itself out-of-sample.",
-    "",
-    "## Candidate Algos",
-    "",
-    candidates.length
-      ? "| Algo | Family | Closed | W/L | Win | P/L | ROI | Walk Closed | Walk P/L | Walk ROI | Max DD | Score |"
-      : "No candidates passed the minimum closed-trade and positive P/L filters.",
-    ...(candidates.length ? [
-      "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
-      ...candidates.slice(0, 40).map((metric) => `| ${metric.algoName} | ${metric.family} | ${metric.closed} | ${metric.wins}/${metric.losses} | ${nullablePercent(metric.winRate)} | ${money(metric.totalPnl)} | ${percent(metric.roi)} | ${metric.walkForwardClosed ?? 0} | ${money(metric.walkForwardTotalPnl ?? 0)} | ${percent(metric.walkForwardRoi ?? 0)} | ${money(metric.maxDrawdown)} | ${metric.candidateScore?.toFixed(3) ?? "-"} |`),
-    ] : []),
-    "",
-    "## Ranked Algos",
-    "",
-    "| Algo | Family | Closed | W/L | Win | P/L | ROI | Walk Closed | Walk P/L | Walk ROI | Max DD | Avg Edge | Avg Spread |",
-    "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
-    ...metrics.map((metric) => `| ${metric.algoName} | ${metric.family} | ${metric.closed} | ${metric.wins}/${metric.losses} | ${nullablePercent(metric.winRate)} | ${money(metric.totalPnl)} | ${percent(metric.roi)} | ${metric.walkForwardClosed ?? 0} | ${money(metric.walkForwardTotalPnl ?? 0)} | ${percent(metric.walkForwardRoi ?? 0)} | ${money(metric.maxDrawdown)} | ${nullablePercent(metric.averageEntryEdge)} | ${nullablePrice(metric.averageEntrySpread)} |`),
-    "",
-    "Review-only. These results replay local paper market frames and do not place real orders.",
-  ].join("\n");
 }
 
 async function writeJsonIfMissing(filePath, value) {
@@ -1342,58 +1103,6 @@ function contractsForConfidence(confidence) {
   return 1;
 }
 
-function nullableSpread(ask, bid) {
-  if (ask === null || bid === null) return null;
-  return roundRatio(Math.max(0, ask - bid));
-}
-
-function maxDrawdown(equity) {
-  let peak = 0;
-  let drawdown = 0;
-  for (const value of equity) {
-    peak = Math.max(peak, value);
-    drawdown = Math.min(drawdown, value - peak);
-  }
-  return roundMoney(drawdown);
-}
-
-function average(values) {
-  const finite = values.filter((value) => typeof value === "number" && Number.isFinite(value));
-  if (finite.length === 0) return null;
-  return roundRatio(finite.reduce((total, value) => total + value, 0) / finite.length);
-}
-
-function stringOrNull(value) {
-  return typeof value === "string" && value.length > 0 ? value : null;
-}
-
-function numberOrDefault(value, fallback) {
-  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
-}
-
-function numberOrNull(value) {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-function nestedNumberOrNull(value, key) {
-  if (!value || typeof value !== "object") return null;
-  return numberOrNull(value[key]);
-}
-
-function csvValue(value) {
-  if (value === null || value === undefined) return "";
-  const text = String(value);
-  return /[",\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
-}
-
-function nullablePercent(value) {
-  return value === null ? "-" : percent(value);
-}
-
-function nullablePrice(value) {
-  return value === null ? "-" : `${(value * 100).toFixed(1)}c`;
-}
-
 function percent(value) {
   return `${(value * 100).toFixed(1)}%`;
 }
@@ -1431,10 +1140,6 @@ function money(value) {
 
 function roundPrice(value) {
   return Number(value.toFixed(4));
-}
-
-function roundMoney(value) {
-  return Number(value.toFixed(2));
 }
 
 function roundRatio(value) {
