@@ -551,6 +551,7 @@ export async function exportEvaluationSnapshot(options = {}) {
   const exactExportFiles = await writeExactReviewFiles({
     snapshotDir,
     snapshotId,
+    generatedAt,
     dataRoot,
     decisionRows,
     tradeRows,
@@ -876,6 +877,21 @@ function snapshotExportRowsByName(snapshotResult) {
 
 function rawMarketTickBundleSummary(manifest, manifestPresent) {
   const parseOk = isRecord(manifest);
+  const sourceSnapshotFiles = Array.isArray(manifest?.sourceSnapshotFiles) ? manifest.sourceSnapshotFiles : [];
+  const targetMarkets = Array.isArray(manifest?.targetMarkets) ? manifest.targetMarkets : [];
+  const jsonlFiles = Array.isArray(manifest?.jsonlFiles) ? manifest.jsonlFiles : [];
+  const requestedFormat = typeof manifest?.requestedFormat === "string"
+    ? manifest.requestedFormat
+    : typeof manifest?.format === "string" ? manifest.format : null;
+  const exportedFormat = typeof manifest?.exportedFormat === "string"
+    ? manifest.exportedFormat
+    : manifest?.available === true && typeof manifest?.format === "string" ? manifest.format : null;
+  const targetMarketCount = numberOrZero(manifest?.targetMarketCount ?? targetMarkets.length);
+  const coveredTargetMarketCount = numberOrZero(manifest?.coveredTargetMarketCount ?? jsonlFiles.length);
+  const uncoveredTargetMarketCount = numberOrZero(manifest?.uncoveredTargetMarketCount ?? Math.max(0, targetMarketCount - coveredTargetMarketCount));
+  const sourceSnapshotFileCount = numberOrZero(manifest?.sourceSnapshotFileCount ?? sourceSnapshotFiles.length);
+  const hashedSourceSnapshotFileCount = numberOrZero(manifest?.hashedSourceSnapshotFileCount ?? sourceSnapshotFiles.filter((source) => source?.sha256).length);
+  const hashSkippedSourceSnapshotFileCount = numberOrZero(manifest?.hashSkippedSourceSnapshotFileCount ?? sourceSnapshotFiles.filter((source) => source?.hashSkipped).length);
   const warningCodes = uniqueStrings([
     ...(!manifestPresent ? ["raw_market_tick_manifest_absent"] : []),
     ...(manifestPresent && !parseOk ? ["raw_market_tick_manifest_parse_failed"] : []),
@@ -885,12 +901,25 @@ function rawMarketTickBundleSummary(manifest, manifestPresent) {
     manifestPresent,
     parseOk,
     available: manifest?.available === true,
-    format: typeof manifest?.format === "string" ? manifest.format : null,
+    format: exportedFormat,
+    requestedFormat,
+    exportedFormat,
+    availabilityStatus: typeof manifest?.availabilityStatus === "string" ? manifest.availabilityStatus : null,
+    reason: typeof manifest?.reason === "string" ? manifest.reason : null,
     parquetAvailable: manifest?.parquetAvailable === true,
     jsonlAvailable: manifest?.jsonlAvailable === true,
-    targetMarketCount: Array.isArray(manifest?.targetMarkets) ? manifest.targetMarkets.length : 0,
-    jsonlFileCount: Array.isArray(manifest?.jsonlFiles) ? manifest.jsonlFiles.length : 0,
-    sourceSnapshotFileCount: Array.isArray(manifest?.sourceSnapshotFiles) ? manifest.sourceSnapshotFiles.length : 0,
+    targetMarketCount,
+    jsonlFileCount: jsonlFiles.length,
+    sourceSnapshotFileCount,
+    targetMarketCoverage: {
+      covered: coveredTargetMarketCount,
+      uncovered: uncoveredTargetMarketCount,
+      ratio: targetMarketCount > 0 ? roundDisplayRatio(coveredTargetMarketCount / targetMarketCount) : null,
+    },
+    sourceHash: {
+      hashedFileCount: hashedSourceSnapshotFileCount,
+      skippedLargeFileCount: hashSkippedSourceSnapshotFileCount,
+    },
     warningCodes,
   };
 }
@@ -1523,6 +1552,7 @@ function tradeRowFromPaperTrade(trade, context) {
 async function writeExactReviewFiles({
   snapshotDir,
   snapshotId,
+  generatedAt,
   dataRoot,
   decisionRows,
   tradeRows,
@@ -1571,6 +1601,7 @@ async function writeExactReviewFiles({
     snapshotDir,
     dataRoot,
     snapshotId,
+    generatedAt,
     gitInfo,
     decisionRows,
     tradeRows,
@@ -2081,6 +2112,7 @@ async function writeRawMarketTicksManifest({
   snapshotDir,
   dataRoot,
   snapshotId,
+  generatedAt,
   gitInfo,
   decisionRows = [],
   tradeRows = [],
@@ -2090,9 +2122,10 @@ async function writeRawMarketTicksManifest({
 }) {
   const dir = path.join(snapshotDir, "raw_market_ticks");
   await mkdir(dir, { recursive: true });
+  const requestedFormat = rawTickFormat === "jsonl" ? "jsonl" : "parquet";
   const schema = {
     schemaVersion: "dogeedge.raw-market-ticks.schema.v1",
-    format: rawTickFormat === "jsonl" ? "jsonl" : "parquet",
+    format: requestedFormat,
     fields: [
       "ts_event",
       "ts_receive",
@@ -2121,7 +2154,7 @@ async function writeRawMarketTicksManifest({
     ...decisionRows.map((row) => row.marketTicker),
     ...tradeRows.map((row) => row.marketTicker),
   ]).slice(0, Math.max(1, maxRawTickMarkets));
-  const jsonlFiles = rawTickFormat === "jsonl"
+  const jsonlFiles = requestedFormat === "jsonl"
     ? await writeRawTickJsonlSamples({
       dir,
       rawSnapshotFiles,
@@ -2141,30 +2174,59 @@ async function writeRawMarketTicksManifest({
       hashSkipped: info ? info.size > 50 * 1024 * 1024 : true,
     });
   }
+  const coveredTargetMarkets = uniqueStrings(jsonlFiles.map((file) => file.marketTicker));
+  const coveredSet = new Set(coveredTargetMarkets);
+  const uncoveredTargetMarkets = targetMarkets.filter((marketTicker) => !coveredSet.has(marketTicker));
+  const available = jsonlFiles.length > 0;
+  const exportedFormat = available ? "jsonl" : null;
+  const availabilityStatus = available
+    ? uncoveredTargetMarkets.length > 0 ? "partial_sample_exported" : "sample_exported"
+    : targetMarkets.length === 0 ? "no_target_markets"
+      : sources.length === 0 ? "raw_snapshot_source_absent"
+        : "target_samples_absent";
+  const hashedSourceSnapshotFileCount = sources.filter((source) => source.sha256).length;
+  const hashSkippedSourceSnapshotFileCount = sources.filter((source) => source.hashSkipped).length;
   const manifest = {
     schemaVersion: "dogeedge.raw-market-ticks.manifest.v1",
     snapshotId,
-    generatedAt: new Date().toISOString(),
-    available: jsonlFiles.length > 0,
-    format: jsonlFiles.length > 0 ? "jsonl" : "parquet",
+    generatedAt,
+    available,
+    format: exportedFormat,
+    requestedFormat,
+    exportedFormat,
+    availabilityStatus,
     parquetAvailable: false,
-    jsonlAvailable: jsonlFiles.length > 0,
-    reason: jsonlFiles.length > 0
-      ? "Replayable compact JSONL raw-tick samples are exported for current review markets; parquet remains absent."
-      : "Replayable per-market parquet tick export is not present in current local artifacts; schema and source manifest are exported so calibration gaps remain explicit.",
+    jsonlAvailable: available,
+    reason: rawTickAvailabilityReason({ availabilityStatus, requestedFormat }),
     gitCommit: gitInfo.commitHash ?? "UNAVAILABLE",
     expectedDirectory: "raw_market_ticks/<market_ticker>.parquet",
     jsonlDirectory: "raw_market_ticks/jsonl/<market_ticker>.jsonl",
     targetMarkets,
+    targetMarketCount: targetMarkets.length,
+    coveredTargetMarkets,
+    uncoveredTargetMarkets,
+    coveredTargetMarketCount: coveredTargetMarkets.length,
+    uncoveredTargetMarketCount: uncoveredTargetMarkets.length,
     jsonlFiles: jsonlFiles.map((file) => ({
       relativePath: slashPath(path.relative(snapshotDir, file.path)),
       marketTicker: file.marketTicker,
       rows: file.rows,
     })),
     sourceSnapshotFiles: sources,
+    sourceSnapshotFileCount: sources.length,
+    hashedSourceSnapshotFileCount,
+    hashSkippedSourceSnapshotFileCount,
+    sourceHashPolicy: {
+      sha256MaxBytes: 50 * 1024 * 1024,
+      hashedFileCount: hashedSourceSnapshotFileCount,
+      skippedLargeFileCount: hashSkippedSourceSnapshotFileCount,
+    },
     warningCodes: [
       "raw_market_tick_parquet_absent",
+      ...(requestedFormat === "jsonl" && !available ? ["raw_market_tick_jsonl_absent"] : []),
       ...(jsonlFiles.length > 0 ? ["raw_market_tick_jsonl_sample"] : []),
+      ...(uncoveredTargetMarkets.length > 0 ? ["raw_market_tick_target_coverage_gap"] : []),
+      ...(sources.length === 0 ? ["raw_snapshot_source_absent"] : []),
       ...(sources.some((source) => source.hashSkipped) ? ["raw_snapshot_hash_skipped_large_file"] : []),
     ],
   };
@@ -2177,6 +2239,25 @@ async function writeRawMarketTicksManifest({
     await fileInfo(manifestPath, "raw_market_ticks/manifest.json", "raw_market_ticks/manifest.json", null),
     ...await Promise.all(jsonlFiles.map((file) => fileInfo(file.path, `raw_market_ticks/jsonl/${file.marketTicker}.jsonl`, slashPath(path.relative(snapshotDir, file.path)), file.rows))),
   ];
+}
+
+function rawTickAvailabilityReason({ availabilityStatus, requestedFormat }) {
+  if (availabilityStatus === "sample_exported") {
+    return "Replayable compact JSONL raw-tick samples are exported for every target review market; parquet remains absent.";
+  }
+  if (availabilityStatus === "partial_sample_exported") {
+    return "Replayable compact JSONL raw-tick samples are exported for some target review markets; uncovered targets are listed explicitly.";
+  }
+  if (availabilityStatus === "raw_snapshot_source_absent") {
+    return "No local raw snapshot source files were found; schema and manifest are exported so raw-tick coverage gaps remain explicit.";
+  }
+  if (availabilityStatus === "no_target_markets") {
+    return "No target review markets were available for raw-tick extraction; schema and source manifest are exported for audit context.";
+  }
+  if (requestedFormat === "jsonl") {
+    return "No matching JSONL raw-tick sample rows were found for the target review markets; source files and uncovered targets are listed explicitly.";
+  }
+  return "Replayable per-market parquet tick export is not present in current local artifacts; schema and source manifest are exported so calibration gaps remain explicit.";
 }
 
 async function writeRawTickJsonlSamples({ dir, rawSnapshotFiles, snapshotId, gitInfo, targetMarkets, maxRowsPerMarket }) {

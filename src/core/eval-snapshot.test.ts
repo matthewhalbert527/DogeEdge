@@ -79,8 +79,16 @@ describe("continuous evaluation snapshot exporter", () => {
     const rawTickManifest = JSON.parse(readFileSync(path.join(result.snapshotDir, "raw_market_ticks", "manifest.json"), "utf8"));
     expect(rawTickManifest).toMatchObject({
       schemaVersion: "dogeedge.raw-market-ticks.manifest.v1",
+      generatedAt: snapshot.generatedAt,
       available: true,
+      format: "jsonl",
+      requestedFormat: "jsonl",
+      exportedFormat: "jsonl",
+      availabilityStatus: "sample_exported",
       jsonlAvailable: true,
+      targetMarketCount: 1,
+      coveredTargetMarketCount: 1,
+      uncoveredTargetMarketCount: 0,
       warningCodes: expect.arrayContaining(["raw_market_tick_parquet_absent", "raw_market_tick_jsonl_sample"]),
     });
     expect(readFileSync(path.join(result.snapshotDir, "raw_market_ticks", "jsonl", "KXDOGE15M-FIXTURE.jsonl"), "utf8")).toContain("orderbook_snapshot");
@@ -149,10 +157,23 @@ describe("continuous evaluation snapshot exporter", () => {
       manifestPresent: true,
       parseOk: true,
       available: true,
+      format: "jsonl",
+      requestedFormat: "jsonl",
+      exportedFormat: "jsonl",
+      availabilityStatus: "sample_exported",
       parquetAvailable: false,
       jsonlAvailable: true,
       targetMarketCount: 1,
       jsonlFileCount: 1,
+      targetMarketCoverage: {
+        covered: 1,
+        uncovered: 0,
+        ratio: 1,
+      },
+      sourceHash: {
+        hashedFileCount: 1,
+        skippedLargeFileCount: 0,
+      },
     });
     expect(manifest.rawMarketTickExport.warningCodes).toEqual(expect.arrayContaining([
       "raw_market_tick_parquet_absent",
@@ -165,6 +186,66 @@ describe("continuous evaluation snapshot exporter", () => {
     ]));
     expect(manifest.files.map((file: { relativePath: string }) => file.relativePath)).toContain("snapshots/raw_market_ticks/jsonl/KXDOGE15M-FIXTURE.jsonl");
     expect(manifest.safetyStatus.liveTradingEnabled).toBe(false);
+  });
+
+  it("reports raw tick target coverage gaps when requested samples are absent", async () => {
+    const fixture = writeEvalFixture({ rawSnapshotMarketTicker: "KXDOGE15M-UNRELATED" });
+    const result = await buildReviewBundle({
+      dataRoot: fixture.dataRoot,
+      storageDir: fixture.storageDir,
+      backtestsDir: fixture.backtestsDir,
+      outDir: fixture.outDir,
+      now: "2026-06-07T20:30:00.000Z",
+      maxRowLines: 2,
+      maxMetrics: 1,
+    });
+    const rawTickManifest = JSON.parse(readFileSync(path.join(result.snapshotDir, "raw_market_ticks", "manifest.json"), "utf8"));
+    const manifest = JSON.parse(readFileSync(path.join(result.bundleRoot, "manifest.json"), "utf8"));
+
+    expect(rawTickManifest).toMatchObject({
+      schemaVersion: "dogeedge.raw-market-ticks.manifest.v1",
+      generatedAt: "2026-06-07T20:30:00.000Z",
+      available: false,
+      format: null,
+      requestedFormat: "jsonl",
+      exportedFormat: null,
+      availabilityStatus: "target_samples_absent",
+      parquetAvailable: false,
+      jsonlAvailable: false,
+      targetMarketCount: 1,
+      coveredTargetMarketCount: 0,
+      uncoveredTargetMarketCount: 1,
+      sourceSnapshotFileCount: 1,
+      hashedSourceSnapshotFileCount: 1,
+      hashSkippedSourceSnapshotFileCount: 0,
+    });
+    expect(rawTickManifest.uncoveredTargetMarkets).toEqual(["KXDOGE15M-FIXTURE"]);
+    expect(rawTickManifest.warningCodes).toEqual(expect.arrayContaining([
+      "raw_market_tick_parquet_absent",
+      "raw_market_tick_jsonl_absent",
+      "raw_market_tick_target_coverage_gap",
+    ]));
+    expect(manifest.rawMarketTickExport).toMatchObject({
+      available: false,
+      format: null,
+      requestedFormat: "jsonl",
+      exportedFormat: null,
+      availabilityStatus: "target_samples_absent",
+      targetMarketCoverage: {
+        covered: 0,
+        uncovered: 1,
+        ratio: 0,
+      },
+      sourceHash: {
+        hashedFileCount: 1,
+        skippedLargeFileCount: 0,
+      },
+    });
+    expect(manifest.limitations).toEqual(expect.arrayContaining([
+      "raw_market_tick_jsonl_absent",
+      "raw_market_tick_target_coverage_gap",
+    ]));
+    expect(manifest.files.map((file: { relativePath: string }) => file.relativePath)).not.toContain("snapshots/raw_market_ticks/jsonl/KXDOGE15M-FIXTURE.jsonl");
   });
 
   it("chooses bundle work only at the configured two-hour cadence", () => {
@@ -180,7 +261,7 @@ function readGzipJson(filePath: string) {
   return JSON.parse(gunzipSync(readFileSync(filePath)).toString("utf8"));
 }
 
-function writeEvalFixture(options: { liveSwitch?: unknown } = {}) {
+function writeEvalFixture(options: { liveSwitch?: unknown; rawSnapshotMarketTicker?: string | null } = {}) {
   const root = mkdtempSync(path.join(tmpdir(), "dogeedge-eval-snapshot-"));
   const dataRoot = path.join(root, "data");
   const storageDir = path.join(dataRoot, "local-worker");
@@ -379,26 +460,28 @@ function writeEvalFixture(options: { liveSwitch?: unknown } = {}) {
     noBid: 0.58,
     noAsk: 0.59,
   })}\n`);
-  writeFileSync(path.join(rawSnapshotsDir, "records.jsonl"), `${JSON.stringify({
-    capturedAt: "2026-06-07T20:10:00.250Z",
-    runtimeSnapshot: { generatedAt: "2026-06-07T20:10:00.250Z", feed: { status: "ok" } },
-    paperInput: {
-      ticker: "KXDOGE15M-FIXTURE",
-      observedAt: "2026-06-07T20:10:00.000Z",
-      action: "buy_yes",
-      selectedAsk: 0.41,
-      sizeContracts: 2,
-      yesBid: 0.4,
-      yesAsk: 0.41,
-      noBid: 0.58,
-      noAsk: 0.59,
-      yesBidSize: 50,
-      yesAskSize: 40,
-      noBidSize: 35,
-      noAskSize: 30,
-      marketStatus: "open",
-    },
-  })}\n`);
+  if (options.rawSnapshotMarketTicker !== null) {
+    writeFileSync(path.join(rawSnapshotsDir, "records.jsonl"), `${JSON.stringify({
+      capturedAt: "2026-06-07T20:10:00.250Z",
+      runtimeSnapshot: { generatedAt: "2026-06-07T20:10:00.250Z", feed: { status: "ok" } },
+      paperInput: {
+        ticker: options.rawSnapshotMarketTicker ?? "KXDOGE15M-FIXTURE",
+        observedAt: "2026-06-07T20:10:00.000Z",
+        action: "buy_yes",
+        selectedAsk: 0.41,
+        sizeContracts: 2,
+        yesBid: 0.4,
+        yesAsk: 0.41,
+        noBid: 0.58,
+        noAsk: 0.59,
+        yesBidSize: 50,
+        yesAskSize: 40,
+        noBidSize: 35,
+        noAskSize: 30,
+        marketStatus: "open",
+      },
+    })}\n`);
+  }
   writeFileSync(path.join(backtestsDir, "latest-sweep.json"), `${JSON.stringify(latestSweep)}\n`);
   writeFileSync(path.join(backtestsDir, "latest.json"), `${JSON.stringify({ ...latestSweep, mode: "backtest", metrics: [metric], topMetrics: undefined })}\n`);
   writeFileSync(path.join(runDir, "experiment-registry.json"), `${JSON.stringify(registry)}\n`);
