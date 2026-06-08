@@ -180,10 +180,11 @@ function entryFill(algo, signal, frame, costModel, rng) {
   const ask = askForSide(side, frame);
   const maxAsk = side === "BOTH" ? 1.1 : 1;
   if (ask === null || ask <= 0 || ask >= maxAsk) return { ok: false, reasonCode: "no_ask", reason: "No executable ask price.", telemetry: fillTelemetry(frame, side, "entry", costModel, { queueResult: "no_ask" }) };
+  const fillProbability = stateFillProbability(frame, side, "entry", costModel);
   const fillRoll = rng();
-  if (fillRoll > costModel.minFillProbability) return { ok: false, reasonCode: "queue_miss", reason: "Queue/fill probability rejected the entry.", telemetry: fillTelemetry(frame, side, "entry", costModel, { queueResult: "probability_miss", fillProbabilityRoll: roundRatio(fillRoll) }) };
+  if (fillRoll > fillProbability) return { ok: false, reasonCode: "queue_miss", reason: "Queue/fill probability rejected the entry.", telemetry: fillTelemetry(frame, side, "entry", costModel, { queueResult: "probability_miss", fillProbabilityRoll: roundRatio(fillRoll), fillProbabilityUsed: fillProbability }) };
   const requestedContracts = Math.max(1, Math.floor(signal.contracts || 1));
-  const fillable = fillableContracts(side, "ask", frame, costModel, requestedContracts);
+  const fillable = fillableContracts(side, "ask", frame, costModel, requestedContracts, "entry");
   if (fillable <= 0) return { ok: false, reasonCode: "insufficient_depth", reason: "Top-of-book ask depth is insufficient.", telemetry: fillTelemetry(frame, side, "entry", costModel, { requestedContracts, fillableContracts: fillable, queueResult: "insufficient_depth" }) };
   const contracts = costModel.allowPartialFills ? Math.min(requestedContracts, fillable) : requestedContracts <= fillable ? requestedContracts : 0;
   if (contracts <= 0) return { ok: false, reasonCode: "cannot_fill_full_size", reason: "Full requested size cannot fill at visible depth.", telemetry: fillTelemetry(frame, side, "entry", costModel, { requestedContracts, fillableContracts: fillable, queueResult: "cannot_fill_full_size" }) };
@@ -194,6 +195,7 @@ function entryFill(algo, signal, frame, costModel, rng) {
     filledContracts: contracts,
     queueResult: contracts < requestedContracts ? "partial_fill" : "filled",
     fillProbabilityRoll: roundRatio(fillRoll),
+    fillProbabilityUsed: fillProbability,
   });
   return {
     ok: true,
@@ -230,10 +232,11 @@ function entryFill(algo, signal, frame, costModel, rng) {
 
 function closeByExecutableBid(trade, frame, costModel, reason, rng) {
   if (staleFrame(frame, costModel)) return null;
-  if (rng() > costModel.minFillProbability) return null;
+  const fillProbability = stateFillProbability(frame, trade.side, "exit", costModel);
+  if (rng() > fillProbability) return null;
   const bid = bidForSide(trade.side, frame);
   if (bid === null || bid < 0) return null;
-  const fillable = fillableContracts(trade.side, "bid", frame, costModel, trade.contracts);
+  const fillable = fillableContracts(trade.side, "bid", frame, costModel, trade.contracts, "exit");
   const contracts = costModel.allowPartialFills ? Math.min(trade.contracts, fillable) : trade.contracts <= fillable ? trade.contracts : 0;
   if (contracts <= 0) return null;
   return closeByPrice(trade, frame, bid, reason, costModel, contracts);
@@ -342,14 +345,14 @@ function staleFrame(frame, costModel) {
   return captured - observed > costModel.maxLatencyMs;
 }
 
-function fillableContracts(side, bookSide, frame, costModel, requestedContracts) {
+function fillableContracts(side, bookSide, frame, costModel, requestedContracts, action = "entry") {
   const visibleDepth = side === "YES"
     ? bookSide === "ask" ? frame.yesAskDepth : frame.yesBidDepth
     : side === "NO"
       ? bookSide === "ask" ? frame.noAskDepth : frame.noBidDepth
       : Math.min(frame.yesAskDepth ?? 0, frame.noAskDepth ?? 0);
   if (!Number.isFinite(visibleDepth) || visibleDepth <= 0) return 0;
-  return Math.floor(Math.max(0, Math.min(requestedContracts, visibleDepth * costModel.depthShare)));
+  return Math.floor(Math.max(0, Math.min(requestedContracts, visibleDepth * stateDepthShare(frame, side, action, costModel))));
 }
 
 function executionFee(price, contracts, costModel) {
@@ -410,6 +413,8 @@ function fillTelemetry(frame, side, action, costModel, extra = {}) {
   const requestedContracts = Number(extra.requestedContracts ?? 0);
   const filledContracts = Number(extra.filledContracts ?? 0);
   const fillable = Number(extra.fillableContracts ?? 0);
+  const fillProbability = roundRatio(extra.fillProbabilityUsed ?? stateFillProbability(frame, side, action, costModel));
+  const depthShare = roundRatio(stateDepthShare(frame, side, action, costModel));
   const partialFillRatio = requestedContracts > 0 && filledContracts > 0 ? roundRatio(filledContracts / requestedContracts) : 0;
   const depthUtilization = visibleDepth > 0 && filledContracts > 0 ? roundRatio(filledContracts / visibleDepth) : null;
   const latency = latencyMs(frame);
@@ -421,8 +426,10 @@ function fillTelemetry(frame, side, action, costModel, extra = {}) {
     queueResult: extra.queueResult ?? "unknown",
     queueMissReason: extra.queueResult && !String(extra.queueResult).includes("fill") ? extra.queueResult : null,
     partialFillRatio,
-    fillProbabilityUsed: roundRatio(costModel.minFillProbability ?? 1),
+    fillProbabilityUsed: fillProbability,
     fillProbabilityRoll: extra.fillProbabilityRoll ?? null,
+    depthShareUsed: depthShare,
+    stateConditions: fillStateConditions(frame, side, action),
     requestedContracts: requestedContracts || null,
     fillableContracts: Number.isFinite(fillable) ? fillable : null,
     filledContracts: filledContracts || null,
@@ -433,6 +440,73 @@ function fillTelemetry(frame, side, action, costModel, extra = {}) {
     bookContextHash: bookContextHash(frame, side),
     bookContext: bookContextSummary(frame, side),
   };
+}
+
+export function stateFillProbability(frame, side, action, costModel) {
+  const base = Number(costModel.minFillProbability ?? 1);
+  const conditions = fillStateConditions(frame, side, action);
+  const factor = conditions.latencyFactor
+    * conditions.spreadFactor
+    * conditions.liquidityFactor
+    * conditions.timeToCloseFactor
+    * conditions.sideFactor
+    * (action === "exit" ? 0.95 : 1);
+  return roundRatio(clamp(base * factor, 0.02, 1));
+}
+
+export function stateDepthShare(frame, side, action, costModel) {
+  const base = Number(costModel.depthShare ?? 1);
+  const conditions = fillStateConditions(frame, side, action);
+  const factor = Math.min(1, conditions.liquidityFactor * conditions.spreadFactor * conditions.timeToCloseFactor * (action === "exit" ? 0.9 : 1));
+  return roundRatio(clamp(base * factor, 0.01, 1));
+}
+
+function fillStateConditions(frame, side, action) {
+  const selectedSpread = spread(askForSide(side, frame), bidForSide(side, frame));
+  const visibleDepth = visibleDepthFor(side, action === "exit" ? "bid" : "ask", frame);
+  const latency = latencyMs(frame);
+  return {
+    latencyBucket: latencyBucket(latency),
+    latencyFactor: latencyFactor(latency),
+    spreadBucket: spreadFactorBucket(selectedSpread).bucket,
+    spreadFactor: spreadFactorBucket(selectedSpread).factor,
+    liquidityBucket: liquidityFactorBucket(visibleDepth).bucket,
+    liquidityFactor: liquidityFactorBucket(visibleDepth).factor,
+    timeToCloseBucket: timeToCloseFactorBucket(frame.secondsToClose).bucket,
+    timeToCloseFactor: timeToCloseFactorBucket(frame.secondsToClose).factor,
+    sideFactor: side === "BOTH" ? 0.8 : 1,
+  };
+}
+
+function latencyFactor(value) {
+  if (!Number.isFinite(value)) return 0.65;
+  if (value <= 500) return 1;
+  if (value <= 1_500) return 0.92;
+  if (value <= 5_000) return 0.75;
+  return 0.45;
+}
+
+function spreadFactorBucket(value) {
+  if (!Number.isFinite(value)) return { bucket: "unknown", factor: 0.75 };
+  if (value <= 0.02) return { bucket: "tight", factor: 1 };
+  if (value <= 0.05) return { bucket: "normal", factor: 0.85 };
+  if (value <= 0.10) return { bucket: "wide", factor: 0.65 };
+  return { bucket: "very_wide", factor: 0.45 };
+}
+
+function liquidityFactorBucket(value) {
+  if (!Number.isFinite(value) || value <= 0) return { bucket: "none", factor: 0 };
+  if (value < 5) return { bucket: "thin", factor: 0.55 };
+  if (value < 20) return { bucket: "normal", factor: 0.8 };
+  return { bucket: "deep", factor: 1 };
+}
+
+function timeToCloseFactorBucket(value) {
+  if (!Number.isFinite(value)) return { bucket: "unknown", factor: 0.8 };
+  if (value <= 15) return { bucket: "final_15s", factor: 0.55 };
+  if (value <= 60) return { bucket: "final_60s", factor: 0.7 };
+  if (value <= 180) return { bucket: "final_3m", factor: 0.9 };
+  return { bucket: "early", factor: 1 };
 }
 
 function visibleDepthFor(side, bookSide, frame) {

@@ -2,7 +2,7 @@ import { eventSort } from "./splits.mjs";
 
 export const defaultHoldoutConfig = {
   holdoutRatio: 0.2,
-  minHoldoutEvents: 1,
+  minHoldoutEvents: 12,
 };
 
 export function finalHoldoutSplit(events, options = {}) {

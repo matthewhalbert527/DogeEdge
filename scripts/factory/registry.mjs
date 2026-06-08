@@ -18,6 +18,7 @@ export async function experimentRegistryEntry({ repoRoot, dataRoot, framesDir, c
     inputFiles: inputManifest.files,
     dataHash: inputManifest.manifestHash,
     configHash: hashJson(config),
+    schemaVersion: "dogeedge.factory.registry.v2",
     trialCount: algos.length,
     families: familyCounts(algos),
     parameterHashes: Object.fromEntries(algos.map((algo) => [algo.id, hashJson(algo.params ?? {})])),
@@ -46,7 +47,9 @@ export async function experimentRegistryEntry({ repoRoot, dataRoot, framesDir, c
       holdoutEventIds: holdoutSplit.holdoutEventIds,
     } : null,
     costModel: costModels,
+    costModelHash: hashJson(costModels),
     riskModel,
+    riskModelHash: hashJson(riskModel),
     metricsVersion,
     randomSeed: seed,
     seedPlan: {

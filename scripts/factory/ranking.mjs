@@ -1,4 +1,4 @@
-import { average, normalCdf, normalInv, roundMoney, roundRatio, stddev, unique } from "./utils.mjs";
+import { average, median, normalCdf, normalInv, roundMoney, roundRatio, stddev, unique } from "./utils.mjs";
 import { defaultPromotionThresholds, promotionReview } from "./promotion.mjs";
 import { multipleTestingAdjustments } from "./multiple-testing.mjs";
 
@@ -10,16 +10,23 @@ export function rankFactoryMetrics(metrics, options = {}) {
   });
   const pboByAlgo = pboRankDegradationMap(metrics);
   const withStats = metrics.map((metric) => {
-    const familyTrials = trialSummary.byFamily[metric.family] ?? 1;
-    const multipleTestingPenalty = multipleTestingPenaltyFor(metric, trialSummary.totalTrials, familyTrials);
-    const psr = probabilisticSharpeRatio(metric);
-    const dsrApprox = deflatedSharpeRatioApprox(metric, trialSummary.totalTrials);
-    const pboApprox = pboByAlgo.get(metric.algoId) ?? pboRankDegradationApprox(metric, metrics);
     const adjusted = testingAdjustments[metric.algoId] ?? {
       familyAdjustedPValue: 1,
       globalAdjustedPValue: 1,
+      familyQValue: 1,
+      globalQValue: 1,
       falseDiscoveryRisk: 1,
+      effectiveFamilyTrials: trialSummary.byFamily[metric.family] ?? 1,
+      effectiveGlobalTrials: trialSummary.totalTrials,
     };
+    const familyTrials = adjusted.effectiveFamilyTrials ?? trialSummary.byFamily[metric.family] ?? 1;
+    const totalTrials = adjusted.effectiveGlobalTrials ?? trialSummary.totalTrials;
+    const multipleTestingPenalty = multipleTestingPenaltyFor(metric, totalTrials, familyTrials);
+    const psr = probabilisticSharpeRatio(metric);
+    const dsrApprox = deflatedSharpeRatioApprox(metric, totalTrials);
+    const pboApprox = pboByAlgo.get(metric.algoId) ?? pboRankDegradationApprox(metric, metrics);
+    const pboPathMetrics = pboPathDegradationRows(metric, metrics);
+    const pboPathSummary = pboPathSummaryFor(pboPathMetrics, pboApprox);
     const concentration = concentrationMetrics(metric);
     const adjustedConfidence = roundRatio(Math.max(0, Math.min(1, dsrApprox * (1 - pboApprox) * (1 - adjusted.falseDiscoveryRisk) - multipleTestingPenalty)));
     const robustScore = robustScoreFor(metric, { adjustedConfidence, concentration, multipleTestingPenalty, adjusted });
@@ -33,11 +40,13 @@ export function rankFactoryMetrics(metrics, options = {}) {
       ...metric,
       trialSummary,
       effectiveFamilyTrials: familyTrials,
-      effectiveTotalTrials: trialSummary.totalTrials,
+      effectiveTotalTrials: totalTrials,
       multipleTestingPenalty,
       psr,
       dsrApprox,
       pboApprox,
+      pboPathSummary,
+      pboPathMetrics,
       pboMethod: "cpcv_train_validation_rank_degradation_approx",
       ...adjusted,
       adjustedConfidence,
@@ -140,6 +149,43 @@ function pboRankDegradationMap(menuMetrics) {
     result.set(metric.algoId, eligiblePaths ? roundRatio(degradedPaths / eligiblePaths) : fallbackFoldFailurePbo(metric));
   }
   return result;
+}
+
+export function pboPathDegradationRows(metric, menuMetrics) {
+  const validation = Array.isArray(metric.cpcvMetrics) && metric.cpcvMetrics.length ? metric.cpcvMetrics : [];
+  const train = Array.isArray(metric.cpcvTrainMetrics) && metric.cpcvTrainMetrics.length ? metric.cpcvTrainMetrics : [];
+  if (!validation.length || !train.length || menuMetrics.length < 2) return [];
+  const foldIds = validation.map((fold) => fold.foldId).filter(Boolean);
+  return foldIds.map((foldId) => {
+    const trainRank = rankByFold(menuMetrics, foldId, "cpcvTrainMetrics").get(metric.algoId);
+    const validationRank = rankByFold(menuMetrics, foldId, "cpcvMetrics").get(metric.algoId);
+    if (!trainRank || !validationRank) return null;
+    const percentileDelta = roundRatio(validationRank.percentile - trainRank.percentile);
+    return {
+      foldId,
+      trainRank: trainRank.rank,
+      validationRank: validationRank.rank,
+      trainPercentile: trainRank.percentile,
+      validationPercentile: validationRank.percentile,
+      percentileDelta,
+      degraded: validationRank.percentile < 0.5 || validationRank.percentile < trainRank.percentile - 0.25,
+      trainScore: roundRatio(trainRank.score),
+      validationScore: roundRatio(validationRank.score),
+    };
+  }).filter(Boolean);
+}
+
+function pboPathSummaryFor(rows, fallbackPbo) {
+  const eligibleRows = rows.filter((row) => row.trainPercentile >= 0.5);
+  const degradedRows = eligibleRows.filter((row) => row.degraded);
+  return {
+    method: rows.length ? "cpcv_path_rank_degradation" : "fold_failure_fallback",
+    pathCount: rows.length,
+    eligiblePathCount: eligibleRows.length,
+    degradedPathCount: degradedRows.length,
+    degradationRate: eligibleRows.length ? roundRatio(degradedRows.length / eligibleRows.length) : fallbackPbo,
+    medianPercentileDelta: rows.length ? median(rows.map((row) => row.percentileDelta)) : null,
+  };
 }
 
 function fallbackFoldFailurePbo(metric) {

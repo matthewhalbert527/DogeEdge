@@ -19,7 +19,12 @@ export async function readFactoryDecisionFrames(baseDir, options = {}) {
         const parsed = JSON.parse(line);
         const result = normalizeDecisionFrame(parsed, options);
         warnings.push(...result.warnings.map((message) => ({ file, line: lineNumber, message })));
-        errors.push(...result.errors.map((message) => ({ file, line: lineNumber, message })));
+        const postCloseFeatureErrors = result.errors.filter((message) => message.includes("featureTimestamp must be strictly before marketCloseTimestamp"));
+        const otherErrors = result.errors.filter((message) => !message.includes("featureTimestamp must be strictly before marketCloseTimestamp"));
+        if (postCloseFeatureErrors.length && options.dropPostCloseFrames !== false) {
+          warnings.push(...postCloseFeatureErrors.map((message) => ({ file, line: lineNumber, message: `${message}; row excluded from feature generation` })));
+        }
+        errors.push(...otherErrors.map((message) => ({ file, line: lineNumber, message })));
         if (result.frame) frames.push({ ...result.frame, sourceFile: file, sourceLine: lineNumber });
       } catch (error) {
         errors.push({ file, line: lineNumber, message: error instanceof Error ? error.message : "invalid JSON line" });
@@ -116,8 +121,8 @@ export function buildMarketEvents(frames, options = {}) {
       warnings.push({ message: `${marketTicker} has no usable label frame` });
       continue;
     }
-    const labelMs = labelFrame.featureTimestampMs;
-    const labelTimestamp = labelFrame.featureTimestamp;
+    const labelMs = closeMs === null ? labelFrame.featureTimestampMs : Math.max(closeMs, labelFrame.featureTimestampMs ?? closeMs);
+    const labelTimestamp = labelMs === null ? null : new Date(labelMs).toISOString();
     const yesWon = (labelFrame.estimate ?? first.estimate) >= first.targetPrice;
     events.push({
       id: marketTicker,
@@ -131,6 +136,8 @@ export function buildMarketEvents(frames, options = {}) {
       labelTimestampMs: labelMs,
       settlementTimestamp: labelTimestamp,
       settlementTimestampMs: labelMs,
+      labelSource: "pre_close_frame_proxy",
+      settlementSource: "estimated",
       outcomeSide: yesWon ? "YES" : "NO",
       targetPrice: first.targetPrice,
       frames: sorted.map((frame) => ({
@@ -139,6 +146,8 @@ export function buildMarketEvents(frames, options = {}) {
         labelTimestampMs: labelMs,
         settlementTimestamp: labelTimestamp,
         settlementTimestampMs: labelMs,
+        labelSource: "pre_close_frame_proxy",
+        settlementSource: "estimated",
       })),
       frameCount: sorted.length,
       independentFrameCount: new Set(sorted.map((frame) => frame.independentKey)).size,
@@ -186,8 +195,8 @@ function inferCloseMs(frames) {
 function chooseLabelFrame(frames, closeMs) {
   if (!frames.length) return null;
   if (closeMs === null) return frames.at(-1);
-  const closeCandidates = frames.filter((frame) => (frame.featureTimestampMs ?? 0) <= closeMs + 5_000);
-  return closeCandidates.at(-1) ?? frames.at(-1);
+  const closeCandidates = frames.filter((frame) => (frame.featureTimestampMs ?? 0) < closeMs);
+  return closeCandidates.at(-1) ?? null;
 }
 
 function regimeForFrame(frame) {
@@ -270,4 +279,3 @@ function phaseBucket(secondsToClose) {
 function nonNull(value) {
   return typeof value === "number" && Number.isFinite(value) ? value : Number.NEGATIVE_INFINITY;
 }
-

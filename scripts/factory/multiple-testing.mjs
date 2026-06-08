@@ -23,25 +23,55 @@ export function multipleTestingAdjustments(metrics, options = {}) {
     seed: childSeed(rootSeed, "family-menu", family),
   })]));
 
-  return Object.fromEntries(metrics.map((metric) => {
+  const rawRows = metrics.map((metric) => {
     const familyNull = familyNulls[metric.family] ?? emptyNull();
     const observed = observedStatistic(metric);
     const familyAdjustedPValue = pValue(observed.studentized, familyNull.spa);
     const globalAdjustedPValue = pValue(observed.studentized, globalNull.spa);
     const realityCheckApproxPValue = pValue(observed.mean, globalNull.realityCheck);
     const spaApproxPValue = globalAdjustedPValue;
-    const falseDiscoveryRisk = roundRatio(Math.min(1, (familyAdjustedPValue * 0.45) + (globalAdjustedPValue * 0.45) + (realityCheckApproxPValue * 0.1)));
-    return [metric.algoId, {
+    return {
+      metric,
+      observed,
       familyAdjustedPValue,
       globalAdjustedPValue,
-      falseDiscoveryRisk,
       realityCheckApproxPValue,
       spaApproxPValue,
+    };
+  });
+  const globalQ = qValueMap(rawRows.map((row) => [row.metric.algoId, row.globalAdjustedPValue]), { method: "BY" });
+  const familyQ = {};
+  for (const [family, rows] of Object.entries(byFamily)) {
+    const ids = new Set(rows.map((metric) => metric.algoId));
+    Object.assign(familyQ, qValueMap(rawRows.filter((row) => ids.has(row.metric.algoId)).map((row) => [row.metric.algoId, row.familyAdjustedPValue]), { method: "BH" }));
+  }
+  const effectiveGlobalTrials = effectiveTrialCount(metrics);
+  const effectiveFamilyTrials = Object.fromEntries(Object.entries(byFamily).map(([family, rows]) => [family, effectiveTrialCount(rows)]));
+  return Object.fromEntries(rawRows.map((row) => {
+    const familyQValue = familyQ[row.metric.algoId] ?? 1;
+    const globalQValue = globalQ[row.metric.algoId] ?? 1;
+    const falseDiscoveryRisk = roundRatio(Math.min(1, (
+      row.familyAdjustedPValue * 0.25
+      + row.globalAdjustedPValue * 0.25
+      + familyQValue * 0.2
+      + globalQValue * 0.2
+      + row.realityCheckApproxPValue * 0.1
+    )));
+    return [row.metric.algoId, {
+      familyAdjustedPValue: row.familyAdjustedPValue,
+      globalAdjustedPValue: row.globalAdjustedPValue,
+      familyQValue,
+      globalQValue,
+      falseDiscoveryRisk,
+      realityCheckApproxPValue: row.realityCheckApproxPValue,
+      spaApproxPValue: row.spaApproxPValue,
       realityCheckApprox: true,
       spaApprox: true,
-      multipleTestingMethod: "market_block_menu_bootstrap_approx",
+      multipleTestingMethod: "market_block_menu_bootstrap_with_q_values_approx",
       multipleTestingIterations: iterations,
-      multipleTestingSeed: childSeed(rootSeed, metric.family, metric.algoId),
+      multipleTestingSeed: childSeed(rootSeed, row.metric.family, row.metric.algoId),
+      effectiveFamilyTrials: effectiveFamilyTrials[row.metric.family] ?? 1,
+      effectiveGlobalTrials,
     }];
   }));
 }
@@ -108,6 +138,61 @@ function marketBlockSeries(metric) {
     mean: average(values) ?? 0,
     stdev: stddev(values) ?? 0,
   };
+}
+
+export function effectiveTrialCount(metrics) {
+  if (metrics.length <= 1) return metrics.length;
+  const marketIds = [...new Set(metrics.flatMap((metric) => marketBlockSeries(metric).marketIds))].sort();
+  if (!marketIds.length) return metrics.length;
+  const vectors = metrics.map((metric) => {
+    const series = marketBlockSeries(metric);
+    return marketIds.map((id) => series.byMarket.get(id) ?? 0);
+  });
+  const correlations = [];
+  for (let left = 0; left < vectors.length; left += 1) {
+    for (let right = left + 1; right < vectors.length; right += 1) {
+      correlations.push(Math.abs(correlation(vectors[left], vectors[right])));
+    }
+  }
+  const meanAbsCorrelation = average(correlations.filter(Number.isFinite)) ?? 0;
+  return roundRatio(Math.max(1, Math.min(metrics.length, 1 + (metrics.length - 1) * (1 - meanAbsCorrelation))));
+}
+
+export function qValueMap(pairs, { method = "BH" } = {}) {
+  const sorted = pairs
+    .map(([id, pValue]) => ({ id, pValue: Math.min(1, Math.max(0, Number(pValue ?? 1))) }))
+    .sort((left, right) => left.pValue - right.pValue);
+  const m = sorted.length;
+  if (!m) return {};
+  const harmonic = method === "BY"
+    ? Array.from({ length: m }, (_, index) => 1 / (index + 1)).reduce((total, value) => total + value, 0)
+    : 1;
+  let running = 1;
+  const output = {};
+  for (let index = m - 1; index >= 0; index -= 1) {
+    const rank = index + 1;
+    running = Math.min(running, sorted[index].pValue * m * harmonic / rank);
+    output[sorted[index].id] = roundRatio(Math.min(1, running));
+  }
+  return output;
+}
+
+function correlation(left, right) {
+  if (left.length !== right.length || left.length < 2) return 0;
+  const leftMean = average(left) ?? 0;
+  const rightMean = average(right) ?? 0;
+  let numerator = 0;
+  let leftDenominator = 0;
+  let rightDenominator = 0;
+  for (let index = 0; index < left.length; index += 1) {
+    const leftDelta = left[index] - leftMean;
+    const rightDelta = right[index] - rightMean;
+    numerator += leftDelta * rightDelta;
+    leftDenominator += leftDelta ** 2;
+    rightDenominator += rightDelta ** 2;
+  }
+  const denominator = Math.sqrt(leftDenominator * rightDenominator);
+  return denominator > 0 ? numerator / denominator : 0;
 }
 
 function observedStatistic(metric) {

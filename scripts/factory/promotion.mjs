@@ -7,14 +7,21 @@ export const defaultPromotionThresholds = {
   minExpectancyLowerBound: 0,
   maxDrawdown: -25,
   maxConcentrationShare: 0.55,
-  minAdjustedConfidence: 0.6,
-  minClosedTrades: 20,
+  minAdjustedConfidence: 0.7,
+  minClosedTrades: 30,
   minWalkForwardClosed: 2,
   minCpcvPositivePathRate: 0.7,
+  minHoldoutEvents: 12,
   minHoldoutClosed: 10,
   minHoldoutMarkets: 10,
   minHoldoutRoi: 0,
   minHoldoutExpectancyLowerBound: 0,
+  maxPboProxy: 0.2,
+  maxFamilyAdjustedPValue: 0.1,
+  maxGlobalAdjustedPValue: 0.2,
+  maxFalseDiscoveryRisk: 0.2,
+  maxFamilyQValue: 0.1,
+  maxGlobalQValue: 0.2,
 };
 
 export function promotionReview(metric, thresholds = defaultPromotionThresholds) {
@@ -51,9 +58,12 @@ export function promotionReview(metric, thresholds = defaultPromotionThresholds)
   if ((metric.concentration?.maxDayShare ?? 0) > thresholds.maxConcentrationShare) reasonCodes.push("day_concentration");
   if ((metric.concentration?.maxRegimeShare ?? 0) > thresholds.maxConcentrationShare) warnings.push("narrow_regime");
   if ((metric.adjustedConfidence ?? 0) < thresholds.minAdjustedConfidence) reasonCodes.push("multiple_testing_adjusted_confidence_low");
-  if ((metric.familyAdjustedPValue ?? 1) > 0.2) reasonCodes.push("family_adjusted_p_value_too_high");
-  if ((metric.globalAdjustedPValue ?? 1) > 0.35) reasonCodes.push("global_adjusted_p_value_too_high");
-  if ((metric.falseDiscoveryRisk ?? 1) > 0.35) reasonCodes.push("false_discovery_risk_too_high");
+  if ((metric.pboApprox ?? 1) > thresholds.maxPboProxy) reasonCodes.push("pbo_proxy_too_high");
+  if ((metric.familyAdjustedPValue ?? 1) > thresholds.maxFamilyAdjustedPValue) reasonCodes.push("family_adjusted_p_value_too_high");
+  if ((metric.globalAdjustedPValue ?? 1) > thresholds.maxGlobalAdjustedPValue) reasonCodes.push("global_adjusted_p_value_too_high");
+  if ((metric.falseDiscoveryRisk ?? 1) > thresholds.maxFalseDiscoveryRisk) reasonCodes.push("false_discovery_risk_too_high");
+  if ((metric.familyQValue ?? 1) > thresholds.maxFamilyQValue) reasonCodes.push("family_q_value_too_high");
+  if ((metric.globalQValue ?? 1) > thresholds.maxGlobalQValue) reasonCodes.push("global_q_value_too_high");
   if (paperEvidence.closedMarkets > 0 && !paperEvidence.driftOk) reasonCodes.push("paper_evidence_drift");
   if ((metric.totalPnl ?? 0) <= 0) reasonCodes.push("non_positive_full_sample_pnl");
 

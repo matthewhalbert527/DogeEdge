@@ -6,6 +6,7 @@ import { attachClosedTrades, candidateMetrics, rankFactoryMetrics } from "./rank
 import { finalHoldoutSplit, holdoutSummary } from "./holdout.mjs";
 import { paperEvidenceForAlgo } from "./paper-evidence.mjs";
 import { roundRatio } from "./utils.mjs";
+import { defaultSampleGateThresholds, insufficientDataMetrics, sampleSufficiency } from "./sample-gates.mjs";
 
 export function runFactoryResearchPipeline({ algos, loadResult, since = null, until = null, options = {} }) {
   const filteredFrames = filterFramesByTime(loadResult.frames, { since, until });
@@ -13,7 +14,7 @@ export function runFactoryResearchPipeline({ algos, loadResult, since = null, un
   const events = eventResult.events;
   const holdoutSplit = finalHoldoutSplit(events, {
     holdoutRatio: options.holdoutRatio ?? 0.2,
-    minHoldoutEvents: options.minHoldoutEvents ?? 1,
+    minHoldoutEvents: options.minHoldoutEvents ?? options.thresholds?.minHoldoutEvents ?? defaultSampleGateThresholds.minHoldoutEvents,
   });
   const researchEvents = holdoutSplit.researchEvents;
   const split = chronologicalSplit(researchEvents, {
@@ -29,6 +30,42 @@ export function runFactoryResearchPipeline({ algos, loadResult, since = null, un
     embargoMs: options.embargoMs,
     maxCombinations: options.maxCpcvCombinations ?? 10,
   });
+  const baseDataQuality = dataQualitySummary({
+    ...loadResult,
+    frameCount: filteredFrames.length,
+    eventCount: events.length,
+    warnings: [...loadResult.warnings, ...eventResult.warnings],
+  });
+  const sufficiency = sampleSufficiency({
+    events,
+    holdoutSplit,
+    folds: purgedFolds,
+    thresholds: options.sampleThresholds ?? options.thresholds ?? {},
+  });
+  if (!sufficiency.ok) {
+    const sampleWarning = { message: sufficiency.warning, reasonCodes: sufficiency.reasonCodes, counts: sufficiency.counts };
+    const dataQuality = { ...baseDataQuality, sampleSufficiency: sufficiency };
+    const metrics = insufficientDataMetrics(algos, sufficiency, dataQuality, options);
+    return {
+      frames: filteredFrames,
+      events,
+      holdoutSplit,
+      split: {
+        trainEventIds: split.train.map((event) => event.id),
+        validationEventIds: split.validation.map((event) => event.id),
+        testEventIds: split.test.map((event) => event.id),
+        holdoutEventIds: holdoutSplit.holdoutEventIds,
+      },
+      purgedFolds,
+      cpcvFolds,
+      metrics,
+      candidates: [],
+      trades: [],
+      costModels: options.costModels ?? defaultCostModels,
+      dataQuality,
+      warnings: [...loadResult.warnings, ...eventResult.warnings, sampleWarning],
+    };
+  }
   const costModels = options.costModels ?? defaultCostModels;
   const simulations = simulateAlgos(algos, events, {
     costModels,
@@ -118,12 +155,8 @@ export function runFactoryResearchPipeline({ algos, loadResult, since = null, un
       executionTelemetry: Object.fromEntries(Object.entries(simulation.byCostModel).map(([id, result]) => [id, executionTelemetryForSimulation(result)])),
       fillQuality: fillQualityFromSimulation(conservative),
       dataQuality: {
-        ...dataQualitySummary({
-          ...loadResult,
-          frameCount: filteredFrames.length,
-          eventCount: events.length,
-          warnings: [...loadResult.warnings, ...eventResult.warnings],
-        }),
+        ...baseDataQuality,
+        sampleSufficiency: sufficiency,
         permissiveDebug: Boolean(options.permissiveDebug),
       },
     }, base.trades);
@@ -157,12 +190,10 @@ export function runFactoryResearchPipeline({ algos, loadResult, since = null, un
     candidates,
     trades,
     costModels,
-    dataQuality: dataQualitySummary({
-      ...loadResult,
-      frameCount: filteredFrames.length,
-      eventCount: events.length,
-      warnings: [...loadResult.warnings, ...eventResult.warnings],
-    }),
+    dataQuality: {
+      ...baseDataQuality,
+      sampleSufficiency: sufficiency,
+    },
     warnings: [...loadResult.warnings, ...eventResult.warnings],
   };
 }

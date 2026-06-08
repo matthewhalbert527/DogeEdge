@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 import { gzipSync } from "node:zlib";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { hashJson, isRecord, stableStringify } from "./factory/utils.mjs";
+import { loadSnapshotHistory, writeSnapshotHistory } from "./factory/snapshot-history.mjs";
 
 const execFileAsync = promisify(execFile);
 const schemaVersion = "dogeedge.eval.snapshot.v1";
@@ -315,6 +316,8 @@ export async function exportEvaluationSnapshot(options = {}) {
   const storageDir = path.resolve(options.storageDir ?? process.env.DOGEEDGE_DATA_DIR ?? path.join(dataRoot, "local-worker"));
   const backtestsDir = path.resolve(options.backtestsDir ?? path.join(dataRoot, "backtests"));
   const outRoot = path.resolve(options.outDir ?? path.join(dataRoot, "gpt-review-packets"));
+  const snapshotsRoot = path.join(outRoot, "snapshots");
+  const priorHistory = await loadSnapshotHistory({ snapshotsRoot, hours: 48 });
   const snapshotDir = path.join(outRoot, "snapshots", snapshotId);
   const includeRows = options.includeRows !== false;
   const maxRowLines = numberOption(options.maxRowLines, 1_000);
@@ -425,8 +428,13 @@ export async function exportEvaluationSnapshot(options = {}) {
       endAt: windowEndAt,
       durationMinutes: windowMinutes,
       isDelta: true,
-      baselineSnapshotId: null,
+      baselineSnapshotId: priorHistory.at(-1)?.snapshotId ?? null,
       evaluationWindowKind: windowKind(windowMinutes),
+    },
+    snapshotLineage: {
+      previousSnapshotId: priorHistory.at(-1)?.snapshotId ?? null,
+      baseline48hSnapshotId: priorHistory[0]?.snapshotId ?? null,
+      priorSnapshotCount48h: priorHistory.length,
     },
     repo: {
       commitHash: gitInfo.commitHash ?? "UNAVAILABLE",
@@ -536,6 +544,7 @@ export async function exportEvaluationSnapshot(options = {}) {
   };
   const manifestPath = path.join(snapshotDir, "manifest.json");
   await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+  const history = await writeSnapshotHistory({ snapshotsRoot, outRoot, hours: 48 });
 
   return {
     snapshot,
@@ -543,6 +552,7 @@ export async function exportEvaluationSnapshot(options = {}) {
     snapshotPath,
     manifestPath,
     manifest,
+    history,
   };
 }
 
@@ -581,6 +591,14 @@ export async function buildReviewBundle(options = {}) {
     "tradeRows.tsv.gz",
   ]) {
     const source = path.join(snapshotResult.snapshotDir, name);
+    if (await exists(source)) {
+      const target = path.join(bundleRoot, "snapshots", name);
+      await copyFile(source, target);
+      bundleFiles.push(await fileInfo(target, name, path.relative(bundleRoot, target), null));
+    }
+  }
+  for (const name of ["snapshot-history-48h.json", "snapshot-history-48h.md"]) {
+    const source = path.join(outRoot, name);
     if (await exists(source)) {
       const target = path.join(bundleRoot, "snapshots", name);
       await copyFile(source, target);

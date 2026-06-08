@@ -39,6 +39,9 @@ describe("continuous evaluation snapshot exporter", () => {
       "tradeRows.tsv.gz",
     ]));
     expect(snapshot.filesManifest.every((file: { sha256: string; bytes: number }) => file.sha256 && file.bytes > 0)).toBe(true);
+    const history = JSON.parse(readFileSync(path.join(fixture.outDir, "snapshot-history-48h.json"), "utf8"));
+    expect(history.schemaVersion).toBe("dogeedge.eval.snapshot-history.v1");
+    expect(history.latestSnapshotId).toBe(snapshot.snapshotId);
   });
 
   it("emits a critical alert if exported safety flags are not paper-only", async () => {
@@ -78,6 +81,7 @@ describe("continuous evaluation snapshot exporter", () => {
       "repo/COMMIT_HASH.txt",
       "repo/package.json",
       "registry/experiment-registry.tar.gz",
+      "snapshots/snapshot-history-48h.json",
     ]));
     expect(manifest.safetyStatus.liveTradingEnabled).toBe(false);
   });

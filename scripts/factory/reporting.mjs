@@ -47,7 +47,17 @@ export function metricsCsv(metrics) {
     "spaApproxPValue",
     "familyAdjustedPValue",
     "globalAdjustedPValue",
+    "familyQValue",
+    "globalQValue",
     "falseDiscoveryRisk",
+    "effectiveFamilyTrials",
+    "effectiveTotalTrials",
+    "pboPathCount",
+    "pboDegradedPathRate",
+    "conservativeCostPass",
+    "stressCostPass",
+    "sampleSufficiencyOk",
+    "sampleReasonCodes",
     "adjustedConfidence",
     "robustScore",
     "promotionVerdict",
@@ -99,8 +109,8 @@ export function markdownReport({ runId, startedAt, finishedAt, dataRoot, framesD
     "## Promotion Candidates",
     "",
     candidates.length
-      ? "| Algo | Family | Verdict | Closed Markets | Conservative P/L | WF | CPCV + | Holdout | Drift | DSR Approx | PBO Approx | FDR | Robust | Reasons |\n|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|\n"
-        + candidates.slice(0, 50).map((metric) => `| ${metric.algoName} | ${metric.family} | ${metric.promotionVerdict} | ${metric.independentClosedMarkets} | ${money(metric.costModels?.conservative?.totalPnl ?? 0)} | ${metric.walkForwardPass ? "pass" : "fail"} | ${percent(metric.cpcvSummary?.positiveFoldRate ?? 0)} | ${metric.holdoutPass ? "pass" : "fail"} ${money(metric.holdoutConservativeTotalPnl ?? 0)} | ${paperEvidenceLabel(metric)} | ${percent(metric.dsrApprox ?? 0)} | ${percent(metric.pboApprox ?? 0)} | ${percent(metric.falseDiscoveryRisk ?? 1)} | ${formatNumber(metric.robustScore)} | ${(metric.reasonCodes ?? []).join(" ")} |`).join("\n")
+      ? "| Algo | Family | Verdict | Closed Markets | Conservative P/L | WF | CPCV + | Holdout | Drift | DSR Approx | PBO Approx | FDR | q | Robust | Reasons |\n|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|\n"
+        + candidates.slice(0, 50).map((metric) => `| ${metric.algoName} | ${metric.family} | ${metric.promotionVerdict} | ${metric.independentClosedMarkets} | ${money(metric.costModels?.conservative?.totalPnl ?? 0)} | ${metric.walkForwardPass ? "pass" : "fail"} | ${percent(metric.cpcvSummary?.positiveFoldRate ?? 0)} | ${metric.holdoutPass ? "pass" : "fail"} ${money(metric.holdoutConservativeTotalPnl ?? 0)} | ${paperEvidenceLabel(metric)} | ${percent(metric.dsrApprox ?? 0)} | ${percent(metric.pboApprox ?? 0)} | ${percent(metric.falseDiscoveryRisk ?? 1)} | ${percent(metric.globalQValue ?? 1)} | ${formatNumber(metric.robustScore)} | ${(metric.reasonCodes ?? []).join(" ")} |`).join("\n")
       : "No candidates passed robust promotion gates.",
     "",
     "## Rejection Reasons",
@@ -111,9 +121,18 @@ export function markdownReport({ runId, startedAt, finishedAt, dataRoot, framesD
     "",
     "## All Metrics",
     "",
-    "| Algo | Family | Verdict | Closed | Markets | Days | P/L | ROI | Conservative P/L | Stress P/L | WF | CPCV + | Holdout | Holdout P/L | Holdout CI | Paper/Drift | DSR Approx | PBO Approx | FDR | Adj P | Max DD | Robust | Warnings |",
-    "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
-    ...metrics.slice(0, 100).map((metric) => `| ${metric.algoName} | ${metric.family} | ${metric.promotionVerdict} | ${metric.closed} | ${metric.independentClosedMarkets} | ${metric.daysRepresented} | ${money(metric.totalPnl)} | ${percent(metric.roi)} | ${money(metric.costModels?.conservative?.totalPnl ?? 0)} | ${money(metric.costModels?.stress?.totalPnl ?? 0)} | ${metric.walkForwardPass ? "pass" : "fail"} | ${percent(metric.cpcvSummary?.positiveFoldRate ?? 0)} | ${metric.holdoutPass ? "pass" : "fail"} | ${money(metric.holdoutConservativeTotalPnl ?? 0)} | ${money(metric.holdoutLowerCi)} | ${paperEvidenceLabel(metric)} | ${percent(metric.dsrApprox ?? 0)} | ${percent(metric.pboApprox ?? 0)} | ${percent(metric.falseDiscoveryRisk ?? 1)} | ${percent(metric.globalAdjustedPValue ?? 1)} | ${money(metric.maxDrawdown)} | ${formatNumber(metric.robustScore)} | ${(metric.warnings ?? []).join(" ")} |`),
+    "| Algo | Family | Verdict | Closed | Markets | Days | P/L | ROI | Conservative | Stress | WF | CPCV + | Holdout | Paper/Drift | DSR Approx | PBO Approx | q | Eff Trials | Robust | Warnings |",
+    "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
+    ...metrics.slice(0, 100).map((metric) => `| ${metric.algoName} | ${metric.family} | ${metric.promotionVerdict} | ${metric.closed} | ${metric.independentClosedMarkets} | ${metric.daysRepresented} | ${money(metric.totalPnl)} | ${percent(metric.roi)} | ${passLabel(metric.costModels?.conservative?.totalPnl > 0)} ${money(metric.costModels?.conservative?.totalPnl ?? 0)} | ${passLabel(metric.costModels?.stress?.totalPnl > 0)} ${money(metric.costModels?.stress?.totalPnl ?? 0)} | ${metric.walkForwardPass ? "pass" : "fail"} | ${percent(metric.cpcvSummary?.positiveFoldRate ?? 0)} | ${metric.holdoutPass ? "pass" : "fail"} ${money(metric.holdoutConservativeTotalPnl ?? 0)} | ${paperEvidenceLabel(metric)} | ${percent(metric.dsrApprox ?? 0)} | ${percent(metric.pboApprox ?? 0)} | ${percent(metric.globalQValue ?? 1)} | ${formatNumber(metric.effectiveTotalTrials)} | ${formatNumber(metric.robustScore)} | ${(metric.warnings ?? []).join(" ")} |`),
+    "",
+    "## CPCV Path Degradation",
+    "",
+    "| Algo | Paths | Eligible | Degraded | Rate | Median Delta | Method |",
+    "|---|---:|---:|---:|---:|---:|---|",
+    ...metrics.slice(0, 50).map((metric) => {
+      const summary = metric.pboPathSummary ?? {};
+      return `| ${metric.algoName} | ${summary.pathCount ?? 0} | ${summary.eligiblePathCount ?? 0} | ${summary.degradedPathCount ?? 0} | ${percent(summary.degradationRate ?? metric.pboApprox ?? 1)} | ${formatNumber(summary.medianPercentileDelta)} | ${summary.method ?? "fallback"} |`;
+    }),
     "",
     "## Simulator Telemetry",
     "",
@@ -142,6 +161,8 @@ export function markdownReport({ runId, startedAt, finishedAt, dataRoot, framesD
     "- `dsrApprox` deflates PSR using an expected maximum Sharpe threshold from the tested strategy count; it is not a full canonical DSR implementation.",
     "- `pboApprox` uses CPCV train-vs-validation rank degradation when CPCV train metrics are available, with fold-failure fallback.",
     "- `familyAdjustedPValue` and `globalAdjustedPValue` use market-block strategy-menu bootstrap distributions inspired by White Reality Check and Hansen SPA.",
+    "- `familyQValue` uses Benjamini-Hochberg within family; `globalQValue` uses the more conservative Benjamini-Yekutieli adjustment globally.",
+    "- `effectiveFamilyTrials` and `effectiveTotalTrials` estimate correlated strategy-menu size from market-level P/L vectors.",
     "",
     "Review-only. These results replay local paper market frames and do not place real orders.",
   ].flat().join("\n");
@@ -169,6 +190,16 @@ function csvMetricValue(metric, key) {
   if (key === "staleQuoteRejections") return metric.executionTelemetry?.conservative?.staleQuoteRejections ?? 0;
   if (key === "queueMisses") return metric.executionTelemetry?.conservative?.queueMisses ?? 0;
   if (key === "depthRejections") return metric.executionTelemetry?.conservative?.depthRejections ?? 0;
+  if (key === "familyQValue") return metric.familyQValue ?? 1;
+  if (key === "globalQValue") return metric.globalQValue ?? 1;
+  if (key === "effectiveFamilyTrials") return metric.effectiveFamilyTrials ?? "";
+  if (key === "effectiveTotalTrials") return metric.effectiveTotalTrials ?? "";
+  if (key === "pboPathCount") return metric.pboPathSummary?.pathCount ?? 0;
+  if (key === "pboDegradedPathRate") return metric.pboPathSummary?.degradationRate ?? metric.pboApprox ?? 1;
+  if (key === "conservativeCostPass") return (metric.costModels?.conservative?.totalPnl ?? 0) > 0;
+  if (key === "stressCostPass") return (metric.costModels?.stress?.totalPnl ?? 0) > 0;
+  if (key === "sampleSufficiencyOk") return metric.sampleSufficiency?.ok ?? true;
+  if (key === "sampleReasonCodes") return (metric.sampleSufficiency?.reasonCodes ?? []).join(" ");
   if (key === "reasonCodes") return (metric.reasonCodes ?? []).join(" ");
   return metric[key];
 }
@@ -202,6 +233,10 @@ function percent(value) {
 
 function formatNumber(value) {
   return typeof value === "number" && Number.isFinite(value) ? value.toFixed(3) : "-";
+}
+
+function passLabel(value) {
+  return value ? "pass" : "fail";
 }
 
 function rejectionReasonRows(metrics) {

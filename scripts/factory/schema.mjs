@@ -63,10 +63,10 @@ export function normalizeDecisionFrame(value, options = {}) {
     : null;
   const marketCloseMs = explicitCloseMs ?? inferredCloseMs;
   if (marketTicker && marketCloseMs === null) errors.push("market close timestamp cannot be inferred");
-  if (featureMs !== null && marketCloseMs !== null && marketCloseMs + 5_000 < featureMs && marketLive) {
-    errors.push("marketCloseTimestamp is earlier than featureTimestamp");
+  if (featureMs !== null && marketCloseMs !== null && featureMs >= marketCloseMs && !options.allowPostCloseFrames) {
+    errors.push("featureTimestamp must be strictly before marketCloseTimestamp");
   } else if (featureMs !== null && marketCloseMs !== null && marketCloseMs + 5_000 < featureMs) {
-    warnings.push("non-live frame was captured after market close");
+    warnings.push("post-close frame was accepted only because allowPostCloseFrames is enabled");
   }
 
   const targetPrice = numberOrNull(value.targetPrice);

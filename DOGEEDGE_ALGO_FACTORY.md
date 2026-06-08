@@ -90,6 +90,7 @@ npm run factory:audit-exports -- --input review_exports
 npm run eval:snapshot
 npm run eval:bundle
 npm run eval:loop
+npm run merge:safety
 ```
 
 `factory:validate` runs the full integrity, split, holdout, and reporting pipeline without installing sweep output. `factory:replay-run -- --config <run>\config.json` reruns the saved deterministic config and fails if the decision-frame input manifest no longer matches, unless `--permissive-debug` is explicitly used. `factory:promote-check` emits promotion-ready and non-promotable sets in the saved config and terminal output. `factory:compare` is read-only and compares saved result files. These commands write only local research outputs and never place orders.
@@ -152,10 +153,13 @@ The review bundle includes:
 - `snapshots/tradeAggregates.tsv.gz`;
 - `snapshots/warnings.tsv.gz`;
 - capped `decisionRows.tsv.gz` and `tradeRows.tsv.gz` unless `--no-rows` is used;
+- `snapshots/snapshot-history-48h.json` and `snapshots/snapshot-history-48h.md` with latest-vs-previous and latest-vs-baseline trend deltas;
 - `repo/` files needed to interpret the packet against the exact local code snapshot;
 - `registry/experiment-registry.tar.gz`.
 
 The exporter redacts absolute metadata paths in packet JSON to `_REPO_ROOT_` and `_DATA_ROOT_`. Market tickers, algo IDs, timestamps, prices, sizes, hashes, and git commits remain plain because they are needed for replay and audit.
+
+`merge:safety` is a local advisory guard for GPT-CLI patch passes. It prints `ALLOW` only for documentation/export/audit/report/test-artifact diffs. It prints `REQUIRE_HUMAN_APPROVAL` for app code, dependencies, factory kernel files, local worker/backtest entry points, Tauri/API files, and live/Kalshi/order-sensitive paths. It does not merge, push, or change runtime behavior.
 
 Each run writes:
 
@@ -175,6 +179,7 @@ The factory now treats each 15-minute market ticker as an event with a label hor
 
 The validation pipeline:
 
+- fails closed before expensive ranking/promotion when the event sample is too small for research evidence;
 - validates decision-frame schemas and fails closed on malformed, stale, temporally impossible, or future/outcome-bearing rows unless `--permissive-debug` is used;
 - adds explicit `featureTimestamp`, `labelTimestamp`, `marketCloseTimestamp`, and `settlementTimestamp` fields;
 - deduplicates exact frames and downsamples highly overlapping near-identical frames;
@@ -184,6 +189,8 @@ The validation pipeline:
 - reserves an immutable final holdout made from the latest market events, strictly later than all research, walk-forward, purged, and CPCV windows;
 - simulates fills with ask-side entries, bid-side exits, visible-depth limits, partial fills, stale-quote rejection, queue/fill probability, fees, slippage, and adverse-selection stress;
 - evaluates base, conservative, and stress cost models.
+
+The sample gate is intentionally conservative. By default the research loop requires at least 60 market events, 12 final-holdout events, 30 closed trades, 50 independent closed markets, 7 represented days, and 5 closed trades per tested fold before treating ranking/promotion evidence as meaningful. If the sample is below the event/fold/holdout gate, the output is `insufficient_data`, no candidates are generated, and the report shows the reason codes instead of flooding the run with noisy rejection rows.
 
 No code can guarantee consistent profitability. The goal is to reduce false positives and keep promoted algos statistically honest, cost-aware, and conservative.
 
@@ -228,9 +235,12 @@ Multiple-testing outputs are:
 
 - `familyAdjustedPValue`: family-level market-block menu bootstrap p-value;
 - `globalAdjustedPValue`: global market-block menu bootstrap p-value;
+- `familyQValue`: Benjamini-Hochberg q-value within the strategy family;
+- `globalQValue`: Benjamini-Yekutieli q-value across the full tested menu;
+- `effectiveFamilyTrials` and `effectiveTotalTrials`: correlated effective strategy-menu size estimated from market-level P/L vectors;
 - `realityCheckApproxPValue`: White Reality Check-style global menu p-value approximation;
 - `spaApproxPValue`: Hansen SPA-style studentized global menu p-value approximation;
-- `falseDiscoveryRisk`: simple combined risk from family/global adjusted p-values.
+- `falseDiscoveryRisk`: simple combined risk from adjusted p-values, q-values, and Reality Check approximation.
 
 These approximations are designed to penalize sweep-heavy research. They are conservative controls, not proof of profitability.
 
@@ -245,7 +255,10 @@ Backtests can install only paper-only generated algos. Real live trading remains
 
 Suggested conservative defaults currently implemented:
 
+- at least 60 market events before ranking/promotion evidence is considered meaningful;
 - at least 50 independent closed markets for research validation;
+- at least 30 closed trades per strategy;
+- at least 12 final-holdout events in the research dataset;
 - at least 7 represented days when available;
 - at least 70% positive conservative expectancy folds;
 - at least 70% positive CPCV paths;
@@ -272,6 +285,8 @@ Simulation trades now carry execution telemetry into `metrics.json`, `metrics.cs
 
 This prevents reports from silently showing `avgSlippage=0` when conservative or stress cost models actually applied slippage.
 
+Fill probability and visible-depth consumption are state-conditional. The simulator starts from each cost model's `minFillProbability` and `depthShare`, then degrades them by latency bucket, spread bucket, visible depth/liquidity bucket, time-to-close bucket, side, and entry/exit action. These are transparent heuristics, not a calibrated exchange queue model, but they prevent late/thin/wide/stale regimes from looking as executable as early/deep/tight regimes.
+
 Holdout evidence and paper evidence are separate. The final holdout proves that a candidate survived a strictly later replay slice. Paper evidence comes from `local-worker\paper-trades.jsonl` after a generated algo runs in the app's paper or dry-live paths. Missing paper evidence keeps the candidate at `paper_only`/validation status and prevents tiny-live eligibility.
 
 Paper/live-paper evidence now has real drift checks. The factory matches generated strategy IDs back to factory algo IDs and compares validation evidence with later paper-style evidence using:
@@ -280,7 +295,7 @@ Paper/live-paper evidence now has real drift checks. The factory matches generat
 - regime-share drift, such as a strategy validated mostly in one time-to-close bucket but running in another;
 - fill-quality drift, including closed/open trade rate and slippage-like fields when the paper rows contain them.
 
-The output fields are `paperEvidence`, `driftOk`, `driftReasons`, and `driftScore`. Material drift blocks or demotes promotion evidence. The current paper trade log does not contain a full reject stream, so fill-quality drift is intentionally conservative and documents that limitation in run output.
+The output fields are `paperEvidence`, `driftOk`, `driftReasons`, `driftScore`, and drift `components`. Drift decisions are warning-only until at least 20 paper closes are available, because tiny paper samples can over-trigger. Material drift blocks or demotes promotion evidence once the sample threshold is met. The current paper trade log does not contain a full reject stream, so fill-quality drift is intentionally conservative and documents that limitation in run output.
 
 ## Reproducibility
 
@@ -315,7 +330,10 @@ All bootstrap, multiple-testing, simulator, and fold-comparison streams derive f
 - conservative and stress cost P/L;
 - bootstrap confidence intervals;
 - adjusted p-values and false-discovery risk;
+- family/global q-values;
+- effective family/global trial counts;
 - `dsrApprox` and `pboApprox`;
+- CPCV path degradation summary;
 - paper evidence and drift status;
 - rejection reasons and warnings.
 

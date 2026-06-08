@@ -82,6 +82,8 @@ async function discoverRoles(root) {
     metricsJson: rolePath("ui/metrics.json"),
     reportMd: rolePath("ui/report.md"),
     rawSampleManifest: rolePath("raw/one-week-sample/sample-manifest.json"),
+    snapshotHistoryJson: rolePath("snapshots/snapshot-history-48h.json"),
+    snapshotHistoryMd: rolePath("snapshots/snapshot-history-48h.md"),
     factoryPageScreenshot: rolePath("screens/factory-page.png"),
     screenshotReadme: rolePath("screens/README.txt"),
     splitManifests,

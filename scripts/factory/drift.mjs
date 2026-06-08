@@ -6,9 +6,28 @@ export const defaultDriftThresholds = {
   maxRegimeShareDelta: 0.35,
   maxFillRateDelta: 0.25,
   maxSlippageDelta: 0.03,
+  minPaperTradesForDecision: 20,
 };
 
 export function detectEvidenceDrift({ validationTrades = [], paperTrades = [], validationRegimes = {}, paperRegimes = {}, validationFill = {}, paperFill = {}, thresholds = defaultDriftThresholds } = {}) {
+  const minPaperTrades = Math.max(1, Number(thresholds.minPaperTradesForDecision ?? defaultDriftThresholds.minPaperTradesForDecision));
+  if (paperTrades.length < minPaperTrades) {
+    return {
+      driftOk: true,
+      driftReasons: [],
+      driftScore: 0,
+      sampleStatus: "insufficient_paper_sample_warning_only",
+      warnings: ["insufficient_paper_sample_for_drift_decision"],
+      components: {
+        pnl: { drift: false, score: 0, maxDeviation: 0, mean: average(paperTrades.map((trade) => Number(trade.pnl ?? 0))) ?? 0 },
+        regime: regimeShareDrift(validationRegimes, paperRegimes, thresholds),
+        fill: fillQualityDrift(validationFill, paperFill, thresholds),
+        validationTradeCount: validationTrades.length,
+        paperTradeCount: paperTrades.length,
+        minPaperTradesForDecision: minPaperTrades,
+      },
+    };
+  }
   const pnl = pageHinkleyDrift(paperTrades.map((trade) => Number(trade.pnl ?? 0)), thresholds);
   const regime = regimeShareDrift(validationRegimes, paperRegimes, thresholds);
   const fill = fillQualityDrift(validationFill, paperFill, thresholds);
@@ -81,4 +100,3 @@ export function fillQualityDrift(validationFill, paperFill, thresholds = default
     slippageDelta: roundRatio(slippageDelta),
   };
 }
-

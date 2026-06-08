@@ -4,11 +4,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { normalizeDecisionFrame } from "../../scripts/factory/schema.mjs";
-import { buildMarketEvents, deduplicateDecisionFrames } from "../../scripts/factory/data.mjs";
+import { buildMarketEvents, deduplicateDecisionFrames, readFactoryDecisionFrames } from "../../scripts/factory/data.mjs";
 import { purgedEmbargoFolds } from "../../scripts/factory/splits.mjs";
-import { simulateAlgoEvents } from "../../scripts/factory/simulator.mjs";
+import { simulateAlgoEvents, stateDepthShare, stateFillProbability } from "../../scripts/factory/simulator.mjs";
 import { metricsForAlgo } from "../../scripts/factory/metrics.mjs";
 import { pboRankDegradationApprox, rankFactoryMetrics } from "../../scripts/factory/ranking.mjs";
+import { effectiveTrialCount, qValueMap } from "../../scripts/factory/multiple-testing.mjs";
 import { promotionReview } from "../../scripts/factory/promotion.mjs";
 import { runFactoryResearchPipeline } from "../../scripts/factory/pipeline.mjs";
 import { finalHoldoutSplit } from "../../scripts/factory/holdout.mjs";
@@ -17,6 +18,7 @@ import { compareInputManifest, decisionFrameInputManifest } from "../../scripts/
 import { paperEvidenceForAlgo, readPaperEvidence } from "../../scripts/factory/paper-evidence.mjs";
 import { markdownReport, metricsCsv } from "../../scripts/factory/reporting.mjs";
 import { auditReviewExports } from "../../scripts/factory/audit-exports.mjs";
+import { sampleSufficiency } from "../../scripts/factory/sample-gates.mjs";
 
 const baseFrame = {
   id: "frame-1",
@@ -67,7 +69,7 @@ describe("factory research safeguards", () => {
     expect(result.errors.join(" ")).toContain("future/outcome");
   });
 
-  it("warns instead of failing on stale non-live post-close frames", () => {
+  it("fails closed on post-close feature frames unless explicitly allowed", () => {
     const result = normalizeDecisionFrame({
       ...baseFrame,
       marketLive: false,
@@ -77,9 +79,39 @@ describe("factory research safeguards", () => {
       secondsToClose: 0,
     });
 
-    expect(result.frame).not.toBeNull();
-    expect(result.errors).toHaveLength(0);
-    expect(result.warnings.join(" ")).toContain("non-live");
+    expect(result.frame).toBeNull();
+    expect(result.errors.join(" ")).toContain("strictly before");
+
+    const allowed = normalizeDecisionFrame({
+      ...baseFrame,
+      marketLive: false,
+      observedAt: "2026-06-01T00:01:00.000Z",
+      capturedAt: "2026-06-01T00:01:00.000Z",
+      marketCloseTime: "2026-06-01T00:00:00.000Z",
+      secondsToClose: 0,
+    }, { allowPostCloseFrames: true });
+    expect(allowed.frame).not.toBeNull();
+  });
+
+  it("excludes post-close feature rows during decision-frame ingestion", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "dogeedge-postclose-ingest-"));
+    writeFileSync(path.join(dir, "records.jsonl"), [
+      JSON.stringify(baseFrame),
+      JSON.stringify({
+        ...baseFrame,
+        id: "post-close",
+        marketLive: false,
+        observedAt: "2026-06-01T00:01:00.000Z",
+        capturedAt: "2026-06-01T00:01:00.000Z",
+        marketCloseTime: "2026-06-01T00:00:30.000Z",
+      }),
+    ].join("\n"));
+
+    const result = await readFactoryDecisionFrames(dir);
+
+    expect(result.frameCount).toBe(1);
+    expect(result.warningCount ?? result.warnings.length).toBeGreaterThan(0);
+    expect(result.warnings.map((warning) => warning.message).join(" ")).toContain("row excluded");
   });
 
   it("deduplicates exact and near-identical overlapping frames", () => {
@@ -143,14 +175,46 @@ describe("factory research safeguards", () => {
     expect(result.candidates).toHaveLength(0);
     expect(result.metrics[0].promotionVerdict).toBe("insufficient_data");
     expect(result.metrics[0].nonPromotable).toBe(true);
+    expect(result.metrics[0].sampleSufficiency.ok).toBe(false);
   });
 
-  it("increases multiple-testing penalty as trial count grows", () => {
+  it("hard-fails research samples below event, holdout, or fold thresholds", () => {
+    const events = Array.from({ length: 8 }, (_, index) => event(
+      `tiny-${index}`,
+      `2026-06-01T00:${String(index).padStart(2, "0")}:00.000Z`,
+      `2026-06-01T00:${String(index + 1).padStart(2, "0")}:00.000Z`,
+    ));
+    const split = finalHoldoutSplit(events, { minHoldoutEvents: 12 });
+    const sufficiency = sampleSufficiency({ events, holdoutSplit: split, folds: [], thresholds: { minResearchEvents: 60, minHoldoutEvents: 12 } });
+
+    expect(sufficiency.ok).toBe(false);
+    expect(sufficiency.reasonCodes).toEqual(expect.arrayContaining(["insufficient_research_events", "insufficient_holdout_events"]));
+  });
+
+  it("does not improve adjusted confidence mechanically as the tested menu grows", () => {
     const metric = robustMetric("algo-0");
     const one = rankFactoryMetrics([metric])[0];
     const many = rankFactoryMetrics(Array.from({ length: 50 }, (_, index) => robustMetric(`algo-${index}`))).find((item) => item.algoId === "algo-0");
 
-    expect(many?.multipleTestingPenalty).toBeGreaterThan(one.multipleTestingPenalty);
+    expect(many?.adjustedConfidence).toBeLessThanOrEqual(one.adjustedConfidence);
+  });
+
+  it("computes q-values and correlated effective trial counts deterministically", () => {
+    const metrics = Array.from({ length: 5 }, (_, index) => ({
+      ...robustMetric(`q-${index}`),
+      closedTrades: Array.from({ length: 10 }, (_, tradeIndex) => ({
+        marketTicker: `m-${tradeIndex}`,
+        pnl: index === 0 ? 0.1 : tradeIndex % 2 ? 0.01 : -0.01,
+      })),
+    }));
+    const qValues = qValueMap(metrics.map((metric, index) => [metric.algoId, 0.01 + index * 0.05]), { method: "BY" });
+    const first = effectiveTrialCount(metrics);
+    const second = effectiveTrialCount(metrics);
+
+    expect(qValues["q-0"]).toBeLessThanOrEqual(qValues["q-4"]);
+    expect(first).toBe(second);
+    expect(first).toBeGreaterThanOrEqual(1);
+    expect(first).toBeLessThanOrEqual(metrics.length);
   });
 
   it("keeps statistical adjustments deterministic for the same root seed", () => {
@@ -231,16 +295,21 @@ describe("factory research safeguards", () => {
       ...robustMetric("weak-cpcv"),
       totalPnl: 10,
       cpcvSummary: { positiveFoldRate: 0.1, medianFoldPnl: -2 },
+      cpcvTrainMetrics: [{ foldId: "cpcv-1", closed: 10, totalPnl: 8, roi: 0.5 }],
+      cpcvMetrics: [{ foldId: "cpcv-1", closed: 10, totalPnl: -2, roi: -0.1 }],
     };
     const strong = {
       ...robustMetric("strong-cpcv"),
       totalPnl: 10,
       cpcvSummary: { positiveFoldRate: 1, medianFoldPnl: 2 },
+      cpcvTrainMetrics: [{ foldId: "cpcv-1", closed: 10, totalPnl: 4, roi: 0.2 }],
+      cpcvMetrics: [{ foldId: "cpcv-1", closed: 10, totalPnl: 3, roi: 0.15 }],
     };
 
     const ranked = rankFactoryMetrics([weak, strong], { bootstrapIterations: 100 });
 
     expect(ranked[0].algoId).toBe("strong-cpcv");
+    expect(ranked[0].pboPathSummary.pathCount).toBeGreaterThan(0);
   });
 
   it("flags train-vs-validation rank degradation in the PBO approximation", () => {
@@ -279,7 +348,7 @@ describe("factory research safeguards", () => {
       paperFill: { fillRate: 0.88, avgSlippage: 0.01 },
     });
     const drifted = detectEvidenceDrift({
-      paperTrades: Array.from({ length: 10 }, () => ({ pnl: -0.2 })),
+      paperTrades: Array.from({ length: 25 }, () => ({ pnl: -0.2 })),
       validationRegimes: { final_60s: 1 },
       paperRegimes: { early: 1 },
       validationFill: { fillRate: 0.95, avgSlippage: 0.01 },
@@ -289,6 +358,44 @@ describe("factory research safeguards", () => {
     expect(stable.driftOk).toBe(true);
     expect(drifted.driftOk).toBe(false);
     expect(drifted.driftReasons).toEqual(expect.arrayContaining(["regime_share_drift", "fill_quality_drift"]));
+  });
+
+  it("keeps drift warning-only when paper sample is too small", () => {
+    const drift = detectEvidenceDrift({
+      paperTrades: [{ pnl: -10 }],
+      validationRegimes: { final_60s: 1 },
+      paperRegimes: { early: 1 },
+      validationFill: { fillRate: 1, avgSlippage: 0 },
+      paperFill: { fillRate: 0, avgSlippage: 1 },
+      thresholds: { minPaperTradesForDecision: 20 },
+    });
+
+    expect(drift.driftOk).toBe(true);
+    expect(drift.sampleStatus).toBe("insufficient_paper_sample_warning_only");
+    expect(drift.warnings).toContain("insufficient_paper_sample_for_drift_decision");
+  });
+
+  it("uses state-conditional fill probability and depth share", () => {
+    const good = normalizeDecisionFrame({
+      ...baseFrame,
+      capturedAt: "2026-06-01T00:00:00.100Z",
+      yesAsk: 0.4,
+      yesBid: 0.39,
+      yesTopDepth: { bidSize: 100, askSize: 100 },
+      secondsToClose: 300,
+    }).frame;
+    const bad = normalizeDecisionFrame({
+      ...baseFrame,
+      capturedAt: "2026-06-01T00:00:04.000Z",
+      yesAsk: 0.5,
+      yesBid: 0.4,
+      yesTopDepth: { bidSize: 2, askSize: 2 },
+      secondsToClose: 20,
+    }).frame;
+    const model = costModel("conditional", 1, 0.9);
+
+    expect(stateFillProbability(bad, "YES", "entry", model)).toBeLessThan(stateFillProbability(good, "YES", "entry", model));
+    expect(stateDepthShare(bad, "YES", "entry", model)).toBeLessThan(stateDepthShare(good, "YES", "entry", model));
   });
 
   it("hashes exact decision-frame files and changes when bytes change", async () => {
@@ -368,6 +475,9 @@ describe("factory research safeguards", () => {
     expect(replayOutput).toContain("Replay-run mode");
     expect(promoteOutput).toContain("Promotion check");
     expect(validateConfig.validateMode).toBe(true);
+    expect(validateConfig.registry.schemaVersion).toBe("dogeedge.factory.registry.v2");
+    expect(validateConfig.registry.costModelHash).toBeTruthy();
+    expect(validateConfig.registry.riskModelHash).toBeTruthy();
   });
 
   it("audits review export packets and writes fold diff artifacts", async () => {
@@ -412,8 +522,13 @@ describe("factory research safeguards", () => {
     expect(csv).toContain("realityCheckApproxPValue");
     expect(csv).toContain("dsrApprox");
     expect(csv).toContain("pboApprox");
+    expect(csv).toContain("familyQValue");
+    expect(csv).toContain("globalQValue");
+    expect(csv).toContain("effectiveTotalTrials");
+    expect(csv).toContain("pboPathCount");
     expect(report).toContain("Approximation Notes");
     expect(report).toContain("Simulator Telemetry");
+    expect(report).toContain("CPCV Path Degradation");
     expect(Object.prototype.hasOwnProperty.call(metric, "dsrApprox")).toBe(true);
     expect(Object.prototype.hasOwnProperty.call(metric, "pboApprox")).toBe(true);
     expect(Object.prototype.hasOwnProperty.call(metric, "dsr")).toBe(false);

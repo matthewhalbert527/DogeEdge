@@ -38,7 +38,9 @@ const embargoMs = Math.max(0, Number(args["embargo-ms"] ?? replayConfig?.embargo
 const foldCount = Math.max(2, Number(args.folds ?? replayConfig?.foldCount ?? 5));
 const bootstrapIterations = Math.max(100, Number(args["bootstrap-iterations"] ?? replayConfig?.bootstrapIterations ?? 400));
 const thresholds = {
-  minClosedTrades: Math.max(20, minCandidateClosed),
+  minClosedTrades: Math.max(30, minCandidateClosed),
+  minResearchEvents: Math.max(60, Number(args["min-research-events"] ?? replayConfig?.thresholds?.minResearchEvents ?? 60)),
+  minHoldoutEvents: Math.max(12, Number(args["min-holdout-events"] ?? replayConfig?.thresholds?.minHoldoutEvents ?? 12)),
   minWalkForwardClosed: Math.max(2, minWalkForwardClosed),
   minHoldoutClosed: Math.max(5, Number(args["min-holdout-closed"] ?? replayConfig?.thresholds?.minHoldoutClosed ?? 10)),
   minHoldoutMarkets: Math.max(5, Number(args["min-holdout-markets"] ?? replayConfig?.thresholds?.minHoldoutMarkets ?? 10)),
