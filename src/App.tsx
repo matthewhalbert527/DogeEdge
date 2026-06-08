@@ -72,9 +72,11 @@ import {
   hasResearchPromotionCandidate,
   researchEvidenceCanMature,
   researchEvidenceClassLabel,
+  researchEvidenceDefaultRankScore,
   researchEvidenceSortScore,
   researchPromotionGate,
 } from "./core/research-ranking";
+import { familyResearchSupported, familySupportReason } from "./core/family-registry";
 import {
   advancePaperStrategies,
   activePaperRuleDescriptions,
@@ -190,6 +192,8 @@ type ExecutableTopTraderScore = {
   pnlPerCycle: number;
   winRate: number;
   hasDryEvidence: boolean;
+  researchSupported: boolean;
+  defaultRankScore: number;
 };
 
 type ActivatedTradeViewerState = {
@@ -4014,7 +4018,7 @@ function TopTradersView({
               <thead>
                 <tr>
                   <th>Fav</th>
-                  <SortableTopTraderHeader sortKey="rank" sorts={topTraderSorts} onSort={changeSort}>Rank</SortableTopTraderHeader>
+                  <SortableTopTraderHeader sortKey="rank" sorts={topTraderSorts} onSort={changeSort}>Default Rank</SortableTopTraderHeader>
                   <SortableTopTraderHeader sortKey="bucket" sorts={topTraderSorts} onSort={changeSort}>Slot</SortableTopTraderHeader>
                   <SortableTopTraderHeader sortKey="id" sorts={topTraderSorts} onSort={changeSort}>ID</SortableTopTraderHeader>
                   <SortableTopTraderHeader sortKey="type" sorts={topTraderSorts} onSort={changeSort}>Type</SortableTopTraderHeader>
@@ -4044,6 +4048,8 @@ function TopTradersView({
                   const acceptanceRate = topTraderExecutableAcceptanceRate(execStats);
                   const confidence = activatedConfidence(execRow, asOf);
                   const research = factoryEvidenceForTopTraderRow(row, factoryEvidenceBySource);
+                  const researchSupported = familyResearchSupported(row.family) && research !== null;
+                  const supportReason = familySupportReason(row.family);
                   const expanded = tradeViewer.sourceAlgoId === row.sourceAlgoId;
                   const executablePositions = expanded ? topTraderExecutablePositionsForSource(executableState.positions, row.sourceAlgoId) : [];
                   return (
@@ -4066,6 +4072,9 @@ function TopTradersView({
                             <Badge tone={topTraderBucketTone(row.bucket)}>{topTraderBucketLabel(row.bucket)}</Badge>
                             {row.bucket === "champion" && (!research || research.nonPromotable) && (
                               <Badge tone="warn">Dry-run champ</Badge>
+                            )}
+                            {!researchSupported && (
+                              <Badge tone="warn">{supportReason === "missing_research_adapter" ? "Unsupported" : "No research link"}</Badge>
                             )}
                           </div>
                         </td>
@@ -4101,6 +4110,9 @@ function TopTradersView({
                             <Badge tone={isActive ? "good" : arena.status === "running" ? "info" : "neutral"}>{isActive ? "ACTIVE" : arena.status === "running" ? "QUEUED" : "READY"}</Badge>
                             <Badge tone={confidence.tone}>{confidence.label}</Badge>
                             <Badge tone={topTraderResearchTone(research)}>{topTraderResearchLabel(research)}</Badge>
+                            {execSummary.totalPnl < 0 && (
+                              <Badge tone="bad">Negative dry-run</Badge>
+                            )}
                             {research && (
                               <>
                                 <Badge tone={research.holdoutPass && research.holdoutStrictlyLater ? "good" : "bad"}>{research.holdoutPass ? "Holdout ok" : "Holdout fail"}</Badge>
@@ -4513,6 +4525,7 @@ function executableTopTraderScore(
   const priceRejects = stats?.priceRejects ?? 0;
   const hasDryEvidence = attempts > 0 || accepted > 0 || summary.sells > 0;
   const confidence = activatedConfidence(execRow, asOf);
+  const researchSupported = familyResearchSupported(row.family) && researchEvidence !== null;
   const rawScore = hasDryEvidence
     ? accepted * 3
     + summary.sells * 4
@@ -4532,8 +4545,14 @@ function executableTopTraderScore(
     ? roundDisplayRatio(rawScore > 0 ? rawScore * confidence.scoreMultiplier : rawScore)
     : -10_000;
   const researchScore = researchEvidenceSortScore(researchEvidence);
+  const defaultRankScore = researchEvidenceDefaultRankScore({
+    evidence: researchEvidence,
+    researchSupported,
+    executableTotalPnl: summary.totalPnl,
+    executablePnlPerCycle: pnlPerCycle,
+  });
   const dryContribution = hasDryEvidence ? Math.max(-40, Math.min(40, dryScore * 0.08)) : -25;
-  const score = roundDisplayRatio(researchScore + dryContribution);
+  const score = roundDisplayRatio(defaultRankScore + researchScore * 0.01 + dryContribution);
   return {
     row,
     stats,
@@ -4548,12 +4567,15 @@ function executableTopTraderScore(
     pnlPerCycle,
     winRate,
     hasDryEvidence,
+    researchSupported,
+    defaultRankScore,
   };
 }
 
 function executableChampionEligible(item: ExecutableTopTraderScore, asOf: string) {
   const confidence = activatedConfidence(item.execRow, asOf);
   return item.hasDryEvidence
+    && item.researchSupported
     && researchEvidenceCanMature(item.researchEvidence)
     && (item.stats?.attempts ?? 0) >= 15
     && (item.stats?.acceptedBuys ?? 0) >= 8
@@ -4566,6 +4588,7 @@ function executableChampionEligible(item: ExecutableTopTraderScore, asOf: string
 
 function executableProspectEligible(item: ExecutableTopTraderScore, asOf: string) {
   return item.hasDryEvidence
+    && item.researchSupported
     && researchEvidenceCanMature(item.researchEvidence)
     && !executableChampionEligible(item, asOf)
     && (item.stats?.acceptedBuys ?? 0) > 0
@@ -4577,7 +4600,8 @@ function executableProspectEligible(item: ExecutableTopTraderScore, asOf: string
 }
 
 function compareExecutableTopTraderScores(left: ExecutableTopTraderScore, right: ExecutableTopTraderScore) {
-  return right.score - left.score
+  return right.defaultRankScore - left.defaultRankScore
+    || right.score - left.score
     || right.researchScore - left.researchScore
     || Number(right.hasDryEvidence) - Number(left.hasDryEvidence)
     || (right.stats?.acceptedBuys ?? 0) - (left.stats?.acceptedBuys ?? 0)

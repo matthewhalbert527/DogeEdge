@@ -24,9 +24,11 @@ import {
   hasResearchPromotionCandidate,
   researchEvidenceCanMature,
   researchEvidenceClassLabel,
+  researchEvidenceDefaultRankScore,
   researchEvidenceSortScore,
   researchPromotionGate,
 } from "./research-ranking";
+import { familyResearchSupported } from "./family-registry";
 
 const baseFrame = {
   id: "frame-1",
@@ -118,6 +120,10 @@ describe("factory research safeguards", () => {
     const result = await readFactoryDecisionFrames(dir);
 
     expect(result.frameCount).toBe(1);
+    expect(result.frameCountRaw).toBe(2);
+    expect(result.excludedFrameCount).toBe(1);
+    expect(result.postCloseExcludedCount).toBe(1);
+    expect(result.frames.some((frame) => frame.id === "post-close")).toBe(false);
     expect(result.warningCount ?? result.warnings.length).toBeGreaterThan(0);
     expect(result.warnings.map((warning) => warning.message).join(" ")).toContain("row excluded");
   });
@@ -345,6 +351,29 @@ describe("factory research safeguards", () => {
     expect(researchEvidenceCanMature(researchValidated)).toBe(true);
     expect(researchEvidenceCanMature(dryRunOnly)).toBe(false);
     expect(researchEvidenceSortScore(researchValidated)).toBeGreaterThan(researchEvidenceSortScore(dryRunOnly));
+  });
+
+  it("keeps unsupported negative dry-run rows below supported non-negative research rows by default", () => {
+    const supportedEvidence = strictResearchEvidence("supported-row");
+    const unsupportedEvidence = {
+      ...strictResearchEvidence("unsupported-row"),
+      robustScore: 1_000,
+      holdoutLowerCi: 1,
+    };
+
+    expect(familyResearchSupported("sweep-model")).toBe(true);
+    expect(familyResearchSupported("sweep-scalp")).toBe(false);
+    expect(researchEvidenceDefaultRankScore({
+      evidence: supportedEvidence,
+      researchSupported: familyResearchSupported("sweep-model"),
+      executableTotalPnl: 5,
+      executablePnlPerCycle: 0.5,
+    })).toBeGreaterThan(researchEvidenceDefaultRankScore({
+      evidence: unsupportedEvidence,
+      researchSupported: familyResearchSupported("sweep-scalp"),
+      executableTotalPnl: -500,
+      executablePnlPerCycle: -10,
+    }));
   });
 
   it("uses one strict research gate before arena automation can treat a row as valid", () => {

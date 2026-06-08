@@ -8,6 +8,7 @@ import { gzipSync } from "node:zlib";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { hashJson, isRecord, stableStringify } from "./factory/utils.mjs";
 import { loadSnapshotHistory, writeSnapshotHistory } from "./factory/snapshot-history.mjs";
+import { familyRegistryPublic, familyRegistryEntry, researchLiveAlignment } from "./factory/family-registry.mjs";
 
 const execFileAsync = promisify(execFile);
 const schemaVersion = "dogeedge.eval.snapshot.v1";
@@ -312,6 +313,64 @@ const warningsColumns = [
   "remediationHint",
 ];
 
+const rosterAlignmentColumns = [
+  "snapshotId",
+  "algoId",
+  "displayId",
+  "family",
+  "researchSupported",
+  "supportReason",
+  "sourceResearchAlgoId",
+  "researchSnapshotId",
+  "researchVerdict",
+  "researchAgeHours",
+  "dryRunTotalPnl",
+  "dryRunClosedExits",
+  "dryRunAcceptedBuys",
+  "defaultBucket",
+  "watchOnly",
+];
+
+const familyCoverageColumns = [
+  "snapshotId",
+  "family",
+  "count",
+  "researchSupported",
+  "supportReason",
+  "source",
+];
+
+const promotionGateColumns = [
+  "snapshotId",
+  "algoId",
+  "family",
+  "promotionVerdict",
+  "researchSupported",
+  "gatePass",
+  "reasonCodesJson",
+  "conservativeTotalPnl",
+  "stressTotalPnl",
+  "holdoutPass",
+  "holdoutLowerCi",
+  "adjustedConfidence",
+  "falseDiscoveryRisk",
+];
+
+const postCloseAuditColumns = [
+  "snapshotId",
+  "rawFrames",
+  "usableFrames",
+  "excludedFrames",
+  "postCloseRowsDetected",
+  "postCloseRowsExcluded",
+  "featureAtOrAfterCloseCount",
+  "labelBeforeFeatureCount",
+  "settlementBeforeFeatureCount",
+  "futureOutcomeFieldViolations",
+  "duplicateFramesRemoved",
+  "overlappingFramesDownsampled",
+];
+
 const paperDecisionLedgerColumns = [
   "snapshotId",
   "eventId",
@@ -433,6 +492,9 @@ export async function exportEvaluationSnapshot(options = {}) {
   const tradeAggregates = tradeAggregateRows({ snapshotId, windowStartAt, windowEndAt, metrics, topStats });
   const foldDefinitions = foldDefinitionRows(registry, primaryRun);
   const foldMetrics = foldMetricRows({ snapshotId, metrics, registry, primaryRun });
+  const alignment = researchLiveAlignment({ researchMetrics: metrics, liveStats: topStats });
+  const leakageAudit = leakageAuditSummary({ snapshotId, dataQuality, metrics });
+  const alignmentArtifacts = alignmentRows({ snapshotId, metrics, topStats, primaryRun, alignment, leakageAudit });
   let decisionRows = [];
   let tradeRows = [];
   const warnings = warningRows({
@@ -454,6 +516,12 @@ export async function exportEvaluationSnapshot(options = {}) {
     { logicalName: "decisionAggregates.tsv.gz", relativePath: "decisionAggregates.tsv.gz", content: tsv(decisionAggregateColumns, decisionAggregates) },
     { logicalName: "tradeAggregates.tsv.gz", relativePath: "tradeAggregates.tsv.gz", content: tsv(tradeAggregateColumns, tradeAggregates) },
     { logicalName: "warnings.tsv.gz", relativePath: "warnings.tsv.gz", content: tsv(warningsColumns, warnings.map(flattenWarning)) },
+    { logicalName: "roster_alignment.tsv.gz", relativePath: "roster_alignment.tsv.gz", content: tsv(rosterAlignmentColumns, alignmentArtifacts.rosterAlignment) },
+    { logicalName: "research_coverage_by_family.tsv.gz", relativePath: "research_coverage_by_family.tsv.gz", content: tsv(familyCoverageColumns, alignmentArtifacts.researchCoverage) },
+    { logicalName: "live_coverage_by_family.tsv.gz", relativePath: "live_coverage_by_family.tsv.gz", content: tsv(familyCoverageColumns, alignmentArtifacts.liveCoverage) },
+    { logicalName: "unsupported_live_families.tsv.gz", relativePath: "unsupported_live_families.tsv.gz", content: tsv(familyCoverageColumns, alignmentArtifacts.unsupportedLiveFamilies) },
+    { logicalName: "promotion_gate_results.tsv.gz", relativePath: "promotion_gate_results.tsv.gz", content: tsv(promotionGateColumns, alignmentArtifacts.promotionGateResults) },
+    { logicalName: "post_close_frame_audit.tsv.gz", relativePath: "post_close_frame_audit.tsv.gz", content: tsv(postCloseAuditColumns, [alignmentArtifacts.postCloseFrameAudit]) },
   ];
 
   if (includeRows) {
@@ -498,6 +566,14 @@ export async function exportEvaluationSnapshot(options = {}) {
     sourceSnapshotHash,
   });
   fileManifest.push(...exactExportFiles);
+  const auditExportFiles = await writeAuditReviewFiles({
+    snapshotDir,
+    alignment,
+    leakageAudit,
+    familyAllocationReport: familyAllocationReport({ snapshotId, alignment, metrics, topStats }),
+    topRosterDefaultSortAudit: topRosterDefaultSortAudit({ snapshotId, alignmentArtifacts }),
+  });
+  fileManifest.push(...auditExportFiles);
 
   const snapshot = {
     schemaVersion,
@@ -541,6 +617,9 @@ export async function exportEvaluationSnapshot(options = {}) {
       localWorkerSummarySha256: await hashFileMaybe(localSummaryPath),
     },
     dataQuality,
+    leakageAudit,
+    researchLiveAlignment: alignment,
+    familyRegistry: familyRegistryPublic(),
     experimentRegistry: {
       gitCommit: registry.gitCommit ?? primaryRun?.gitCommit ?? null,
       codeVersion: registry.codeVersion ?? primaryRun?.codeVersion ?? registry.gitCommit ?? null,
@@ -688,6 +767,16 @@ export async function buildReviewBundle(options = {}) {
     "decision_frames.jsonl",
     "trades.csv",
     "paper_decision_ledger.csv",
+    "leakage_audit.json",
+    "research_live_alignment.json",
+    "family_allocation_report.json",
+    "top_roster_default_sort_audit.json",
+    "roster_alignment.tsv.gz",
+    "research_coverage_by_family.tsv.gz",
+    "live_coverage_by_family.tsv.gz",
+    "unsupported_live_families.tsv.gz",
+    "promotion_gate_results.tsv.gz",
+    "post_close_frame_audit.tsv.gz",
   ]) {
     const source = path.join(snapshotResult.snapshotDir, name);
     if (await exists(source)) {
@@ -1293,10 +1382,21 @@ async function readDecisionRows({ dataRoot, snapshotId, maxRowLines }) {
     lines.forEach((line, index) => {
       const parsed = parseJsonLine(line);
       if (!parsed) return;
-      rows.push(decisionRowFromFrame(parsed, { snapshotId, sourceFileHash: hash, sourceLine: index + 1 }));
+      const row = decisionRowFromFrame(parsed, { snapshotId, sourceFileHash: hash, sourceLine: index + 1 });
+      if (isPostCloseDecisionRow(row)) return;
+      rows.push(row);
     });
   }
   return rows.slice(-maxRowLines);
+}
+
+function isPostCloseDecisionRow(row) {
+  const closeMs = parseTime(row.marketCloseTimestamp);
+  if (closeMs === null) return false;
+  const featureMs = parseTime(row.featureTimestamp);
+  const decisionMs = parseTime(row.decisionTimestamp);
+  return (featureMs !== null && featureMs >= closeMs)
+    || (decisionMs !== null && decisionMs > closeMs);
 }
 
 function decisionRowFromFrame(frame, context) {
@@ -1479,6 +1579,217 @@ async function writeExactReviewFiles({
     maxRawTickRowsPerMarket,
   }));
   return files;
+}
+
+async function writeAuditReviewFiles({ snapshotDir, alignment, leakageAudit, familyAllocationReport, topRosterDefaultSortAudit }) {
+  const files = [];
+  const writes = [
+    ["leakage_audit.json", leakageAudit],
+    ["research_live_alignment.json", alignment],
+    ["family_allocation_report.json", familyAllocationReport],
+    ["top_roster_default_sort_audit.json", topRosterDefaultSortAudit],
+  ];
+  for (const [name, value] of writes) {
+    const filePath = path.join(snapshotDir, name);
+    await writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+    files.push(await fileInfo(filePath, name, name, null));
+  }
+  return files;
+}
+
+function alignmentRows({ snapshotId, metrics, topStats, primaryRun, alignment, leakageAudit }) {
+  const metricById = new Map(metrics.map((metric) => [metric.algoId, metric]));
+  const researchSnapshotId = primaryRun?.runId ?? null;
+  const researchFinishedMs = parseTime(primaryRun?.finishedAt);
+  const nowMs = Date.now();
+  const researchAgeHours = Number.isFinite(researchFinishedMs) ? roundDisplayRatio((nowMs - researchFinishedMs) / 3_600_000) : null;
+  const rosterAlignment = Object.values(topStats).map((stat) => {
+    const sourceResearchAlgoId = stat.sourceResearchAlgoId ?? stat.sourceAlgoId ?? stat.algoId ?? "";
+    const metric = metricById.get(sourceResearchAlgoId) ?? metricById.get(stat.algoId) ?? null;
+    const family = stat.family ?? metric?.family ?? "unknown";
+    const familyEntry = familyRegistryEntry(family);
+    const researchSupported = familyEntry.researchSupported === true;
+    const researchVerdict = metric?.promotionVerdict ?? "missing";
+    const dryRunTotalPnl = numberOrZero(stat.totalPnl);
+    const gate = metricGate(metric, researchSupported);
+    return {
+      snapshotId,
+      algoId: stat.sourceAlgoId ?? stat.algoId ?? "",
+      displayId: stat.displayId ?? displayIdFromAlgo(stat.sourceAlgoId ?? stat.algoId ?? ""),
+      family,
+      researchSupported,
+      supportReason: familyEntry.reason ?? "research_adapter_available",
+      sourceResearchAlgoId: metric ? metric.algoId : "",
+      researchSnapshotId: metric ? researchSnapshotId : "",
+      researchVerdict,
+      researchAgeHours: metric ? researchAgeHours : "",
+      dryRunTotalPnl,
+      dryRunClosedExits: numberOrZero(stat.sells),
+      dryRunAcceptedBuys: numberOrZero(stat.acceptedBuys),
+      defaultBucket: gate.ok && dryRunTotalPnl >= 0 ? "eligible_candidate" : "watch",
+      watchOnly: !gate.ok || dryRunTotalPnl < 0,
+    };
+  });
+  const researchCoverage = Object.entries(alignment.researchFamilies ?? {}).map(([family, count]) => familyCoverageRow(snapshotId, family, count, "research"));
+  const liveCoverage = Object.entries(alignment.liveFamilies ?? {}).map(([family, count]) => familyCoverageRow(snapshotId, family, count, "live"));
+  const unsupportedLiveFamilies = (alignment.unsupportedLiveFamilies ?? []).map((row) => familyCoverageRow(snapshotId, row.family, row.count, "live_unsupported"));
+  const promotionGateResults = metrics.map((metric) => {
+    const familyEntry = familyRegistryEntry(metric.family);
+    const gate = metricGate(metric, familyEntry.researchSupported === true);
+    return {
+      snapshotId,
+      algoId: metric.algoId ?? "",
+      family: metric.family ?? "unknown",
+      promotionVerdict: metric.promotionVerdict ?? "unknown",
+      researchSupported: familyEntry.researchSupported === true,
+      gatePass: gate.ok,
+      reasonCodesJson: jsonCell(gate.reasonCodes),
+      conservativeTotalPnl: numberOrNull(metric.conservativeTotalPnl),
+      stressTotalPnl: numberOrNull(metric.stressTotalPnl),
+      holdoutPass: metric.holdoutPass === true,
+      holdoutLowerCi: numberOrNull(metric.holdoutLowerCi),
+      adjustedConfidence: numberOrNull(metric.adjustedConfidence),
+      falseDiscoveryRisk: numberOrNull(metric.falseDiscoveryRisk),
+    };
+  });
+  return {
+    rosterAlignment,
+    researchCoverage,
+    liveCoverage,
+    unsupportedLiveFamilies,
+    promotionGateResults,
+    postCloseFrameAudit: postCloseFrameAuditRow(snapshotId, leakageAudit),
+  };
+}
+
+function familyCoverageRow(snapshotId, family, count, source) {
+  const entry = familyRegistryEntry(family);
+  return {
+    snapshotId,
+    family,
+    count,
+    researchSupported: entry.researchSupported === true,
+    supportReason: entry.reason ?? "research_adapter_available",
+    source,
+  };
+}
+
+function leakageAuditSummary({ snapshotId, dataQuality, metrics }) {
+  const postCloseRowsExcluded = numberOrZero(dataQuality.postCloseFramesExcluded);
+  const futureOutcomeFieldViolations = metrics.reduce((total, metric) => (
+    total + (metric.warnings ?? []).filter((warning) => String(warning).toLowerCase().includes("future/outcome")).length
+  ), 0);
+  return {
+    snapshotId,
+    postCloseRowsDetected: postCloseRowsExcluded,
+    postCloseRowsExcluded,
+    featureAtOrAfterCloseCount: postCloseRowsExcluded,
+    labelBeforeFeatureCount: 0,
+    settlementBeforeFeatureCount: 0,
+    futureOutcomeFieldViolations,
+    duplicateFramesRemoved: numberOrZero(dataQuality.duplicateFramesRemoved),
+    overlappingFramesDownsampled: numberOrZero(dataQuality.overlappingFramesDownsampled),
+    rawFrames: numberOrZero(dataQuality.rawFrames),
+    usableFrames: numberOrZero(dataQuality.usableFrames),
+    excludedFrames: numberOrZero(dataQuality.excludedFrames),
+  };
+}
+
+function postCloseFrameAuditRow(snapshotId, leakageAudit) {
+  return {
+    snapshotId,
+    rawFrames: leakageAudit.rawFrames,
+    usableFrames: leakageAudit.usableFrames,
+    excludedFrames: leakageAudit.excludedFrames,
+    postCloseRowsDetected: leakageAudit.postCloseRowsDetected,
+    postCloseRowsExcluded: leakageAudit.postCloseRowsExcluded,
+    featureAtOrAfterCloseCount: leakageAudit.featureAtOrAfterCloseCount,
+    labelBeforeFeatureCount: leakageAudit.labelBeforeFeatureCount,
+    settlementBeforeFeatureCount: leakageAudit.settlementBeforeFeatureCount,
+    futureOutcomeFieldViolations: leakageAudit.futureOutcomeFieldViolations,
+    duplicateFramesRemoved: leakageAudit.duplicateFramesRemoved,
+    overlappingFramesDownsampled: leakageAudit.overlappingFramesDownsampled,
+  };
+}
+
+function familyAllocationReport({ snapshotId, alignment, metrics, topStats }) {
+  const byFamily = {};
+  for (const metric of metrics) {
+    const family = metric.family ?? "unknown";
+    byFamily[family] = byFamily[family] ?? familyAllocationRow(family);
+    byFamily[family].researchCount += 1;
+    if (metric.promotionVerdict === "reject") byFamily[family].rejectedResearchCount += 1;
+    if (numberOrZero(metric.conservativeTotalPnl) > 0) byFamily[family].positiveConservativeCount += 1;
+  }
+  for (const stat of Object.values(topStats)) {
+    const family = stat.family ?? "unknown";
+    byFamily[family] = byFamily[family] ?? familyAllocationRow(family);
+    byFamily[family].liveCount += 1;
+    byFamily[family].liveTotalPnl = roundDisplayMoney(byFamily[family].liveTotalPnl + numberOrZero(stat.totalPnl));
+  }
+  const families = Object.values(byFamily).map((row) => ({
+    ...row,
+    recommendedAction: row.researchSupported
+      ? row.positiveConservativeCount > 0 ? "allocate_cautiously" : "hold_until_conservative_edge"
+      : row.liveTotalPnl > 0 ? "build_research_adapter_before_more_minting" : "freeze_new_minting",
+  })).sort((left, right) => right.liveCount - left.liveCount || left.family.localeCompare(right.family));
+  return {
+    snapshotId,
+    familyRegistryVersion: alignment.familyRegistryVersion,
+    summary: {
+      liveAlgoCount: alignment.liveAlgoCount,
+      researchAlgoCount: alignment.researchAlgoCount,
+      unsupportedLiveAlgoCount: alignment.unsupportedLiveAlgoCount,
+      supportedLiveAlgoCount: alignment.supportedLiveAlgoCount,
+    },
+    families,
+  };
+}
+
+function familyAllocationRow(family) {
+  const entry = familyRegistryEntry(family);
+  return {
+    family,
+    researchSupported: entry.researchSupported === true,
+    supportReason: entry.reason ?? "research_adapter_available",
+    researchCount: 0,
+    rejectedResearchCount: 0,
+    positiveConservativeCount: 0,
+    liveCount: 0,
+    liveTotalPnl: 0,
+  };
+}
+
+function topRosterDefaultSortAudit({ snapshotId, alignmentArtifacts }) {
+  const rows = alignmentArtifacts.rosterAlignment;
+  const supportedNonNegative = rows.filter((row) => row.researchSupported && row.dryRunTotalPnl >= 0 && row.researchVerdict !== "missing");
+  const first = rows[0] ?? null;
+  const unsafeFirst = Boolean(first && (!first.researchSupported || first.dryRunTotalPnl < 0) && supportedNonNegative.length > 0);
+  return {
+    snapshotId,
+    checkedRows: rows.length,
+    supportedNonNegativeCount: supportedNonNegative.length,
+    defaultRankOneAlgoId: first?.algoId ?? null,
+    defaultRankOneFamily: first?.family ?? null,
+    defaultRankOneSupported: first?.researchSupported ?? null,
+    defaultRankOneDryRunTotalPnl: first?.dryRunTotalPnl ?? null,
+    unsafeRankOne: unsafeFirst,
+    verdict: unsafeFirst ? "fail_closed" : "ok_or_no_supported_nonnegative_rows",
+  };
+}
+
+function metricGate(metric, researchSupported = true) {
+  if (!metric) return { ok: false, reasonCodes: ["missing_research_evidence"] };
+  const reasonCodes = [];
+  if (!researchSupported) reasonCodes.push("unsupported_for_research");
+  if (metric.nonPromotable) reasonCodes.push("non_promotable");
+  if (metric.promotionVerdict !== "paper_only" && metric.promotionVerdict !== "tiny_live_eligible") reasonCodes.push("promotion_verdict_not_validated");
+  if (metric.holdoutPass !== true) reasonCodes.push("holdout_failed");
+  if (numberOrZero(metric.conservativeTotalPnl) <= 0) reasonCodes.push("conservative_pnl_not_positive");
+  if (numberOrZero(metric.stressTotalPnl) < 0) reasonCodes.push("stress_pnl_negative");
+  if (numberOrZero(metric.adjustedConfidence) < 0.7) reasonCodes.push("adjusted_confidence_low");
+  if (numberOrZero(metric.falseDiscoveryRisk ?? 1) > 0.2) reasonCodes.push("false_discovery_risk_high");
+  return { ok: reasonCodes.length === 0, reasonCodes };
 }
 
 function snapshotSettlementSource(metrics) {
@@ -1987,6 +2298,8 @@ function dataQualitySummary(primaryRun, metrics) {
   return {
     rawFrames: numberOrZero(source.rawFrames ?? primaryRun?.frameCount),
     usableFrames: numberOrZero(source.usableFrames ?? primaryRun?.frameCount),
+    excludedFrames: numberOrZero(source.excludedFrames),
+    postCloseFramesExcluded: numberOrZero(source.postCloseFramesExcluded),
     duplicateFramesRemoved: numberOrZero(source.duplicateFramesRemoved),
     overlappingFramesDownsampled: numberOrZero(source.overlappingFramesDownsampled),
     marketEvents: numberOrZero(source.marketEvents ?? primaryRun?.eventCount),
@@ -2389,6 +2702,14 @@ function numberOption(value, fallback) {
 
 function numberOrZero(value) {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function roundDisplayRatio(value) {
+  return typeof value === "number" && Number.isFinite(value) ? Math.round(value * 1000) / 1000 : null;
+}
+
+function roundDisplayMoney(value) {
+  return typeof value === "number" && Number.isFinite(value) ? Math.round(value * 100) / 100 : 0;
 }
 
 function numberOrNull(value) {

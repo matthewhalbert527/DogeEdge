@@ -33,12 +33,15 @@ export async function auditReviewExports({
   const latestSweep = roles.latestSweep ? await readJson(roles.latestSweep) : null;
   const rawTicksManifest = roles.rawTicksManifest ? await readJson(roles.rawTicksManifest) : null;
   const topTradersExecutable = roles.topTradersExecutable ? await readJson(roles.topTradersExecutable) : null;
+  const leakageAudit = roles.leakageAudit ? await readJson(roles.leakageAudit) : null;
+  const researchLiveAlignment = roles.researchLiveAlignment ? await readJson(roles.researchLiveAlignment) : null;
+  const topRosterDefaultSortAudit = roles.topRosterDefaultSortAudit ? await readJson(roles.topRosterDefaultSortAudit) : null;
   const simulatorConfig = roles.simulatorConfig ? await readJson(roles.simulatorConfig) : null;
   const frameRows = roles.decisionFramesSample ? await readNdjson(roles.decisionFramesSample) : [];
   const events = eventsFromDecisionFrameSample(frameRows);
   const recomputed = recomputeFolds(events, { foldCount, embargoMs });
   const foldDiff = diffFolds({ fullRun, registry, recomputed, debugOnly });
-  const schema = validateSchemas({ roles, repoSnapshot, bundleManifest, fullRun, registry, latestSweep, simulatorConfig, frameRows, rawTicksManifest, strict, promotionReview, requireRawTicks });
+  const schema = validateSchemas({ roles, repoSnapshot, bundleManifest, fullRun, registry, latestSweep, simulatorConfig, frameRows, rawTicksManifest, leakageAudit, researchLiveAlignment, topRosterDefaultSortAudit, strict, promotionReview, requireRawTicks });
   const metrics = fullRun?.metrics ?? latestSweep?.topMetrics ?? [];
   const metricsCompare = metricsComparison(metrics);
   const promotionSummary = promotionVerdictSummary(metrics);
@@ -52,6 +55,9 @@ export async function auditReviewExports({
     schema,
     reproducibility,
     foldDiff,
+    leakageAudit,
+    researchLiveAlignment,
+    topRosterDefaultSortAudit,
     metricsSummary: metricsCompare.summary,
     promotionSummary,
     gate,
@@ -100,6 +106,16 @@ async function discoverRoles(root) {
     bundleLatestSweep: rolePath("repo/latest-sweep.json"),
     topTradersExecutable: rolePath("repo/top-traders-executable.json"),
     rawTicksManifest: rolePath("snapshots/raw_market_ticks/manifest.json"),
+    leakageAudit: rolePath("snapshots/leakage_audit.json") ?? rolePath("leakage_audit.json"),
+    researchLiveAlignment: rolePath("snapshots/research_live_alignment.json") ?? rolePath("research_live_alignment.json"),
+    rosterAlignment: rolePath("snapshots/roster_alignment.tsv.gz"),
+    researchCoverageByFamily: rolePath("snapshots/research_coverage_by_family.tsv.gz"),
+    liveCoverageByFamily: rolePath("snapshots/live_coverage_by_family.tsv.gz"),
+    unsupportedLiveFamilies: rolePath("snapshots/unsupported_live_families.tsv.gz"),
+    promotionGateResults: rolePath("snapshots/promotion_gate_results.tsv.gz"),
+    postCloseFrameAudit: rolePath("snapshots/post_close_frame_audit.tsv.gz"),
+    familyAllocationReport: rolePath("snapshots/family_allocation_report.json"),
+    topRosterDefaultSortAudit: rolePath("snapshots/top_roster_default_sort_audit.json"),
     snapshotDecisionFrames: rolePath("snapshots/decision_frames.jsonl"),
     snapshotTradesCsv: rolePath("snapshots/trades.csv"),
     candidatesJson: rolePath("ui/candidates.json"),
@@ -115,7 +131,7 @@ async function discoverRoles(root) {
   };
 }
 
-function validateSchemas({ roles, repoSnapshot, bundleManifest, fullRun, registry, latestSweep, simulatorConfig, frameRows, rawTicksManifest, strict, promotionReview, requireRawTicks }) {
+function validateSchemas({ roles, repoSnapshot, bundleManifest, fullRun, registry, latestSweep, simulatorConfig, frameRows, rawTicksManifest, leakageAudit, researchLiveAlignment, topRosterDefaultSortAudit, strict, promotionReview, requireRawTicks }) {
   const warnings = [];
   const errors = [];
   const bundleMode = Boolean(bundleManifest);
@@ -154,6 +170,13 @@ function validateSchemas({ roles, repoSnapshot, bundleManifest, fullRun, registr
   }
   if (!frameRows.length) errors.push("decision_frame_sample_empty");
   if (latestSweep && !Array.isArray(latestSweep.topMetrics)) warnings.push("latest_sweep_missing_top_metrics");
+  if (bundleMode && !leakageAudit) errors.push("missing_leakage_audit");
+  if (bundleMode && !researchLiveAlignment) errors.push("missing_research_live_alignment");
+  if (bundleMode && !roles.rosterAlignment) errors.push("missing_roster_alignment_tsv");
+  if (bundleMode && !roles.promotionGateResults) errors.push("missing_promotion_gate_results_tsv");
+  if (bundleMode && !roles.postCloseFrameAudit) errors.push("missing_post_close_frame_audit_tsv");
+  if (researchLiveAlignment?.unsupportedLiveAlgoCount > 0) warnings.push("unsupported_live_families_present");
+  if (topRosterDefaultSortAudit?.unsafeRankOne === true) errors.push("unsafe_default_top_roster_rank_one");
   if (strict) {
     const temporal = temporalViolations(frameRows);
     if (temporal.postCloseDecisionCount > 0) errors.push("post_close_decision_rows");
@@ -552,6 +575,29 @@ function auditMarkdown(audit) {
       ].join("\n")
       : "- Top roster reconciliation was not requested.",
     "",
+    "## Leakage Audit",
+    "",
+    audit.leakageAudit
+      ? [
+        `- Post-close rows detected: ${audit.leakageAudit.postCloseRowsDetected ?? 0}`,
+        `- Post-close rows excluded: ${audit.leakageAudit.postCloseRowsExcluded ?? 0}`,
+        `- Duplicate frames removed: ${audit.leakageAudit.duplicateFramesRemoved ?? 0}`,
+        `- Overlapping frames downsampled: ${audit.leakageAudit.overlappingFramesDownsampled ?? 0}`,
+      ].join("\n")
+      : "- Leakage audit artifact was not present.",
+    "",
+    "## Research/Live Alignment",
+    "",
+    audit.researchLiveAlignment
+      ? [
+        `- Research algos: ${audit.researchLiveAlignment.researchAlgoCount}`,
+        `- Live algos: ${audit.researchLiveAlignment.liveAlgoCount}`,
+        `- ID overlap: ${audit.researchLiveAlignment.overlapByIdCount}`,
+        `- Family overlap: ${audit.researchLiveAlignment.overlapByFamilyCount}`,
+        `- Unsupported live algos: ${audit.researchLiveAlignment.unsupportedLiveAlgoCount}`,
+      ].join("\n")
+      : "- Research/live alignment artifact was not present.",
+    "",
     "## Fold Diff",
     "",
     foldDiffMarkdown(audit.foldDiff),
@@ -611,6 +657,15 @@ function finalReviewMarkdown(finalReview) {
     finalReview.audit.topRosterReconciliation
       ? `Compared ${finalReview.audit.topRosterReconciliation.compared} rows; unmatched stats ${finalReview.audit.topRosterReconciliation.unmatchedStats}; P/L mismatches ${finalReview.audit.topRosterReconciliation.mismatchedPnl}.`
       : "Top roster reconciliation was not requested.",
+    "",
+    "## Leakage And Alignment",
+    "",
+    finalReview.audit.leakageAudit
+      ? `Post-close detected/excluded: ${finalReview.audit.leakageAudit.postCloseRowsDetected ?? 0}/${finalReview.audit.leakageAudit.postCloseRowsExcluded ?? 0}.`
+      : "Leakage audit artifact was not present.",
+    finalReview.audit.researchLiveAlignment
+      ? `Research/live overlap: ${finalReview.audit.researchLiveAlignment.overlapByIdCount} IDs, ${finalReview.audit.researchLiveAlignment.overlapByFamilyCount} families; unsupported live algos: ${finalReview.audit.researchLiveAlignment.unsupportedLiveAlgoCount}.`
+      : "Research/live alignment artifact was not present.",
     "",
     "## Promotion Timeline",
     "",

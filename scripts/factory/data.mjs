@@ -9,6 +9,9 @@ export async function readFactoryDecisionFrames(baseDir, options = {}) {
   const frames = [];
   const warnings = [];
   const errors = [];
+  let parsedFrameCount = 0;
+  let excludedFrameCount = 0;
+  let postCloseExcludedCount = 0;
   for (const file of jsonlFiles) {
     const text = await readFile(file, "utf8");
     let lineNumber = 0;
@@ -17,14 +20,21 @@ export async function readFactoryDecisionFrames(baseDir, options = {}) {
       if (!line.trim()) continue;
       try {
         const parsed = JSON.parse(line);
+        parsedFrameCount += 1;
         const result = normalizeDecisionFrame(parsed, options);
         warnings.push(...result.warnings.map((message) => ({ file, line: lineNumber, message })));
         const postCloseFeatureErrors = result.errors.filter((message) => message.includes("featureTimestamp must be strictly before marketCloseTimestamp"));
         const otherErrors = result.errors.filter((message) => !message.includes("featureTimestamp must be strictly before marketCloseTimestamp"));
         if (postCloseFeatureErrors.length && options.dropPostCloseFrames !== false) {
           warnings.push(...postCloseFeatureErrors.map((message) => ({ file, line: lineNumber, message: `${message}; row excluded from feature generation` })));
+          excludedFrameCount += 1;
+          postCloseExcludedCount += 1;
+          continue;
         }
-        errors.push(...otherErrors.map((message) => ({ file, line: lineNumber, message })));
+        errors.push(...[
+          ...otherErrors,
+          ...(options.dropPostCloseFrames === false ? postCloseFeatureErrors : []),
+        ].map((message) => ({ file, line: lineNumber, message })));
         if (result.frame) frames.push({ ...result.frame, sourceFile: file, sourceLine: lineNumber });
       } catch (error) {
         errors.push({ file, line: lineNumber, message: error instanceof Error ? error.message : "invalid JSON line" });
@@ -42,8 +52,10 @@ export async function readFactoryDecisionFrames(baseDir, options = {}) {
     events: eventResult.events,
     warnings: [...warnings, ...deduped.warnings, ...eventResult.warnings],
     errors,
-    frameCountRaw: frames.length,
+    frameCountRaw: parsedFrameCount,
     frameCount: deduped.frames.length,
+    excludedFrameCount,
+    postCloseExcludedCount,
     duplicateFrameCount: deduped.duplicateFrameCount,
     overlappingFrameCount: deduped.overlappingFrameCount,
     eventCount: eventResult.events.length,
@@ -198,6 +210,8 @@ export function dataQualitySummary(loadResult) {
   return {
     rawFrames: loadResult.frameCountRaw,
     usableFrames: loadResult.frameCount,
+    excludedFrames: loadResult.excludedFrameCount ?? 0,
+    postCloseFramesExcluded: loadResult.postCloseExcludedCount ?? 0,
     duplicateFramesRemoved: loadResult.duplicateFrameCount,
     overlappingFramesDownsampled: loadResult.overlappingFrameCount,
     marketEvents: loadResult.eventCount,

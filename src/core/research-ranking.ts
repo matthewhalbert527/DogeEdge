@@ -83,6 +83,39 @@ export function researchEvidenceSortScore(evidence: ResearchEvidenceForRanking |
     + robustScore;
 }
 
+export function researchEvidenceDefaultRankScore({
+  evidence,
+  researchSupported,
+  executableTotalPnl = 0,
+  executablePnlPerCycle = 0,
+}: {
+  evidence: ResearchEvidenceForRanking | null | undefined;
+  researchSupported: boolean;
+  executableTotalPnl?: number;
+  executablePnlPerCycle?: number;
+}) {
+  const gate = researchPromotionGate(evidence);
+  const supported = researchSupported && evidence ? 1 : 0;
+  const nonNegativeDryRun = executableTotalPnl >= 0 ? 1 : 0;
+  const verdictScore = evidence?.promotionVerdict === "tiny_live_eligible"
+    ? 4
+    : evidence?.promotionVerdict === "paper_only" ? 3 : evidence?.promotionVerdict === "reject" ? 1 : 0;
+  const holdoutScore = evidence?.holdoutPass === true ? 1 : 0;
+  const conservativeScore = finiteNumber(evidence?.conservativeTotalPnl, 0) > 0 ? 1 : 0;
+  const lowerCi = Math.max(-1, Math.min(1, finiteNumber(evidence?.holdoutLowerCi, -1)));
+  const cpcvScore = Math.max(0, Math.min(1, finiteNumber(evidence?.cpcvSummary?.positiveFoldRate, 0)));
+  return supported * 10_000
+    + (gate.ok ? 5_000 : 0)
+    + nonNegativeDryRun * 2_500
+    + verdictScore * 500
+    + conservativeScore * 300
+    + holdoutScore * 250
+    + lowerCi * 100
+    + cpcvScore * 100
+    + Math.max(-500, Math.min(500, executableTotalPnl))
+    + Math.max(-100, Math.min(100, executablePnlPerCycle * 100));
+}
+
 export function researchEvidenceCanMature(evidence: ResearchEvidenceForRanking | null | undefined) {
   if (!evidence) return false;
   if (evidence.nonPromotable) return false;

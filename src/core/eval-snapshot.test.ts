@@ -34,6 +34,15 @@ describe("continuous evaluation snapshot exporter", () => {
       settlementSource: "estimated",
     });
     expect(snapshot.timestampSemantics.settlementSource).toBe("estimated");
+    expect(snapshot.leakageAudit).toMatchObject({
+      postCloseRowsDetected: expect.any(Number),
+      postCloseRowsExcluded: expect.any(Number),
+    });
+    expect(snapshot.researchLiveAlignment).toMatchObject({
+      familyRegistryVersion: "dogeedge.family-registry.v1",
+      researchAlgoCount: expect.any(Number),
+      liveAlgoCount: expect.any(Number),
+    });
     expect(snapshot.rowExport).toMatchObject({
       mode: "capped",
       includeRows: true,
@@ -50,6 +59,12 @@ describe("continuous evaluation snapshot exporter", () => {
     expect(snapshot.filesManifest.map((file: { logicalName: string }) => file.logicalName)).toEqual(expect.arrayContaining([
       "algoMetrics.tsv.gz",
       "decisionAggregates.tsv.gz",
+      "roster_alignment.tsv.gz",
+      "research_coverage_by_family.tsv.gz",
+      "live_coverage_by_family.tsv.gz",
+      "unsupported_live_families.tsv.gz",
+      "promotion_gate_results.tsv.gz",
+      "post_close_frame_audit.tsv.gz",
       "decisionRows.tsv.gz",
       "tradeRows.tsv.gz",
       "decision_frames.jsonl",
@@ -112,6 +127,13 @@ describe("continuous evaluation snapshot exporter", () => {
       "repo/package.json",
       "registry/experiment-registry.tar.gz",
       "snapshots/snapshot-history-48h.json",
+      "snapshots/leakage_audit.json",
+      "snapshots/research_live_alignment.json",
+      "snapshots/roster_alignment.tsv.gz",
+      "snapshots/promotion_gate_results.tsv.gz",
+      "snapshots/post_close_frame_audit.tsv.gz",
+      "snapshots/family_allocation_report.json",
+      "snapshots/top_roster_default_sort_audit.json",
       "snapshots/decision_frames.jsonl",
       "snapshots/trades.csv",
       "snapshots/paper_decision_ledger.csv",
