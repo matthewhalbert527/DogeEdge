@@ -698,6 +698,41 @@ describe("factory research safeguards", () => {
     expect(foldDiff.tables.foldCounts.recomputedPurged).toBeGreaterThan(0);
   });
 
+  it("surfaces bundle row caps and raw tick coverage gaps in final review", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "dogeedge-review-bundle-"));
+    const input = path.join(root, "review_exports");
+    const out = path.join(root, "artifacts", "factory-audit");
+    writeReviewBundleFixture(input);
+
+    const audit = await auditReviewExports({ input, outDir: out, foldCount: 2, embargoMs: 60_000, gateReport: true });
+    const finalReview = readFileSync(path.join(out, "final-review.md"), "utf8");
+
+    expect(audit.verdict).not.toBe("fail_closed");
+    expect(audit.bundleEvidence).toMatchObject({
+      rowExport: {
+        mode: "capped",
+        rowsCapped: true,
+        rowCap: 1000,
+        promotionReviewComplete: false,
+      },
+      rawTicks: {
+        available: false,
+        availabilityStatus: "target_samples_absent",
+        coverage: {
+          covered: 0,
+          uncovered: 2,
+          ratio: 0,
+        },
+      },
+      limitations: expect.arrayContaining(["rows_capped", "raw_market_tick_target_coverage_gap"]),
+    });
+    expect(finalReview).toContain("Bundle Evidence");
+    expect(finalReview).toContain("Rows: capped at 1000");
+    expect(finalReview).toContain("Raw ticks: target_samples_absent");
+    expect(finalReview).toContain("Coverage: 0/2 target markets");
+    expect(finalReview).toContain("raw_market_tick_jsonl_absent");
+  });
+
   it("strict export audit fails closed on post-close decision rows", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "dogeedge-postclose-audit-"));
     const input = path.join(root, "review_exports");
@@ -1007,4 +1042,95 @@ function writeReviewExportFixture(input: string) {
   writeFileSync(path.join(input, "ui", "candidates.json"), "[]\n");
   writeFileSync(path.join(input, "ui", "report.md"), "# Fixture\n");
   writeFileSync(path.join(input, "raw", "one-week-sample", "sample-manifest.json"), JSON.stringify({ rowCounts: { snapshots: 0 } }));
+}
+
+function writeReviewBundleFixture(input: string) {
+  writeReviewExportFixture(input);
+  for (const dir of [
+    "repo",
+    "snapshots",
+    "snapshots/raw_market_ticks",
+  ]) {
+    mkdirSync(path.join(input, dir), { recursive: true });
+  }
+
+  const rawTickManifest = {
+    schemaVersion: "dogeedge.raw-market-ticks.manifest.v1",
+    snapshotId: "snap-fixture",
+    generatedAt: "2026-06-01T00:00:00.000Z",
+    available: false,
+    format: null,
+    requestedFormat: "jsonl",
+    exportedFormat: null,
+    availabilityStatus: "target_samples_absent",
+    reason: "No matching JSONL raw-tick sample rows were found for the target review markets.",
+    targetMarketCount: 2,
+    coveredTargetMarkets: [],
+    uncoveredTargetMarkets: ["m-0", "m-1"],
+    coveredTargetMarketCount: 0,
+    uncoveredTargetMarketCount: 2,
+    jsonlFiles: [],
+    sourceSnapshotFiles: [{ relativePath: "raw/snapshots/records.jsonl", bytes: 100, sha256: "hash", hashSkipped: false }],
+    sourceSnapshotFileCount: 1,
+    hashedSourceSnapshotFileCount: 1,
+    hashSkippedSourceSnapshotFileCount: 0,
+    warningCodes: [
+      "raw_market_tick_parquet_absent",
+      "raw_market_tick_jsonl_absent",
+      "raw_market_tick_target_coverage_gap",
+    ],
+  };
+  const bundleManifest = {
+    schemaVersion: "dogeedge.eval.review.bundle.v1",
+    bundleId: "dogeedge-review-bundle-fixture",
+    generatedAt: "2026-06-01T00:00:00.000Z",
+    snapshotId: "snap-fixture",
+    rowExport: {
+      mode: "capped",
+      includeRows: true,
+      rowsCapped: true,
+      rowCap: 1000,
+      promotionReviewComplete: false,
+    },
+    rawMarketTickExport: {
+      manifestPresent: true,
+      parseOk: true,
+      available: false,
+      format: null,
+      requestedFormat: "jsonl",
+      exportedFormat: null,
+      availabilityStatus: "target_samples_absent",
+      reason: rawTickManifest.reason,
+      targetMarketCount: 2,
+      jsonlFileCount: 0,
+      sourceSnapshotFileCount: 1,
+      targetMarketCoverage: {
+        covered: 0,
+        uncovered: 2,
+        ratio: 0,
+      },
+      sourceHash: {
+        hashedFileCount: 1,
+        skippedLargeFileCount: 0,
+      },
+      warningCodes: rawTickManifest.warningCodes,
+    },
+    limitations: [
+      "rows_capped",
+      "raw_market_tick_jsonl_absent",
+      "raw_market_tick_target_coverage_gap",
+    ],
+    files: [],
+  };
+
+  writeFileSync(path.join(input, "manifest.json"), `${JSON.stringify(bundleManifest)}\n`);
+  writeFileSync(path.join(input, "repo", "latest-sweep.json"), readFileSync(path.join(input, "ui", "latest-sweep.json"), "utf8"));
+  writeFileSync(path.join(input, "snapshots", "decision_frames.jsonl"), readFileSync(path.join(input, "frames", "decision-frames.sample.ndjson"), "utf8"));
+  writeFileSync(path.join(input, "snapshots", "trades.csv"), "tradeId,algoId,pnl\ntrade-1,fixture-algo,0.10\n");
+  writeFileSync(path.join(input, "snapshots", "leakage_audit.json"), `${JSON.stringify({ postCloseRowsDetected: 0, postCloseRowsExcluded: 0, duplicateFramesRemoved: 0, overlappingFramesDownsampled: 0 })}\n`);
+  writeFileSync(path.join(input, "snapshots", "research_live_alignment.json"), `${JSON.stringify({ researchAlgoCount: 1, liveAlgoCount: 0, overlapByIdCount: 0, overlapByFamilyCount: 0, unsupportedLiveAlgoCount: 0 })}\n`);
+  writeFileSync(path.join(input, "snapshots", "roster_alignment.tsv.gz"), "snapshotId\talgoId\nsnap-fixture\tfixture-algo\n");
+  writeFileSync(path.join(input, "snapshots", "promotion_gate_results.tsv.gz"), "snapshotId\talgoId\tgatePass\nsnap-fixture\tfixture-algo\tfalse\n");
+  writeFileSync(path.join(input, "snapshots", "post_close_frame_audit.tsv.gz"), "snapshotId\tpostCloseRowsDetected\nsnap-fixture\t0\n");
+  writeFileSync(path.join(input, "snapshots", "raw_market_ticks", "manifest.json"), `${JSON.stringify(rawTickManifest)}\n`);
 }

@@ -41,6 +41,7 @@ export async function auditReviewExports({
   const events = eventsFromDecisionFrameSample(frameRows);
   const recomputed = recomputeFolds(events, { foldCount, embargoMs });
   const foldDiff = diffFolds({ fullRun, registry, recomputed, debugOnly });
+  const bundleEvidence = bundleEvidenceSummary({ bundleManifest, rawTicksManifest });
   const schema = validateSchemas({ roles, repoSnapshot, bundleManifest, fullRun, registry, latestSweep, simulatorConfig, frameRows, rawTicksManifest, leakageAudit, researchLiveAlignment, topRosterDefaultSortAudit, strict, promotionReview, requireRawTicks });
   const metrics = fullRun?.metrics ?? latestSweep?.topMetrics ?? [];
   const metricsCompare = metricsComparison(metrics);
@@ -53,6 +54,7 @@ export async function auditReviewExports({
     inputRoot,
     roles,
     schema,
+    bundleEvidence,
     reproducibility,
     foldDiff,
     leakageAudit,
@@ -195,6 +197,61 @@ function validateSchemas({ roles, repoSnapshot, bundleManifest, fullRun, registr
   }
   if (requireRawTicks && rawTicksManifest?.available !== true) errors.push("raw_ticks_required_missing");
   return { warnings, errors, warningCount: warnings.length, errorCount: errors.length };
+}
+
+function bundleEvidenceSummary({ bundleManifest, rawTicksManifest }) {
+  if (!bundleManifest && !rawTicksManifest) return null;
+  const rowExport = objectOrEmpty(bundleManifest?.rowExport);
+  const rawExport = objectOrEmpty(bundleManifest?.rawMarketTickExport);
+  const rawCoverage = objectOrEmpty(rawExport.targetMarketCoverage);
+  const sourceHash = objectOrEmpty(rawExport.sourceHash);
+  const covered = numberOrDefault(rawCoverage.covered, numberOrDefault(rawTicksManifest?.coveredTargetMarketCount, 0));
+  const uncovered = numberOrDefault(rawCoverage.uncovered, numberOrDefault(rawTicksManifest?.uncoveredTargetMarketCount, 0));
+  const targetMarketCount = numberOrDefault(
+    rawExport.targetMarketCount,
+    numberOrDefault(rawTicksManifest?.targetMarketCount, covered + uncovered),
+  );
+  const coverageRatio = numberOrDefault(
+    rawCoverage.ratio,
+    targetMarketCount > 0 ? roundRatio(covered / targetMarketCount) : null,
+  );
+  const warningCodes = uniqueStrings([
+    ...arrayOfStrings(rawExport.warningCodes),
+    ...arrayOfStrings(rawTicksManifest?.warningCodes),
+  ]);
+
+  return {
+    rowExport: {
+      mode: stringOrNull(rowExport.mode),
+      includeRows: rowExport.includeRows === true,
+      rowsCapped: rowExport.rowsCapped === true,
+      rowCap: numberOrDefault(rowExport.rowCap, null),
+      promotionReviewComplete: rowExport.promotionReviewComplete === true,
+    },
+    rawTicks: {
+      manifestPresent: typeof rawExport.manifestPresent === "boolean" ? rawExport.manifestPresent : Boolean(rawTicksManifest),
+      parseOk: typeof rawExport.parseOk === "boolean" ? rawExport.parseOk : Boolean(rawTicksManifest),
+      available: typeof rawExport.available === "boolean" ? rawExport.available : rawTicksManifest?.available === true,
+      availabilityStatus: stringOrNull(rawExport.availabilityStatus ?? rawTicksManifest?.availabilityStatus),
+      reason: stringOrNull(rawExport.reason ?? rawTicksManifest?.reason),
+      requestedFormat: stringOrNull(rawExport.requestedFormat ?? rawTicksManifest?.requestedFormat),
+      exportedFormat: stringOrNull(rawExport.exportedFormat ?? rawTicksManifest?.exportedFormat ?? rawTicksManifest?.format),
+      targetMarketCount,
+      jsonlFileCount: numberOrDefault(rawExport.jsonlFileCount, Array.isArray(rawTicksManifest?.jsonlFiles) ? rawTicksManifest.jsonlFiles.length : 0),
+      sourceSnapshotFileCount: numberOrDefault(rawExport.sourceSnapshotFileCount, numberOrDefault(rawTicksManifest?.sourceSnapshotFileCount, 0)),
+      coverage: {
+        covered,
+        uncovered,
+        ratio: coverageRatio,
+      },
+      sourceHash: {
+        hashedFileCount: numberOrDefault(sourceHash.hashedFileCount, numberOrDefault(rawTicksManifest?.hashedSourceSnapshotFileCount, 0)),
+        skippedLargeFileCount: numberOrDefault(sourceHash.skippedLargeFileCount, numberOrDefault(rawTicksManifest?.hashSkippedSourceSnapshotFileCount, 0)),
+      },
+      warningCodes,
+    },
+    limitations: uniqueStrings(arrayOfStrings(bundleManifest?.limitations)),
+  };
 }
 
 function recomputeFolds(events, options) {
@@ -560,6 +617,10 @@ function auditMarkdown(audit) {
     "",
     audit.reproducibility.warnings.length ? audit.reproducibility.warnings.map((item) => `- ${item}`).join("\n") : "- No reproducibility warnings.",
     "",
+    "## Bundle Evidence",
+    "",
+    bundleEvidenceMarkdown(audit.bundleEvidence),
+    "",
     "## Research Gate",
     "",
     audit.gate
@@ -654,6 +715,10 @@ function finalReviewMarkdown(finalReview) {
     "- UI-compatible fields checked: promotionVerdict, reasonCodes, robustScore, adjustedConfidence, holdoutPass, cpcvSummary.",
     "- Split `latest.json` and `metrics.json` are accepted when split manifests are present.",
     "",
+    "## Bundle Evidence",
+    "",
+    bundleEvidenceMarkdown(finalReview.audit.bundleEvidence),
+    "",
     "## Research Gate",
     "",
     finalReview.audit.gate
@@ -680,6 +745,32 @@ function finalReviewMarkdown(finalReview) {
     "```mermaid",
     finalReview.promotionTimeline.trim(),
     "```",
+  ].join("\n");
+}
+
+function bundleEvidenceMarkdown(summary) {
+  if (!summary) {
+    return "- No bundle manifest was present; raw-tick and row-export readiness were not summarized.";
+  }
+  const raw = summary.rawTicks ?? {};
+  const coverage = raw.coverage ?? {};
+  const totalTargets = raw.targetMarketCount || numberOrDefault(coverage.covered, 0) + numberOrDefault(coverage.uncovered, 0);
+  const coveragePercent = typeof coverage.ratio === "number" ? `${Math.round(coverage.ratio * 1000) / 10}%` : "n/a";
+  const rowText = summary.rowExport?.rowsCapped
+    ? `Rows: capped at ${summary.rowExport.rowCap ?? "configured limit"} (${summary.rowExport.mode ?? "unknown"} mode).`
+    : summary.rowExport?.includeRows === false
+      ? "Rows: disabled."
+      : summary.rowExport?.promotionReviewComplete
+        ? "Rows: full extracts exported."
+        : `Rows: ${summary.rowExport?.mode ?? "unknown"} mode.`;
+  const rawState = raw.availabilityStatus ?? (raw.available ? "available" : "unavailable");
+  return [
+    `- ${rowText}`,
+    `- Raw ticks: ${rawState} (${raw.available ? "available" : "unavailable"}).`,
+    `- Coverage: ${coverage.covered ?? 0}/${totalTargets} target markets (${coveragePercent}); jsonl files: ${raw.jsonlFileCount ?? 0}; source files: ${raw.sourceSnapshotFileCount ?? 0}.`,
+    `- Source hashes: ${raw.sourceHash?.hashedFileCount ?? 0} hashed, ${raw.sourceHash?.skippedLargeFileCount ?? 0} skipped as large.`,
+    `- Limitations: ${summary.limitations?.join(", ") || "none"}.`,
+    `- Raw tick warnings: ${raw.warningCodes?.join(", ") || "none"}.`,
   ].join("\n");
 }
 
@@ -798,6 +889,26 @@ function timestampMs(value) {
   if (typeof value !== "string" || value.length === 0) return Number.NaN;
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? parsed : Number.NaN;
+}
+
+function objectOrEmpty(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function arrayOfStrings(value) {
+  return Array.isArray(value) ? value.filter((item) => typeof item === "string" && item.length > 0) : [];
+}
+
+function uniqueStrings(values) {
+  return [...new Set(values.filter((value) => typeof value === "string" && value.length > 0))];
+}
+
+function stringOrNull(value) {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function roundRatio(value) {
+  return typeof value === "number" && Number.isFinite(value) ? Math.round(value * 1000) / 1000 : null;
 }
 
 function numberOrDefault(value, fallback) {
