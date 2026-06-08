@@ -206,6 +206,8 @@ function bundleEvidenceSummary({ bundleManifest, rawTicksManifest }) {
   const rawCoverage = objectOrEmpty(rawExport.targetMarketCoverage);
   const rawTargetSamples = objectOrEmpty(rawExport.targetMarketSamples);
   const sourceHash = objectOrEmpty(rawExport.sourceHash);
+  const rawSourceFiles = Array.isArray(rawTicksManifest?.sourceSnapshotFiles) ? rawTicksManifest.sourceSnapshotFiles : [];
+  const rawSourceHashPolicy = objectOrEmpty(rawTicksManifest?.sourceHashPolicy);
   const covered = numberOrDefault(rawCoverage.covered, numberOrDefault(rawTicksManifest?.coveredTargetMarketCount, 0));
   const uncovered = numberOrDefault(rawCoverage.uncovered, numberOrDefault(rawTicksManifest?.uncoveredTargetMarketCount, 0));
   const targetMarketCount = numberOrDefault(
@@ -231,6 +233,22 @@ function bundleEvidenceSummary({ bundleManifest, rawTicksManifest }) {
     : Array.isArray(rawTicksManifest?.sourceSnapshotFiles)
       ? rawTicksManifest.sourceSnapshotFiles.filter((source) => source?.hashSkipped).slice(0, 5).map(sourceFileSample).filter(Boolean)
       : [];
+  const totalSourceBytes = numberOrDefault(
+    sourceHash.totalSourceBytes,
+    numberOrDefault(rawSourceHashPolicy.totalSourceBytes, sumSourceBytes(rawSourceFiles)),
+  );
+  const hashedSourceBytes = numberOrDefault(
+    sourceHash.hashedSourceBytes,
+    numberOrDefault(rawSourceHashPolicy.hashedSourceBytes, sumSourceBytes(rawSourceFiles.filter((source) => source?.sha256))),
+  );
+  const hashSkippedSourceBytes = numberOrDefault(
+    sourceHash.hashSkippedSourceBytes,
+    numberOrDefault(rawSourceHashPolicy.hashSkippedSourceBytes, sumSourceBytes(rawSourceFiles.filter((source) => source?.hashSkipped))),
+  );
+  const hashSkippedByteRatio = numberOrDefault(
+    sourceHash.hashSkippedByteRatio,
+    numberOrDefault(rawSourceHashPolicy.hashSkippedByteRatio, totalSourceBytes > 0 ? roundRatio(hashSkippedSourceBytes / totalSourceBytes) : null),
+  );
 
   return {
     rowExport: {
@@ -266,6 +284,10 @@ function bundleEvidenceSummary({ bundleManifest, rawTicksManifest }) {
         hashedFileCount: numberOrDefault(sourceHash.hashedFileCount, numberOrDefault(rawTicksManifest?.hashedSourceSnapshotFileCount, 0)),
         skippedLargeFileCount: numberOrDefault(sourceHash.skippedLargeFileCount, numberOrDefault(rawTicksManifest?.hashSkippedSourceSnapshotFileCount, 0)),
         sha256MaxBytes: numberOrDefault(sourceHash.sha256MaxBytes, numberOrDefault(rawTicksManifest?.sourceHashPolicy?.sha256MaxBytes, null)),
+        totalSourceBytes,
+        hashedSourceBytes,
+        hashSkippedSourceBytes,
+        hashSkippedByteRatio,
         skippedLargeFileSample,
         omittedSkippedLargeFileCount: numberOrDefault(
           sourceHash.omittedSkippedLargeFileCount,
@@ -287,6 +309,10 @@ function sourceFileSample(source) {
     bytes: numberOrDefault(record.bytes, 0),
     hashSkipped: record.hashSkipped === true,
   };
+}
+
+function sumSourceBytes(sources) {
+  return sources.reduce((total, source) => total + numberOrDefault(source?.bytes, 0), 0);
 }
 
 function recomputeFolds(events, options) {
@@ -803,11 +829,12 @@ function bundleEvidenceMarkdown(summary) {
   const rawState = raw.availabilityStatus ?? (raw.available ? "available" : "unavailable");
   const uncoveredSample = Array.isArray(targetSamples.uncovered) ? targetSamples.uncovered : [];
   const skippedSourceSample = Array.isArray(sourceHash.skippedLargeFileSample) ? sourceHash.skippedLargeFileSample : [];
+  const skippedByteRatio = typeof sourceHash.hashSkippedByteRatio === "number" ? `${Math.round(sourceHash.hashSkippedByteRatio * 1000) / 10}%` : "n/a";
   const lines = [
     `- ${rowText}`,
     `- Raw ticks: ${rawState} (${raw.available ? "available" : "unavailable"}).`,
     `- Coverage: ${coverage.covered ?? 0}/${totalTargets} target markets (${coveragePercent}); jsonl files: ${raw.jsonlFileCount ?? 0}; source files: ${raw.sourceSnapshotFileCount ?? 0}.`,
-    `- Source hashes: ${sourceHash.hashedFileCount ?? 0} hashed, ${sourceHash.skippedLargeFileCount ?? 0} skipped as large.`,
+    `- Source hashes: ${sourceHash.hashedFileCount ?? 0} hashed, ${sourceHash.skippedLargeFileCount ?? 0} skipped as large; skipped bytes: ${sourceHash.hashSkippedSourceBytes ?? 0}/${sourceHash.totalSourceBytes ?? 0} (${skippedByteRatio}).`,
     `- Limitations: ${summary.limitations?.join(", ") || "none"}.`,
     `- Raw tick warnings: ${raw.warningCodes?.join(", ") || "none"}.`,
   ];

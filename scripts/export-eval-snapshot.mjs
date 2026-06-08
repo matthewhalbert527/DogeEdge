@@ -1037,6 +1037,7 @@ function rawMarketTickBundleSummary(manifest, manifestPresent) {
   const sourceSnapshotFileCount = numberOrZero(manifest?.sourceSnapshotFileCount ?? sourceSnapshotFiles.length);
   const hashedSourceSnapshotFileCount = numberOrZero(manifest?.hashedSourceSnapshotFileCount ?? sourceSnapshotFiles.filter((source) => source?.sha256).length);
   const hashSkippedSourceSnapshotFileCount = numberOrZero(manifest?.hashSkippedSourceSnapshotFileCount ?? sourceSnapshotFiles.filter((source) => source?.hashSkipped).length);
+  const sourceHashPolicy = rawSourceHashPolicy(sourceSnapshotFiles, manifest?.sourceHashPolicy);
   const coveredTargetSample = coveredTargetMarkets.slice(0, 10);
   const uncoveredTargetSample = uncoveredTargetMarkets.slice(0, 10);
   const skippedLargeFileSample = sourceSnapshotFiles
@@ -1082,11 +1083,42 @@ function rawMarketTickBundleSummary(manifest, manifestPresent) {
       hashedFileCount: hashedSourceSnapshotFileCount,
       skippedLargeFileCount: hashSkippedSourceSnapshotFileCount,
       sha256MaxBytes: numberOrNull(manifest?.sourceHashPolicy?.sha256MaxBytes),
+      totalSourceBytes: sourceHashPolicy.totalSourceBytes,
+      hashedSourceBytes: sourceHashPolicy.hashedSourceBytes,
+      hashSkippedSourceBytes: sourceHashPolicy.hashSkippedSourceBytes,
+      hashSkippedByteRatio: sourceHashPolicy.hashSkippedByteRatio,
       skippedLargeFileSample,
       omittedSkippedLargeFileCount: Math.max(0, hashSkippedSourceSnapshotFileCount - skippedLargeFileSample.length),
     },
     warningCodes,
   };
+}
+
+function rawSourceHashPolicy(sourceSnapshotFiles, policy = {}) {
+  const sources = Array.isArray(sourceSnapshotFiles) ? sourceSnapshotFiles : [];
+  const hashedSources = sources.filter((source) => source?.sha256);
+  const skippedSources = sources.filter((source) => source?.hashSkipped);
+  const totalSourceBytes = numberOrNull(policy?.totalSourceBytes) ?? sumSourceBytes(sources);
+  const hashedSourceBytes = numberOrNull(policy?.hashedSourceBytes) ?? sumSourceBytes(hashedSources);
+  const hashSkippedSourceBytes = numberOrNull(policy?.hashSkippedSourceBytes) ?? sumSourceBytes(skippedSources);
+  const hashSkippedByteRatio = numberOrNull(policy?.hashSkippedByteRatio)
+    ?? (totalSourceBytes > 0 ? roundDisplayRatio(hashSkippedSourceBytes / totalSourceBytes) : null);
+  return {
+    sha256MaxBytes: numberOrNull(policy?.sha256MaxBytes),
+    totalSourceBytes,
+    hashedSourceBytes,
+    hashSkippedSourceBytes,
+    hashSkippedByteRatio,
+  };
+}
+
+function sumSourceBytes(sources) {
+  return sources.reduce((total, source) => total + sourceByteValue(source), 0);
+}
+
+function sourceByteValue(source) {
+  const parsed = Number(source?.bytes);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
 }
 
 function bundleLimitations({ rowExport, rawMarketTickExport }) {
@@ -2644,6 +2676,7 @@ async function writeRawMarketTicksManifest({
         : "target_samples_absent";
   const hashedSourceSnapshotFileCount = sources.filter((source) => source.sha256).length;
   const hashSkippedSourceSnapshotFileCount = sources.filter((source) => source.hashSkipped).length;
+  const sourceHashPolicy = rawSourceHashPolicy(sources, { sha256MaxBytes: 50 * 1024 * 1024 });
   const manifest = {
     schemaVersion: "dogeedge.raw-market-ticks.manifest.v1",
     snapshotId,
@@ -2675,9 +2708,13 @@ async function writeRawMarketTicksManifest({
     hashedSourceSnapshotFileCount,
     hashSkippedSourceSnapshotFileCount,
     sourceHashPolicy: {
-      sha256MaxBytes: 50 * 1024 * 1024,
+      sha256MaxBytes: sourceHashPolicy.sha256MaxBytes,
       hashedFileCount: hashedSourceSnapshotFileCount,
       skippedLargeFileCount: hashSkippedSourceSnapshotFileCount,
+      totalSourceBytes: sourceHashPolicy.totalSourceBytes,
+      hashedSourceBytes: sourceHashPolicy.hashedSourceBytes,
+      hashSkippedSourceBytes: sourceHashPolicy.hashSkippedSourceBytes,
+      hashSkippedByteRatio: sourceHashPolicy.hashSkippedByteRatio,
     },
     warningCodes: [
       "raw_market_tick_parquet_absent",

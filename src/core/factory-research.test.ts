@@ -808,6 +808,10 @@ describe("factory research safeguards", () => {
           hashedFileCount: 0,
           skippedLargeFileCount: 1,
           sha256MaxBytes: 50 * 1024 * 1024,
+          totalSourceBytes: 60_000_000,
+          hashedSourceBytes: 0,
+          hashSkippedSourceBytes: 60_000_000,
+          hashSkippedByteRatio: 1,
           skippedLargeFileSample: [
             { relativePath: "raw/snapshots/records.jsonl", bytes: 60_000_000, hashSkipped: true },
           ],
@@ -822,6 +826,7 @@ describe("factory research safeguards", () => {
     expect(finalReview).toContain("Coverage: 0/2 target markets");
     expect(finalReview).toContain("raw_market_tick_jsonl_absent");
     expect(finalReview).toContain("Uncovered target sample: m-0, m-1");
+    expect(finalReview).toContain("skipped bytes: 60000000/60000000 (100%)");
     expect(finalReview).toContain("Hash-skipped source sample: raw/snapshots/records.jsonl (60000000 bytes)");
   });
 
@@ -1170,6 +1175,10 @@ function writeReviewBundleFixture(input: string) {
       sha256MaxBytes: 50 * 1024 * 1024,
       hashedFileCount: 0,
       skippedLargeFileCount: 1,
+      totalSourceBytes: 60_000_000,
+      hashedSourceBytes: 0,
+      hashSkippedSourceBytes: 60_000_000,
+      hashSkippedByteRatio: 1,
     },
     warningCodes: [
       "raw_market_tick_parquet_absent",
@@ -1210,6 +1219,10 @@ function writeReviewBundleFixture(input: string) {
         hashedFileCount: 0,
         skippedLargeFileCount: 1,
         sha256MaxBytes: 50 * 1024 * 1024,
+        totalSourceBytes: 60_000_000,
+        hashedSourceBytes: 0,
+        hashSkippedSourceBytes: 60_000_000,
+        hashSkippedByteRatio: 1,
       },
       warningCodes: rawTickManifest.warningCodes,
     },

@@ -118,8 +118,18 @@ describe("continuous evaluation snapshot exporter", () => {
       targetMarketCount: 1,
       coveredTargetMarketCount: 1,
       uncoveredTargetMarketCount: 0,
+      sourceHashPolicy: {
+        hashedFileCount: 1,
+        skippedLargeFileCount: 0,
+        totalSourceBytes: expect.any(Number),
+        hashedSourceBytes: expect.any(Number),
+        hashSkippedSourceBytes: 0,
+        hashSkippedByteRatio: 0,
+      },
       warningCodes: expect.arrayContaining(["raw_market_tick_parquet_absent", "raw_market_tick_jsonl_sample"]),
     });
+    expect(rawTickManifest.sourceHashPolicy.totalSourceBytes).toBeGreaterThan(0);
+    expect(rawTickManifest.sourceHashPolicy.hashedSourceBytes).toBe(rawTickManifest.sourceHashPolicy.totalSourceBytes);
     expect(readFileSync(path.join(result.snapshotDir, "raw_market_ticks", "jsonl", "KXDOGE15M-FIXTURE.jsonl"), "utf8")).toContain("orderbook_snapshot");
     const history = JSON.parse(readFileSync(path.join(fixture.outDir, "snapshot-history-48h.json"), "utf8"));
     expect(history.schemaVersion).toBe("dogeedge.eval.snapshot-history.v1");
@@ -219,6 +229,10 @@ describe("continuous evaluation snapshot exporter", () => {
         hashedFileCount: 1,
         skippedLargeFileCount: 0,
         sha256MaxBytes: 50 * 1024 * 1024,
+        totalSourceBytes: expect.any(Number),
+        hashedSourceBytes: expect.any(Number),
+        hashSkippedSourceBytes: 0,
+        hashSkippedByteRatio: 0,
         skippedLargeFileSample: [],
         omittedSkippedLargeFileCount: 0,
       },
@@ -294,6 +308,10 @@ describe("continuous evaluation snapshot exporter", () => {
         hashedFileCount: 1,
         skippedLargeFileCount: 0,
         sha256MaxBytes: 50 * 1024 * 1024,
+        totalSourceBytes: expect.any(Number),
+        hashedSourceBytes: expect.any(Number),
+        hashSkippedSourceBytes: 0,
+        hashSkippedByteRatio: 0,
         skippedLargeFileSample: [],
         omittedSkippedLargeFileCount: 0,
       },
