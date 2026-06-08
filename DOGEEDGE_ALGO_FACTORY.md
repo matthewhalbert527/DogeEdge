@@ -90,6 +90,8 @@ npm run factory:audit-exports -- --input review_exports
 npm run eval:snapshot
 npm run eval:bundle
 npm run eval:loop
+npm run codex:auto-cycle
+npm run codex:auto-loop
 npm run merge:safety
 ```
 
@@ -111,6 +113,8 @@ artifacts\factory-audit\promotion-stages.mmd
 `eval:snapshot` writes a local `dogeedge.eval.snapshot.v1` packet for the most recent 30-minute review window. `eval:bundle` writes a two-hour review bundle containing the latest half-hour snapshot JSON files, TSV evidence, a repo artifact bundle, and an experiment-registry tarball. Both commands are local-only, deterministic, and review-oriented. They do not upload files, install strategies, change live-routing settings, or place orders.
 
 `eval:loop` leaves a foreground terminal process running. It writes a bundle immediately, then keeps writing snapshots every 30 minutes and bundles every 2 hours. Use `Ctrl+C` to stop it. For a Windows restart-proof setup, run this command from Task Scheduler at logon; the command itself stays local-only and paper-safe.
+
+`codex:auto-loop` is the unattended two-hour Codex improvement runner. It writes a fresh review bundle, creates a temporary `auto/codex-*` branch, runs `codex exec` with a local-only hardening prompt, verifies the patch with tests/lint/build/factory checks, and fast-forwards `main` only if the hard safety scan passes. It blocks auto-merge for live-sensitive paths, dependency changes, live-trading defaults, dry-run disabling, or manual-approval removal. Failed or blocked attempts are preserved under `review_exports\codex-automation\<cycle>\` with reports and diffs instead of being merged.
 
 Default Windows output:
 
