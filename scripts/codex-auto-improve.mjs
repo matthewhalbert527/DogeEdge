@@ -7,6 +7,10 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 const automationRootDefault = path.join(repoRoot, "review_exports", "codex-automation");
 const cycleTimeoutMs = 90 * 60_000;
 
+if (process.platform === "win32" && !String(process.env.PATH ?? "").toLowerCase().includes("\\git\\cmd")) {
+  process.env.PATH = `C:\\Program Files\\Git\\cmd;${process.env.PATH ?? ""}`;
+}
+
 export function hardSafetyScan({ files = [], diffText = "" } = {}) {
   const reasons = [];
   const deniedPathPatterns = [
