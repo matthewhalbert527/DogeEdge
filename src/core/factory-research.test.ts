@@ -18,8 +18,9 @@ import { compareInputManifest, decisionFrameInputManifest } from "../../scripts/
 import { paperEvidenceForAlgo, readPaperEvidence } from "../../scripts/factory/paper-evidence.mjs";
 import { markdownReport, metricsCsv } from "../../scripts/factory/reporting.mjs";
 import { auditReviewExports } from "../../scripts/factory/audit-exports.mjs";
+import { researchLiveAlignment } from "../../scripts/factory/family-registry.mjs";
 import { sampleSufficiency } from "../../scripts/factory/sample-gates.mjs";
-import { searchBudgetDecision } from "../../scripts/factory/search-budget.mjs";
+import { applyFamilySearchBudget, searchBudgetDecision } from "../../scripts/factory/search-budget.mjs";
 import {
   hasResearchPromotionCandidate,
   researchEvidenceCanMature,
@@ -314,6 +315,53 @@ describe("factory research safeguards", () => {
     expect(open.deepSweepAllowed).toBe(true);
   });
 
+  it("reserves low-evidence sweep budget for supported live-family adapters", () => {
+    const requested = [
+      ...Array.from({ length: 300 }, (_, index) => ({ id: `model-${index}`, family: "sweep-model" })),
+      ...Array.from({ length: 80 }, (_, index) => ({ id: `scalp-${index}`, family: "sweep-scalp" })),
+      ...Array.from({ length: 80 }, (_, index) => ({ id: `liq-${index}`, family: "sweep-liquidity-imbalance" })),
+      ...Array.from({ length: 80 }, (_, index) => ({ id: `trail-${index}`, family: "sweep-momentum-trail" })),
+    ];
+    const decision = searchBudgetDecision({
+      eventCount: 80,
+      officialSettlementCoverage: 0,
+      requestedSweepAlgos: requested.length,
+      sweepMode: true,
+      deepSweepMode: true,
+    });
+    const budgeted = applyFamilySearchBudget(requested, decision);
+    const selectedFamilies = new Set(budgeted.algos.map((algo) => algo.family));
+
+    expect(budgeted.algos).toHaveLength(decision.maxGeneratedAlgos);
+    expect(selectedFamilies.has("sweep-scalp")).toBe(true);
+    expect(selectedFamilies.has("sweep-liquidity-imbalance")).toBe(true);
+    expect(selectedFamilies.has("sweep-momentum-trail")).toBe(false);
+    expect(budgeted.summary.unsupportedMintingCount).toBe(0);
+    expect(budgeted.familyBudget.families.find((row) => row.family === "sweep-momentum-trail")).toMatchObject({
+      researchSupported: false,
+      selected: 0,
+      action: "freeze_new_minting",
+    });
+  });
+
+  it("counts family overlap when supported live-family adapters are in the research set", () => {
+    const alignment = researchLiveAlignment({
+      researchMetrics: [
+        { algoId: "research-scalp-1", family: "sweep-scalp" },
+        { algoId: "research-liquidity-1", family: "sweep-liquidity-imbalance" },
+      ],
+      liveStats: {
+        "live-scalp-1": { sourceAlgoId: "live-scalp-1", family: "sweep-scalp" },
+        "live-trail-1": { sourceAlgoId: "live-trail-1", family: "sweep-momentum-trail" },
+      },
+    });
+
+    expect(alignment.overlapByFamilyCount).toBe(1);
+    expect(alignment.supportedLiveAlgoCount).toBe(1);
+    expect(alignment.unsupportedLiveAlgoCount).toBe(1);
+    expect(alignment.supportedLiveFamilies).toEqual([{ family: "sweep-scalp", count: 1 }]);
+  });
+
   it("ranks research evidence ahead of dry-run-only appearance", () => {
     const researchValidated = {
       promotionVerdict: "paper_only",
@@ -362,7 +410,8 @@ describe("factory research safeguards", () => {
     };
 
     expect(familyResearchSupported("sweep-model")).toBe(true);
-    expect(familyResearchSupported("sweep-scalp")).toBe(false);
+    expect(familyResearchSupported("sweep-scalp")).toBe(true);
+    expect(familyResearchSupported("sweep-momentum-trail")).toBe(false);
     expect(researchEvidenceDefaultRankScore({
       evidence: supportedEvidence,
       researchSupported: familyResearchSupported("sweep-model"),
@@ -370,7 +419,7 @@ describe("factory research safeguards", () => {
       executablePnlPerCycle: 0.5,
     })).toBeGreaterThan(researchEvidenceDefaultRankScore({
       evidence: unsupportedEvidence,
-      researchSupported: familyResearchSupported("sweep-scalp"),
+      researchSupported: familyResearchSupported("sweep-momentum-trail"),
       executableTotalPnl: -500,
       executablePnlPerCycle: -10,
     }));

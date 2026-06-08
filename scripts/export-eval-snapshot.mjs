@@ -471,7 +471,7 @@ export async function exportEvaluationSnapshot(options = {}) {
   const primaryRun = choosePrimaryRun(latestSweep, latestBacktest);
   const runDir = stringOrNull(primaryRun?.runDir);
   const registry = primaryRun?.registry ?? await readJsonMaybe(runDir ? path.join(runDir, "experiment-registry.json") : null) ?? {};
-  const metrics = selectMetrics(primaryRun, maxMetrics);
+  const metrics = await selectPrimaryRunMetrics(primaryRun, maxMetrics);
   const metricByAlgoId = new Map(metrics.map((metric) => [metric.algoId, metric]));
   const topExecutable = topTradersFile?.topTradersExecutable ?? localLatest?.topTradersExecutable ?? null;
   const topStats = isRecord(topExecutable?.stats) ? topExecutable.stats : {};
@@ -971,6 +971,14 @@ export function validateEvaluationSnapshot(snapshot) {
 function choosePrimaryRun(latestSweep, latestBacktest) {
   if (latestSweep?.runId) return latestSweep;
   return latestBacktest?.runId ? latestBacktest : {};
+}
+
+async function selectPrimaryRunMetrics(primaryRun, maxMetrics) {
+  const runDir = stringOrNull(primaryRun?.runDir);
+  const fullMetrics = await readJsonMaybe(runDir ? path.join(runDir, "metrics.json") : null);
+  if (Array.isArray(fullMetrics)) return fullMetrics.slice(0, maxMetrics);
+  if (Array.isArray(fullMetrics?.metrics)) return fullMetrics.metrics.slice(0, maxMetrics);
+  return selectMetrics(primaryRun, maxMetrics);
 }
 
 function selectMetrics(primaryRun, maxMetrics) {

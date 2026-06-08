@@ -79,6 +79,8 @@ npm run factory:sweep
 
 The sweep mode generates a broad grid of model-window, distance, spread-scalp, momentum, weak-model fade, momentum-fade, target-reversion, managed scalp, cheap longshot, late favorite, liquidity-imbalance, and paired YES+NO variants. It is designed to test many approaches against the captured decision frames without slowing the live app loop.
 
+When evidence is weak, the factory no longer slices the first N generated sweep algos. The search-budget layer applies a family-aware allocation: `sweep-model`, `sweep-scalp`, and `sweep-liquidity-imbalance` have lightweight research adapters and receive pilot research budget under the low-evidence cap. Unsupported executable families receive zero normal minting budget by default and stay telemetry-only until a research adapter and replay-equivalence definition exist. The run output records this in `searchBudget.familyBudget`.
+
 Additional research commands:
 
 ```powershell
@@ -195,6 +197,8 @@ The app now keeps Top Traders in two explicit lanes:
 - `Telemetry Watchlist`: unsupported families, missing-evidence rows, rejected rows, and insufficient-data rows. These rows remain visible for hypothesis generation and dry-run evidence collection, but they cannot become the default ranked winner surface.
 
 Dry-run executable stats remain visible as operational telemetry, but large arena batch churn is held when the latest research sweep has no candidate passing official settlement, holdout, walk-forward, CPCV, conservative/stress cost, and multiple-testing gates. In that state DogeEdge shows "No research-validated algos yet" instead of backfilling the ranked roster with telemetry winners. Executable families must be listed in the family registry before they can become Champion or Prospect rows; unsupported families remain Watch-only and are exported through the research/live alignment artifacts until a research adapter exists.
+
+The current research-supported executable families are `sweep-scalp` and `sweep-liquidity-imbalance`, in addition to legacy `paper`, `paper-variant`, and `sweep-model` research families. Other live families remain telemetry-only and are eligible for adapter work, not trusted ranking.
 
 `merge:safety` is a local advisory guard for GPT-CLI patch passes. It prints `ALLOW` only for documentation/export/audit/report/test-artifact diffs. It prints `REQUIRE_HUMAN_APPROVAL` for app code, dependencies, factory kernel files, local worker/backtest entry points, Tauri/API files, and live/Kalshi/order-sensitive paths. It does not merge, push, or change runtime behavior.
 

@@ -1,17 +1,17 @@
 export const familyRegistryVersion = "dogeedge.family-registry.v1";
 
 const entries = [
-  { family: "paper", researchSupported: true, researchAdapter: "built_in_paper" },
-  { family: "paper-variant", researchSupported: true, researchAdapter: "built_in_paper_variant" },
-  { family: "sweep-model", researchSupported: true, researchAdapter: "factory_sweep_model" },
-  { family: "sweep-momentum-trail", researchSupported: false, reason: "missing_research_adapter" },
-  { family: "sweep-order-flow-pressure", researchSupported: false, reason: "missing_research_adapter" },
-  { family: "sweep-liquidity-imbalance", researchSupported: false, reason: "missing_research_adapter" },
-  { family: "sweep-scalp", researchSupported: false, reason: "missing_research_adapter" },
-  { family: "sweep-managed-scalp", researchSupported: false, reason: "missing_research_adapter" },
-  { family: "sweep-distance", researchSupported: false, reason: "missing_research_adapter" },
-  { family: "sweep-target-revert", researchSupported: false, reason: "missing_research_adapter" },
-  { family: "sweep-momentum", researchSupported: false, reason: "missing_research_adapter" },
+  supportedFamily("paper", "built_in_paper", "legacy_paper_signal"),
+  supportedFamily("paper-variant", "built_in_paper_variant", "legacy_paper_signal"),
+  supportedFamily("sweep-model", "factory_sweep_model", "model_window_replay"),
+  supportedFamily("sweep-scalp", "factory_spread_scalp_sweep", "orderbook_scalp_replay"),
+  supportedFamily("sweep-liquidity-imbalance", "factory_liquidity_imbalance_sweep", "orderbook_depth_imbalance_replay"),
+  telemetryOnlyFamily("sweep-momentum-trail", "missing_research_adapter"),
+  telemetryOnlyFamily("sweep-order-flow-pressure", "missing_research_adapter"),
+  telemetryOnlyFamily("sweep-managed-scalp", "missing_research_adapter"),
+  telemetryOnlyFamily("sweep-distance", "missing_research_adapter"),
+  telemetryOnlyFamily("sweep-target-revert", "missing_research_adapter"),
+  telemetryOnlyFamily("sweep-momentum", "missing_research_adapter"),
 ];
 
 export const familyRegistry = Object.freeze(entries.map((entry) => Object.freeze({ ...entry })));
@@ -27,6 +27,12 @@ export function familyRegistryEntry(family) {
 
 export function familyResearchSupported(family) {
   return familyRegistryEntry(family).researchSupported === true;
+}
+
+export function familyDiscoveryClassification(family) {
+  const entry = familyRegistryEntry(family);
+  if (entry.researchSupported) return "supported_for_research";
+  return entry.telemetryClassification ?? "telemetry_only";
 }
 
 export function familyRegistryPublic() {
@@ -73,4 +79,29 @@ function familyCounts(values) {
     counts[key] = (counts[key] ?? 0) + 1;
   }
   return counts;
+}
+
+function supportedFamily(family, researchAdapter, replayAdapter) {
+  return {
+    family,
+    researchSupported: true,
+    telemetryClassification: "supported_for_research",
+    researchAdapter,
+    replayAdapter,
+    researchEvidenceAdapter: researchAdapter,
+    featureSchemaVersion: "dogeedge.decision-frame.v1",
+    parameterSchema: `${family}.parameters.v1`,
+    entryExitSemantics: "factory_replay_signal",
+    defaultBudgetAction: "pilot_supported_family",
+  };
+}
+
+function telemetryOnlyFamily(family, reason) {
+  return {
+    family,
+    researchSupported: false,
+    telemetryClassification: "telemetry_only",
+    reason,
+    defaultBudgetAction: "freeze_new_minting",
+  };
 }

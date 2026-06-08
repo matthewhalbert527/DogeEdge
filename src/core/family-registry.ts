@@ -4,13 +4,13 @@ const researchSupportedFamilies = new Set([
   "paper",
   "paper-variant",
   "sweep-model",
+  "sweep-scalp",
+  "sweep-liquidity-imbalance",
 ]);
 
 const unsupportedLiveFamilies = new Set([
   "sweep-momentum-trail",
   "sweep-order-flow-pressure",
-  "sweep-liquidity-imbalance",
-  "sweep-scalp",
   "sweep-managed-scalp",
   "sweep-distance",
   "sweep-target-revert",

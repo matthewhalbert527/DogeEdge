@@ -7,7 +7,7 @@ import { metricsCsv as robustMetricsCsv, markdownReport as robustMarkdownReport 
 import { experimentRegistryEntry, compareRuns } from "./factory/registry.mjs";
 import { assertReplayInputManifest } from "./factory/repro.mjs";
 import { readPaperEvidence } from "./factory/paper-evidence.mjs";
-import { searchBudgetDecision } from "./factory/search-budget.mjs";
+import { applyFamilySearchBudget, searchBudgetDecision } from "./factory/search-budget.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const args = parseArgs(process.argv.slice(2));
@@ -80,7 +80,7 @@ const requestedSweepAlgos = sweepMode ? sweepAlgoDefinitions() : [];
 const officialSettlementCoverage = loadResult.events.length
   ? loadResult.events.filter((event) => event.settlementSource === "official_resolution" && event.labelSource === "official_resolution").length / loadResult.events.length
   : 0;
-const searchBudget = searchBudgetDecision({
+let searchBudget = searchBudgetDecision({
   eventCount: loadResult.eventCount,
   officialSettlementCoverage,
   requestedSweepAlgos: requestedSweepAlgos.length,
@@ -91,7 +91,13 @@ activeDeepSweepMode = searchBudget.deepSweepAllowed;
 const effectiveSweepAlgos = sweepMode
   ? (activeDeepSweepMode === requestedDeepSweepMode ? requestedSweepAlgos : sweepAlgoDefinitions())
   : [];
-const cappedSweepAlgos = selectedAlgoIds ? effectiveSweepAlgos : effectiveSweepAlgos.slice(0, searchBudget.maxGeneratedAlgos);
+const budgetedSweep = applyFamilySearchBudget(effectiveSweepAlgos, searchBudget, { selectedAlgoIds });
+searchBudget = {
+  ...searchBudget,
+  familyBudget: budgetedSweep.familyBudget,
+  ...budgetedSweep.summary,
+};
+const cappedSweepAlgos = budgetedSweep.algos;
 const allAlgos = sweepMode ? [...defaultAlgos, ...cappedSweepAlgos] : defaultAlgos;
 assertUniqueAlgoIds(allAlgos);
 const algos = selectedAlgoIds ? allAlgos.filter((algo) => selectedAlgoIds.has(algo.id)) : allAlgos;
