@@ -14,6 +14,10 @@ export function metricsCsv(metrics) {
     "roi",
     "conservativeTotalPnl",
     "stressTotalPnl",
+    "labelSource",
+    "settlementSource",
+    "officialResolutionAvailable",
+    "officialSettlementCoverage",
     "maxDrawdown",
     "foldConsistency",
     "walkForwardPass",
@@ -69,7 +73,7 @@ export function metricsCsv(metrics) {
   ].join("\n");
 }
 
-export function markdownReport({ runId, startedAt, finishedAt, dataRoot, framesDir, frameCount, eventCount, algoCount, sweepMode, dataQuality, metrics, candidates }) {
+export function markdownReport({ runId, startedAt, finishedAt, dataRoot, framesDir, frameCount, eventCount, algoCount, sweepMode, dataQuality, metrics, candidates, searchBudget = null }) {
   const top = candidates[0] ?? metrics[0] ?? null;
   return [
     "# DogeEdge Algo Factory Report",
@@ -88,6 +92,7 @@ export function markdownReport({ runId, startedAt, finishedAt, dataRoot, framesD
     `- Frames: ${frameCount}`,
     `- Market events: ${eventCount}`,
     `- Algos: ${algoCount}`,
+    searchBudget ? `- Search budget: ${searchBudget.limited ? `limited (${(searchBudget.reasonCodes ?? []).join(", ")}) ${searchBudget.maxGeneratedAlgos}/${searchBudget.requestedSweepAlgos} sweep algos` : "unlimited"}` : "",
     "",
     "## Data Quality",
     "",
@@ -98,6 +103,8 @@ export function markdownReport({ runId, startedAt, finishedAt, dataRoot, framesD
       `- Overlapping frames downsampled: ${dataQuality.overlappingFramesDownsampled}`,
       `- Warnings: ${dataQuality.warningCount}`,
       `- Errors: ${dataQuality.errorCount}`,
+      `- Settlement source: ${dataQuality.settlementEvidence?.settlementSource ?? "unknown"}`,
+      `- Official settlement coverage: ${percent(dataQuality.settlementEvidence?.officialSettlementCoverage ?? 0)}`,
     ].join("\n") : "- No data quality summary.",
     "",
     "## Summary Verdict",
@@ -112,6 +119,12 @@ export function markdownReport({ runId, startedAt, finishedAt, dataRoot, framesD
       ? "| Algo | Family | Verdict | Closed Markets | Conservative P/L | WF | CPCV + | Holdout | Drift | DSR Approx | PBO Approx | FDR | q | Robust | Reasons |\n|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|\n"
         + candidates.slice(0, 50).map((metric) => `| ${metric.algoName} | ${metric.family} | ${metric.promotionVerdict} | ${metric.independentClosedMarkets} | ${money(metric.costModels?.conservative?.totalPnl ?? 0)} | ${metric.walkForwardPass ? "pass" : "fail"} | ${percent(metric.cpcvSummary?.positiveFoldRate ?? 0)} | ${metric.holdoutPass ? "pass" : "fail"} ${money(metric.holdoutConservativeTotalPnl ?? 0)} | ${paperEvidenceLabel(metric)} | ${percent(metric.dsrApprox ?? 0)} | ${percent(metric.pboApprox ?? 0)} | ${percent(metric.falseDiscoveryRisk ?? 1)} | ${percent(metric.globalQValue ?? 1)} | ${formatNumber(metric.robustScore)} | ${(metric.reasonCodes ?? []).join(" ")} |`).join("\n")
       : "No candidates passed robust promotion gates.",
+    "",
+    "## Settlement Evidence Gate",
+    "",
+    "| Algo | Label Source | Settlement Source | Official Coverage | Verdict | Reasons |",
+    "|---|---:|---:|---:|---:|---|",
+    ...metrics.slice(0, 50).map((metric) => `| ${metric.algoName} | ${metric.labelSource ?? metric.settlementEvidence?.labelSource ?? "unknown"} | ${metric.settlementSource ?? metric.settlementEvidence?.settlementSource ?? "unknown"} | ${percent(metric.officialSettlementCoverage ?? 0)} | ${metric.promotionVerdict ?? "unknown"} | ${(metric.reasonCodes ?? []).join(" ")} |`),
     "",
     "## Rejection Reasons",
     "",
@@ -171,6 +184,10 @@ export function markdownReport({ runId, startedAt, finishedAt, dataRoot, framesD
 function csvMetricValue(metric, key) {
   if (key === "conservativeTotalPnl") return metric.costModels?.conservative?.totalPnl ?? 0;
   if (key === "stressTotalPnl") return metric.costModels?.stress?.totalPnl ?? 0;
+  if (key === "labelSource") return metric.labelSource ?? metric.settlementEvidence?.labelSource ?? "unknown";
+  if (key === "settlementSource") return metric.settlementSource ?? metric.settlementEvidence?.settlementSource ?? "unknown";
+  if (key === "officialResolutionAvailable") return metric.officialResolutionAvailable === true || metric.settlementEvidence?.officialResolutionAvailable === true;
+  if (key === "officialSettlementCoverage") return metric.officialSettlementCoverage ?? metric.settlementEvidence?.officialSettlementCoverage ?? 0;
   if (key === "foldConsistency") return metric.foldSummary?.foldConsistency ?? 0;
   if (key === "cpcvPositivePathRate") return metric.cpcvSummary?.positiveFoldRate ?? 0;
   if (key === "cpcvMedianOosPnl") return metric.cpcvSummary?.medianFoldPnl ?? 0;

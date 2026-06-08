@@ -7,6 +7,7 @@ import { metricsCsv as robustMetricsCsv, markdownReport as robustMarkdownReport 
 import { experimentRegistryEntry, compareRuns } from "./factory/registry.mjs";
 import { assertReplayInputManifest } from "./factory/repro.mjs";
 import { readPaperEvidence } from "./factory/paper-evidence.mjs";
+import { searchBudgetDecision } from "./factory/search-budget.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const args = parseArgs(process.argv.slice(2));
@@ -21,8 +22,9 @@ const algosDir = path.resolve(process.env.DOGEEDGE_ALGOS_DIR ?? path.join(path.d
 const paperDataDir = path.resolve(args["paper-data"] ?? process.env.DOGEEDGE_DATA_DIR ?? path.join(dataRoot, "local-worker"));
 const runId = args["run-id"] ?? new Date().toISOString().replaceAll(":", "-").replace(/\.\d{3}Z$/, "Z");
 const sweepMode = Boolean(args.sweep);
-const deepSweepMode = sweepMode && Boolean(args.deep);
-const modeLabel = replayRunMode ? "replay-run" : validateMode ? "validate" : promoteCheckMode ? "promote-check" : sweepMode ? deepSweepMode ? "deep-sweep" : "sweep" : "default";
+const requestedDeepSweepMode = sweepMode && Boolean(args.deep);
+let activeDeepSweepMode = requestedDeepSweepMode;
+const modeLabel = replayRunMode ? "replay-run" : validateMode ? "validate" : promoteCheckMode ? "promote-check" : sweepMode ? requestedDeepSweepMode ? "deep-sweep" : "sweep" : "default";
 const runDir = path.join(backtestsDir, sweepMode ? "sweeps" : "runs", runId);
 const selectedAlgoIds = args.algo ? new Set(String(args.algo).split(",").map((item) => item.trim()).filter(Boolean)) : null;
 const sinceArg = args.since ?? replayConfig?.since ?? null;
@@ -63,8 +65,34 @@ await Promise.all([
   mkdir(algosDir, { recursive: true }),
 ]);
 
+const startedAt = new Date().toISOString();
+const replayManifestCheck = replayRunMode && replayConfig
+  ? await assertReplayInputManifest(framesDir, replayConfig.registry, { permissiveDebug })
+  : null;
+const paperEvidence = await readPaperEvidence({
+  storageDir: paperDataDir,
+  since,
+  until,
+});
+const loadResult = await readFactoryDecisionFrames(framesDir, { permissiveDebug });
 const defaultAlgos = algoDefinitions();
-const allAlgos = sweepMode ? [...defaultAlgos, ...sweepAlgoDefinitions()] : defaultAlgos;
+const requestedSweepAlgos = sweepMode ? sweepAlgoDefinitions() : [];
+const officialSettlementCoverage = loadResult.events.length
+  ? loadResult.events.filter((event) => event.settlementSource === "official_resolution" && event.labelSource === "official_resolution").length / loadResult.events.length
+  : 0;
+const searchBudget = searchBudgetDecision({
+  eventCount: loadResult.eventCount,
+  officialSettlementCoverage,
+  requestedSweepAlgos: requestedSweepAlgos.length,
+  sweepMode,
+  deepSweepMode: requestedDeepSweepMode,
+});
+activeDeepSweepMode = searchBudget.deepSweepAllowed;
+const effectiveSweepAlgos = sweepMode
+  ? (activeDeepSweepMode === requestedDeepSweepMode ? requestedSweepAlgos : sweepAlgoDefinitions())
+  : [];
+const cappedSweepAlgos = selectedAlgoIds ? effectiveSweepAlgos : effectiveSweepAlgos.slice(0, searchBudget.maxGeneratedAlgos);
+const allAlgos = sweepMode ? [...defaultAlgos, ...cappedSweepAlgos] : defaultAlgos;
 assertUniqueAlgoIds(allAlgos);
 const algos = selectedAlgoIds ? allAlgos.filter((algo) => selectedAlgoIds.has(algo.id)) : allAlgos;
 if (algos.length === 0) {
@@ -77,16 +105,6 @@ await writeJsonIfMissing(path.join(algosDir, "registry.json"), {
   algos: allAlgos.map(({ signal: _signal, ...algo }) => algo),
 });
 
-const startedAt = new Date().toISOString();
-const replayManifestCheck = replayRunMode && replayConfig
-  ? await assertReplayInputManifest(framesDir, replayConfig.registry, { permissiveDebug })
-  : null;
-const paperEvidence = await readPaperEvidence({
-  storageDir: paperDataDir,
-  since,
-  until,
-});
-const loadResult = await readFactoryDecisionFrames(framesDir, { permissiveDebug });
 const pipeline = runFactoryResearchPipeline({
   algos,
   loadResult,
@@ -103,6 +121,7 @@ const pipeline = runFactoryResearchPipeline({
     minWalkForwardClosed,
     thresholds,
     paperEvidence,
+    searchBudget,
   },
 });
 const filteredFrames = pipeline.frames;
@@ -156,7 +175,9 @@ await writeFile(path.join(runDir, "config.json"), `${JSON.stringify({
   walkForwardFrameCount: pipeline.split.testEventIds.length,
   walkForwardRatio,
   algoCount: algos.length,
-  deepSweepMode,
+  deepSweepMode: activeDeepSweepMode,
+  requestedDeepSweepMode,
+  searchBudget,
   minCandidateClosed,
   minWalkForwardClosed,
   thresholds,
@@ -208,7 +229,7 @@ await writeFile(path.join(runDir, "candidates.json"), `${JSON.stringify(candidat
 await writeFile(path.join(runDir, "candidates.csv"), `${robustMetricsCsv(candidates)}\n`);
 await writeFile(path.join(runDir, "trades.jsonl"), trades.map((trade) => JSON.stringify(trade)).join("\n") + (trades.length ? "\n" : ""));
 await writeFile(path.join(runDir, "experiment-registry.json"), `${JSON.stringify(registry, null, 2)}\n`);
-await writeFile(path.join(runDir, "report.md"), `${robustMarkdownReport({ runId, startedAt, finishedAt, dataRoot, framesDir, frameCount: filteredFrames.length, eventCount: pipeline.events.length, algoCount: algos.length, sweepMode, dataQuality: pipeline.dataQuality, metrics, candidates })}\n`);
+await writeFile(path.join(runDir, "report.md"), `${robustMarkdownReport({ runId, startedAt, finishedAt, dataRoot, framesDir, frameCount: filteredFrames.length, eventCount: pipeline.events.length, algoCount: algos.length, sweepMode, dataQuality: pipeline.dataQuality, metrics, candidates, searchBudget })}\n`);
 await writeFile(path.join(backtestsDir, "latest.json"), `${JSON.stringify({
   runId,
   mode: modeLabel,
@@ -223,7 +244,9 @@ await writeFile(path.join(backtestsDir, "latest.json"), `${JSON.stringify({
   walkForwardFrameCount: pipeline.split.testEventIds.length,
   walkForwardRatio,
   algoCount: algos.length,
-  deepSweepMode,
+  deepSweepMode: activeDeepSweepMode,
+  requestedDeepSweepMode,
+  searchBudget,
   permissiveDebug,
   randomSeed,
   embargoMs,
@@ -249,7 +272,9 @@ if (sweepMode) {
     walkForwardFrameCount: pipeline.split.testEventIds.length,
     walkForwardRatio,
     algoCount: algos.length,
-    deepSweepMode,
+    deepSweepMode: activeDeepSweepMode,
+    requestedDeepSweepMode,
+    searchBudget,
     minCandidateClosed,
     minWalkForwardClosed,
     permissiveDebug,
@@ -264,7 +289,7 @@ if (sweepMode) {
   }, null, 2)}\n`);
 }
 
-console.log(`DogeEdge ${sweepMode ? deepSweepMode ? "deep sweep" : "sweep" : "backtest"} complete`);
+console.log(`DogeEdge ${sweepMode ? activeDeepSweepMode ? "deep sweep" : requestedDeepSweepMode ? "sweep (deep blocked by search budget)" : "sweep" : "backtest"} complete`);
 if (validateMode) console.log(`Validation mode: integrity, split, holdout, and report checks completed`);
 if (replayRunMode) console.log(`Replay-run mode: ${replayConfig ? `loaded saved config hash ${replayConfig.registry?.configHash ?? "unknown"}; input manifest ${replayManifestCheck?.matches ? "matched" : "not checked"}` : "no saved config supplied; ran deterministic replay defaults"}`);
 if (promoteCheckMode) {
@@ -274,6 +299,7 @@ if (promoteCheckMode) {
 console.log(`Frames: ${filteredFrames.length}`);
 console.log(`Market events: ${pipeline.events.length}`);
 console.log(`Algos: ${algos.length}`);
+if (searchBudget?.limited) console.log(`Search budget limited: ${searchBudget.reasonCodes.join(", ")}; generated ${cappedSweepAlgos.length}/${searchBudget.requestedSweepAlgos} sweep algos.`);
 console.log(`Run: ${runDir}`);
 console.log((candidates.length ? candidates : metrics).slice(0, 8).map((metric) => `${metric.algoName}: ${money(metric.totalPnl)} P/L, ${percent(metric.roi)} ROI, ${metric.independentClosedMarkets ?? metric.closed} markets, ${metric.promotionVerdict ?? "review"} verdict, robust ${metric.robustScore?.toFixed(2) ?? "-"}`).join("\n"));
 
@@ -1153,7 +1179,7 @@ function clamp(value, min, max) {
 }
 
 function depthValues(baseValues, deepOnlyValues) {
-  if (!deepSweepMode) return baseValues;
+  if (!activeDeepSweepMode) return baseValues;
   return [...new Set([...baseValues, ...deepOnlyValues])].sort((left, right) => left - right);
 }
 

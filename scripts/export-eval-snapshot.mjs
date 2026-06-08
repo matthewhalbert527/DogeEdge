@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { createReadStream } from "node:fs";
@@ -31,6 +30,10 @@ const algoMetricsColumns = [
   "slot",
   "promotionStage",
   "promotionVerdict",
+  "labelSource",
+  "settlementSource",
+  "officialResolutionAvailable",
+  "officialSettlementCoverage",
   "warningCodesJson",
   "reasonCodesJson",
   "closed",
@@ -203,7 +206,9 @@ const decisionRowsColumns = [
   "decisionTimestamp",
   "labelTimestamp",
   "settlementTimestamp",
+  "labelSource",
   "settlementSource",
+  "officialResolutionAvailable",
   "marketCloseTimestamp",
   "side",
   "decisionAction",
@@ -262,7 +267,9 @@ const tradeRowsColumns = [
   "featureTimestamp",
   "labelTimestamp",
   "settlementTimestamp",
+  "labelSource",
   "settlementSource",
+  "officialResolutionAvailable",
   "status",
   "side",
   "contracts",
@@ -303,6 +310,56 @@ const warningsColumns = [
   "count",
   "message",
   "remediationHint",
+];
+
+const paperDecisionLedgerColumns = [
+  "snapshotId",
+  "eventId",
+  "eventType",
+  "marketTicker",
+  "algoId",
+  "displayId",
+  "family",
+  "promotionStage",
+  "promotionVerdict",
+  "decisionTimestamp",
+  "featureTimestamp",
+  "marketCloseTimestamp",
+  "labelTimestamp",
+  "settlementTimestamp",
+  "labelSource",
+  "settlementSource",
+  "officialResolutionAvailable",
+  "side",
+  "expectedEdgeAfterFees",
+  "yesBid",
+  "yesAsk",
+  "noBid",
+  "noAsk",
+  "yesBidDepth",
+  "yesAskDepth",
+  "noBidDepth",
+  "noAskDepth",
+  "regimeTimeToClose",
+  "regimeSpread",
+  "regimeLiquidity",
+  "regimeVolatility",
+  "regimeMomentum",
+  "regimeDistance",
+  "attempted",
+  "accepted",
+  "rejected",
+  "rejectCode",
+  "rejectMessage",
+  "fillProbability",
+  "partialFillRatio",
+  "depthUtilization",
+  "queueMiss",
+  "slippageCents",
+  "sourceRunId",
+  "gitCommit",
+  "dataHash",
+  "configHash",
 ];
 
 export async function exportEvaluationSnapshot(options = {}) {
@@ -374,6 +431,8 @@ export async function exportEvaluationSnapshot(options = {}) {
   const tradeAggregates = tradeAggregateRows({ snapshotId, windowStartAt, windowEndAt, metrics, topStats });
   const foldDefinitions = foldDefinitionRows(registry, primaryRun);
   const foldMetrics = foldMetricRows({ snapshotId, metrics, registry, primaryRun });
+  let decisionRows = [];
+  let tradeRows = [];
   const warnings = warningRows({
     snapshotId,
     generatedAt,
@@ -395,8 +454,8 @@ export async function exportEvaluationSnapshot(options = {}) {
   ];
 
   if (includeRows) {
-    const decisionRows = await readDecisionRows({ dataRoot, snapshotId, maxRowLines });
-    const tradeRows = await readTradeRows({
+    decisionRows = await readDecisionRows({ dataRoot, snapshotId, maxRowLines });
+    tradeRows = await readTradeRows({
       filePath: path.join(storageDir, "paper-trades.jsonl"),
       snapshotId,
       maxRowLines,
@@ -417,6 +476,22 @@ export async function exportEvaluationSnapshot(options = {}) {
     const info = await fileInfo(absolutePath, file.logicalName, file.relativePath, rowCountFromTsv(file.content));
     fileManifest.push(info);
   }
+
+  const exactExportFiles = await writeExactReviewFiles({
+    snapshotDir,
+    snapshotId,
+    dataRoot,
+    decisionRows,
+    tradeRows,
+    topStats,
+    metricByAlgoId,
+    primaryRun,
+    registry,
+    gitInfo,
+    sourceRunId: primaryRun?.runId ?? null,
+    sourceSnapshotHash,
+  });
+  fileManifest.push(...exactExportFiles);
 
   const snapshot = {
     schemaVersion,
@@ -450,7 +525,7 @@ export async function exportEvaluationSnapshot(options = {}) {
       decisionTimestampDefinition: "when the app or algo made a buy, skip, or exit decision",
       labelTimestampDefinition: "when the research label becomes knowable for the event",
       settlementTimestampDefinition: "time used by the local evaluation pipeline to settle the event",
-      settlementSource: "estimated",
+      settlementSource: snapshotSettlementSource(metrics),
     },
     appState: {
       liveSafety: safety,
@@ -532,6 +607,12 @@ export async function exportEvaluationSnapshot(options = {}) {
     snapshotId,
     generatedAt,
     snapshotPath,
+    gitCommit: snapshot.repo.commitHash,
+    dataHash: snapshot.experimentRegistry.dataHash,
+    configHash: snapshot.experimentRegistry.configHash,
+    costModelHash: registry.costModelHash ?? hashJson(snapshot.costModels),
+    riskModelHash: registry.riskModelHash ?? hashJson(registry.riskModel ?? {}),
+    timestampSemantics: snapshot.timestampSemantics,
     dataRoot: "_DATA_ROOT_",
     storageDir: "_DATA_ROOT_/local-worker",
     backtestsDir: "_DATA_ROOT_/backtests",
@@ -589,6 +670,9 @@ export async function buildReviewBundle(options = {}) {
     "warnings.tsv.gz",
     "decisionRows.tsv.gz",
     "tradeRows.tsv.gz",
+    "decision_frames.jsonl",
+    "trades.csv",
+    "paper_decision_ledger.csv",
   ]) {
     const source = path.join(snapshotResult.snapshotDir, name);
     if (await exists(source)) {
@@ -596,6 +680,20 @@ export async function buildReviewBundle(options = {}) {
       await copyFile(source, target);
       bundleFiles.push(await fileInfo(target, name, path.relative(bundleRoot, target), null));
     }
+  }
+  const rawTicksManifest = path.join(snapshotResult.snapshotDir, "raw_market_ticks", "manifest.json");
+  if (await exists(rawTicksManifest)) {
+    const target = path.join(bundleRoot, "snapshots", "raw_market_ticks", "manifest.json");
+    await mkdir(path.dirname(target), { recursive: true });
+    await copyFile(rawTicksManifest, target);
+    bundleFiles.push(await fileInfo(target, "raw_market_ticks/manifest.json", path.relative(bundleRoot, target), null));
+  }
+  const rawTicksSchema = path.join(snapshotResult.snapshotDir, "raw_market_ticks", "schema.json");
+  if (await exists(rawTicksSchema)) {
+    const target = path.join(bundleRoot, "snapshots", "raw_market_ticks", "schema.json");
+    await mkdir(path.dirname(target), { recursive: true });
+    await copyFile(rawTicksSchema, target);
+    bundleFiles.push(await fileInfo(target, "raw_market_ticks/schema.json", path.relative(bundleRoot, target), null));
   }
   for (const name of ["snapshot-history-48h.json", "snapshot-history-48h.md"]) {
     const source = path.join(outRoot, name);
@@ -704,6 +802,10 @@ function algoRollupRow(metric, context) {
     slot: slotFromMetric(metric, topStat),
     promotionStage: metric.promotionStage ?? "research_candidate",
     promotionVerdict: metric.promotionVerdict ?? "insufficient_data",
+    labelSource: metric.labelSource ?? metric.settlementEvidence?.labelSource ?? "unknown",
+    settlementSource: metric.settlementSource ?? metric.settlementEvidence?.settlementSource ?? "unknown",
+    officialResolutionAvailable: metric.officialResolutionAvailable === true || metric.settlementEvidence?.officialResolutionAvailable === true,
+    officialSettlementCoverage: numberOrNull(metric.officialSettlementCoverage ?? metric.settlementEvidence?.officialSettlementCoverage) ?? 0,
     warningCodes: metric.warnings ?? metric.warningCodes ?? [],
     reasonCodes: metric.reasonCodes ?? [],
     sampleSize: {
@@ -794,6 +896,10 @@ function flattenAlgoMetrics(row) {
     slot: row.slot,
     promotionStage: row.promotionStage,
     promotionVerdict: row.promotionVerdict,
+    labelSource: row.labelSource,
+    settlementSource: row.settlementSource,
+    officialResolutionAvailable: row.officialResolutionAvailable,
+    officialSettlementCoverage: row.officialSettlementCoverage,
     warningCodesJson: jsonCell(row.warningCodes),
     reasonCodesJson: jsonCell(row.reasonCodes),
     closed: row.sampleSize.closedTrades,
@@ -1132,7 +1238,9 @@ function decisionRowFromFrame(frame, context) {
     decisionTimestamp: frame.decisionTimestamp ?? observedAt,
     labelTimestamp: frame.labelTimestamp ?? frame.label_timestamp_utc ?? marketClose,
     settlementTimestamp: frame.settlementTimestamp ?? frame.label_timestamp_utc ?? marketClose,
+    labelSource: frame.labelSource ?? frame.label_source ?? "unknown",
     settlementSource: frame.settlementSource ?? "estimated",
+    officialResolutionAvailable: frame.officialResolutionAvailable === true || frame.settlementSource === "official_resolution",
     marketCloseTimestamp: marketClose,
     side: sideFromAction(frame.modelAction ?? frame.decisionAction),
     decisionAction: frame.modelAction ?? frame.decisionAction ?? "",
@@ -1203,7 +1311,9 @@ function tradeRowFromPaperTrade(trade, context) {
     featureTimestamp: trade.featureTimestamp ?? trade.openedAt ?? trade.timestamp ?? "",
     labelTimestamp: trade.labelTimestamp ?? trade.closedAt ?? "",
     settlementTimestamp: trade.settlementTimestamp ?? trade.closedAt ?? "",
+    labelSource: trade.labelSource ?? trade.entryContext?.labelSource ?? "unknown",
     settlementSource: trade.settlementSource ?? "estimated",
+    officialResolutionAvailable: trade.officialResolutionAvailable === true || trade.settlementSource === "official_resolution",
     status: trade.status ?? "",
     side: trade.side ?? "",
     contracts: numberOrZero(trade.contracts ?? trade.size),
@@ -1231,6 +1341,404 @@ function tradeRowFromPaperTrade(trade, context) {
     sourceRunId: context.sourceRunId,
     sourceSnapshotHash: context.sourceSnapshotHash,
   };
+}
+
+async function writeExactReviewFiles({
+  snapshotDir,
+  snapshotId,
+  dataRoot,
+  decisionRows,
+  tradeRows,
+  topStats,
+  metricByAlgoId,
+  primaryRun,
+  registry,
+  gitInfo,
+  sourceRunId,
+  sourceSnapshotHash,
+}) {
+  const files = [];
+  const decisionFramesPath = path.join(snapshotDir, "decision_frames.jsonl");
+  const tradeCsvPath = path.join(snapshotDir, "trades.csv");
+  const ledgerCsvPath = path.join(snapshotDir, "paper_decision_ledger.csv");
+
+  await writeFile(
+    decisionFramesPath,
+    decisionRows.map(decisionFrameJsonLine).join("\n") + (decisionRows.length ? "\n" : ""),
+    "utf8",
+  );
+  files.push(await fileInfo(decisionFramesPath, "decision_frames.jsonl", "decision_frames.jsonl", decisionRows.length));
+
+  await writeFile(tradeCsvPath, csv(tradeRowsColumns, tradeRows), "utf8");
+  files.push(await fileInfo(tradeCsvPath, "trades.csv", "trades.csv", tradeRows.length));
+
+  const ledgerRows = paperDecisionLedgerRows({
+    snapshotId,
+    decisionRows,
+    tradeRows,
+    topStats,
+    metricByAlgoId,
+    sourceRunId,
+    sourceSnapshotHash,
+    gitCommit: gitInfo.commitHash ?? primaryRun?.gitCommit ?? registry?.gitCommit ?? "UNAVAILABLE",
+    dataHash: registry?.dataHash ?? registry?.inputManifestHash ?? primaryRun?.dataHash ?? "UNAVAILABLE",
+    configHash: registry?.configHash ?? primaryRun?.configHash ?? "UNAVAILABLE",
+  });
+  await writeFile(ledgerCsvPath, csv(paperDecisionLedgerColumns, ledgerRows), "utf8");
+  files.push(await fileInfo(ledgerCsvPath, "paper_decision_ledger.csv", "paper_decision_ledger.csv", ledgerRows.length));
+
+  files.push(...await writeRawMarketTicksManifest({ snapshotDir, dataRoot, snapshotId, gitInfo }));
+  return files;
+}
+
+function snapshotSettlementSource(metrics) {
+  if (!Array.isArray(metrics) || metrics.length === 0) return "estimated";
+  const sources = new Set(metrics.map((metric) => metric.settlementSource ?? metric.settlementEvidence?.settlementSource ?? "unknown"));
+  if (sources.size === 1) return [...sources][0];
+  if (sources.has("official_resolution")) return "mixed";
+  if (sources.has("estimated")) return "estimated";
+  return "unknown";
+}
+
+function decisionFrameJsonLine(row) {
+  return JSON.stringify({
+    snapshot_id: row.snapshotId,
+    row_id: row.rowId,
+    source_file_hash: row.sourceFileHash,
+    source_line: row.sourceLine,
+    captured_at: row.capturedAt,
+    observed_at: row.observedAt,
+    feature_timestamp: row.featureTimestamp,
+    decision_timestamp: row.decisionTimestamp,
+    label_timestamp: row.labelTimestamp,
+    settlement_timestamp: row.settlementTimestamp,
+    label_source: row.labelSource,
+    settlement_source: row.settlementSource,
+    official_resolution_available: row.officialResolutionAvailable,
+    market_close_timestamp: row.marketCloseTimestamp,
+    market_ticker: row.marketTicker,
+    target_price: row.targetPrice,
+    estimate: row.estimate,
+    spot_price: row.spotPrice,
+    distance_from_target: row.distanceFromTarget,
+    one_minute_change: row.oneMinuteChange,
+    seconds_to_close: row.secondsToClose,
+    yes_bid: row.yesBid,
+    yes_ask: row.yesAsk,
+    no_bid: row.noBid,
+    no_ask: row.noAsk,
+    yes_bid_depth: row.yesBidDepth,
+    yes_ask_depth: row.yesAskDepth,
+    no_bid_depth: row.noBidDepth,
+    no_ask_depth: row.noAskDepth,
+    decision_action: row.decisionAction,
+    side: row.side,
+    attempted: row.attempted,
+    accepted: row.accepted,
+    reject_code: row.rejectCode,
+    reject_message: row.rejectMessage,
+    model_edge_after_fees: row.modelEdgeAfterFees,
+    regime: {
+      time_to_close: row.regimeTimeToClose,
+      spread: row.regimeSpread,
+      liquidity: row.regimeLiquidity,
+      volatility: row.regimeVolatility,
+      momentum: row.regimeMomentum,
+      distance: row.regimeDistance,
+      phase: row.regimePhase,
+    },
+    independent_key: row.independentKey,
+    overlap_count: row.overlapCount,
+  });
+}
+
+function paperDecisionLedgerRows(context) {
+  return [
+    ...ledgerRowsFromDecisionRows(context),
+    ...ledgerRowsFromTradeRows(context),
+    ...ledgerRowsFromTopStats(context),
+  ].sort((left, right) => String(left.decisionTimestamp).localeCompare(String(right.decisionTimestamp))
+    || String(left.algoId).localeCompare(String(right.algoId))
+    || String(left.eventId).localeCompare(String(right.eventId)));
+}
+
+function ledgerRowsFromDecisionRows(context) {
+  return context.decisionRows.map((row) => ({
+    snapshotId: context.snapshotId,
+    eventId: row.rowId,
+    eventType: row.accepted ? "decision_accept" : row.rejected || row.rejectCode ? "decision_reject" : row.attempted ? "decision_attempt" : "decision_observed",
+    marketTicker: row.marketTicker,
+    algoId: row.algoId,
+    displayId: row.displayId,
+    family: row.family,
+    promotionStage: metricForLedger(context, row.algoId).promotionStage ?? "paper_decision_ledger",
+    promotionVerdict: metricForLedger(context, row.algoId).promotionVerdict ?? "dry_run_evidence_only",
+    decisionTimestamp: row.decisionTimestamp,
+    featureTimestamp: row.featureTimestamp,
+    marketCloseTimestamp: row.marketCloseTimestamp,
+    labelTimestamp: row.labelTimestamp,
+    settlementTimestamp: row.settlementTimestamp,
+    labelSource: row.labelSource,
+    settlementSource: row.settlementSource,
+    officialResolutionAvailable: row.officialResolutionAvailable,
+    side: row.side,
+    expectedEdgeAfterFees: row.modelEdgeAfterFees,
+    yesBid: row.yesBid,
+    yesAsk: row.yesAsk,
+    noBid: row.noBid,
+    noAsk: row.noAsk,
+    yesBidDepth: row.yesBidDepth,
+    yesAskDepth: row.yesAskDepth,
+    noBidDepth: row.noBidDepth,
+    noAskDepth: row.noAskDepth,
+    regimeTimeToClose: row.regimeTimeToClose,
+    regimeSpread: row.regimeSpread,
+    regimeLiquidity: row.regimeLiquidity,
+    regimeVolatility: row.regimeVolatility,
+    regimeMomentum: row.regimeMomentum,
+    regimeDistance: row.regimeDistance,
+    attempted: row.attempted,
+    accepted: row.accepted,
+    rejected: Boolean(row.rejectCode),
+    rejectCode: row.rejectCode,
+    rejectMessage: row.rejectMessage,
+    fillProbability: "",
+    partialFillRatio: "",
+    depthUtilization: "",
+    queueMiss: "",
+    slippageCents: "",
+    sourceRunId: context.sourceRunId,
+    gitCommit: context.gitCommit,
+    dataHash: context.dataHash,
+    configHash: context.configHash,
+  }));
+}
+
+function ledgerRowsFromTradeRows(context) {
+  return context.tradeRows.map((row) => ({
+    snapshotId: context.snapshotId,
+    eventId: row.tradeId,
+    eventType: row.status === "rejected" || row.rejectCode ? "paper_trade_reject" : row.status === "closed" ? "paper_trade_close" : "paper_trade_open",
+    marketTicker: row.marketTicker,
+    algoId: row.algoId,
+    displayId: row.displayId,
+    family: row.family,
+    promotionStage: row.promotionStage,
+    promotionVerdict: row.promotionVerdict,
+    decisionTimestamp: row.decisionTimestamp,
+    featureTimestamp: row.featureTimestamp,
+    marketCloseTimestamp: "",
+    labelTimestamp: row.labelTimestamp,
+    settlementTimestamp: row.settlementTimestamp,
+    labelSource: row.labelSource,
+    settlementSource: row.settlementSource,
+    officialResolutionAvailable: row.officialResolutionAvailable,
+    side: row.side,
+    expectedEdgeAfterFees: "",
+    yesBid: "",
+    yesAsk: "",
+    noBid: "",
+    noAsk: "",
+    yesBidDepth: "",
+    yesAskDepth: "",
+    noBidDepth: "",
+    noAskDepth: "",
+    regimeTimeToClose: row.entryRegimeTimeToClose,
+    regimeSpread: row.entryRegimeSpread,
+    regimeLiquidity: row.entryRegimeLiquidity,
+    regimeVolatility: row.entryRegimeVolatility,
+    regimeMomentum: row.entryRegimeMomentum,
+    regimeDistance: row.entryRegimeDistance,
+    attempted: true,
+    accepted: !row.rejectCode,
+    rejected: Boolean(row.rejectCode),
+    rejectCode: row.rejectCode,
+    rejectMessage: "",
+    fillProbability: row.fillProbability,
+    partialFillRatio: row.partialFillRatio,
+    depthUtilization: row.depthUtilization,
+    queueMiss: row.queueMiss,
+    slippageCents: row.slippageCents,
+    sourceRunId: row.sourceRunId,
+    gitCommit: context.gitCommit,
+    dataHash: context.dataHash,
+    configHash: context.configHash,
+  }));
+}
+
+function ledgerRowsFromTopStats(context) {
+  const rows = [];
+  for (const [key, stat] of Object.entries(context.topStats)) {
+    const sourceAlgoId = stat.sourceAlgoId ?? key;
+    const metric = metricForLedger(context, sourceAlgoId);
+    const rejected = numberOrZero(stat.rejected);
+    const attempts = numberOrZero(stat.attempts);
+    if (attempts > 0) {
+      rows.push(topStatLedgerRow(context, stat, metric, {
+        eventId: `${sourceAlgoId}:attempts`,
+        eventType: "top_traders_attempt_summary",
+        attempted: true,
+        accepted: numberOrZero(stat.acceptedBuys) > 0,
+        rejected: false,
+        rejectCode: "",
+        rejectMessage: "",
+      }));
+    }
+    if (rejected > 0) {
+      for (const reason of topStatRejectReasons(stat)) {
+        rows.push(topStatLedgerRow(context, stat, metric, {
+          eventId: `${sourceAlgoId}:reject:${reason.code}`,
+          eventType: "top_traders_reject_summary",
+          attempted: true,
+          accepted: false,
+          rejected: true,
+          rejectCode: reason.code,
+          rejectMessage: `${reason.count} ${reason.label} reject(s) captured by executable dry-run stats.`,
+        }));
+      }
+    }
+  }
+  return rows;
+}
+
+function topStatLedgerRow(context, stat, metric, fields) {
+  const timestamp = stat.lastAttemptAt ?? stat.lastSignalAt ?? stat.startedAt ?? "";
+  return {
+    snapshotId: context.snapshotId,
+    eventId: fields.eventId,
+    eventType: fields.eventType,
+    marketTicker: stat.marketTicker ?? stat.lastMarketTicker ?? "",
+    algoId: stat.sourceAlgoId ?? stat.algoId ?? "",
+    displayId: stat.displayId ?? displayIdFromAlgo(stat.sourceAlgoId ?? stat.algoId),
+    family: stat.family ?? metric.family ?? "",
+    promotionStage: metric.promotionStage ?? "dry_run_evidence",
+    promotionVerdict: metric.promotionVerdict ?? "dry_run_evidence_only",
+    decisionTimestamp: timestamp,
+    featureTimestamp: timestamp,
+    marketCloseTimestamp: "",
+    labelTimestamp: "",
+    settlementTimestamp: "",
+    labelSource: metric.labelSource ?? "unknown",
+    settlementSource: metric.settlementSource ?? "unknown",
+    officialResolutionAvailable: metric.officialResolutionAvailable === true,
+    side: "",
+    expectedEdgeAfterFees: "",
+    yesBid: "",
+    yesAsk: "",
+    noBid: "",
+    noAsk: "",
+    yesBidDepth: "",
+    yesAskDepth: "",
+    noBidDepth: "",
+    noAskDepth: "",
+    regimeTimeToClose: "",
+    regimeSpread: "",
+    regimeLiquidity: "",
+    regimeVolatility: "",
+    regimeMomentum: "",
+    regimeDistance: "",
+    attempted: fields.attempted,
+    accepted: fields.accepted,
+    rejected: fields.rejected,
+    rejectCode: fields.rejectCode,
+    rejectMessage: fields.rejectMessage,
+    fillProbability: "",
+    partialFillRatio: "",
+    depthUtilization: "",
+    queueMiss: "",
+    slippageCents: "",
+    sourceRunId: context.sourceRunId,
+    gitCommit: context.gitCommit,
+    dataHash: context.dataHash,
+    configHash: context.configHash,
+  };
+}
+
+function topStatRejectReasons(stat) {
+  const reasons = [
+    ["stale_reject", "stale", stat.staleRejects],
+    ["edge_reject", "edge", stat.edgeRejects],
+    ["depth_reject", "depth", stat.depthRejects],
+    ["gate_reject", "gate", stat.gateRejects],
+    ["price_reject", "price", stat.priceRejects],
+    ["other_reject", "other", stat.otherRejects],
+  ].map(([code, label, count]) => ({ code, label, count: numberOrZero(count) }))
+    .filter((reason) => reason.count > 0);
+  const known = reasons.reduce((total, reason) => total + reason.count, 0);
+  const remaining = Math.max(0, numberOrZero(stat.rejected) - known);
+  if (remaining > 0) reasons.push({ code: "reject_unspecified", label: "unspecified", count: remaining });
+  return reasons;
+}
+
+function metricForLedger(context, algoId) {
+  return context.metricByAlgoId.get(algoId)
+    ?? context.metricByAlgoId.get(String(algoId ?? "").replace(/^generated:/, ""))
+    ?? {};
+}
+
+async function writeRawMarketTicksManifest({ snapshotDir, dataRoot, snapshotId, gitInfo }) {
+  const dir = path.join(snapshotDir, "raw_market_ticks");
+  await mkdir(dir, { recursive: true });
+  const schema = {
+    schemaVersion: "dogeedge.raw-market-ticks.schema.v1",
+    format: "parquet",
+    fields: [
+      "ts_event",
+      "ts_receive",
+      "market_ticker",
+      "channel",
+      "event_type",
+      "side",
+      "book_side",
+      "price",
+      "size",
+      "level",
+      "sequence_number",
+      "best_yes_bid",
+      "best_yes_ask",
+      "best_no_bid",
+      "best_no_ask",
+      "market_status",
+      "source",
+      "source_message_hash",
+      "snapshot_id",
+      "git_commit",
+    ],
+  };
+  const rawSnapshotFiles = await latestFilesRecursive(path.join(dataRoot, "raw", "snapshots"), [".jsonl", ".ndjson", ".json", ".csv"], 10);
+  const sources = [];
+  for (const file of rawSnapshotFiles) {
+    const info = await stat(file).catch(() => null);
+    sources.push({
+      relativePath: slashPath(path.relative(dataRoot, file)),
+      bytes: info?.size ?? 0,
+      sha256: info && info.size <= 50 * 1024 * 1024 ? await hashFileMaybe(file) : null,
+      hashSkipped: info ? info.size > 50 * 1024 * 1024 : true,
+    });
+  }
+  const manifest = {
+    schemaVersion: "dogeedge.raw-market-ticks.manifest.v1",
+    snapshotId,
+    generatedAt: new Date().toISOString(),
+    available: false,
+    format: "parquet",
+    reason: "Replayable per-market parquet tick export is not present in current local artifacts; schema and source manifest are exported so calibration gaps remain explicit.",
+    gitCommit: gitInfo.commitHash ?? "UNAVAILABLE",
+    expectedDirectory: "raw_market_ticks/<market_ticker>.parquet",
+    sourceSnapshotFiles: sources,
+    warningCodes: [
+      "raw_market_tick_parquet_absent",
+      ...(sources.some((source) => source.hashSkipped) ? ["raw_snapshot_hash_skipped_large_file"] : []),
+    ],
+  };
+  const schemaPath = path.join(dir, "schema.json");
+  const manifestPath = path.join(dir, "manifest.json");
+  await writeFile(schemaPath, `${JSON.stringify(schema, null, 2)}\n`, "utf8");
+  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+  return [
+    await fileInfo(schemaPath, "raw_market_ticks/schema.json", "raw_market_ticks/schema.json", null),
+    await fileInfo(manifestPath, "raw_market_ticks/manifest.json", "raw_market_ticks/manifest.json", null),
+  ];
 }
 
 function warningRows({ snapshotId, generatedAt, safety, localStoredAt, dataQuality, gitInfo, registry, topStats, includeRows }) {
@@ -1577,6 +2085,21 @@ function tsvValue(value) {
   if (typeof value === "boolean") return value ? "true" : "false";
   const text = typeof value === "object" ? stableStringify(value) : String(value);
   return text.replaceAll("\t", " ").replaceAll("\r", " ").replaceAll("\n", " ");
+}
+
+function csv(columns, rows) {
+  return [
+    columns.join(","),
+    ...rows.map((row) => columns.map((column) => csvValue(row[column])).join(",")),
+  ].join("\n") + "\n";
+}
+
+function csvValue(value) {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "boolean") return value ? "true" : "false";
+  const text = typeof value === "object" ? stableStringify(value) : String(value);
+  if (!/[",\r\n]/.test(text)) return text;
+  return `"${text.replaceAll('"', '""')}"`;
 }
 
 function rowCountFromTsv(text) {

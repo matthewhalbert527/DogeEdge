@@ -68,6 +68,7 @@ import {
   type LocalWorkerExportPayload,
   type LocalWorkerStatus,
 } from "./core/local-worker";
+import { researchEvidenceCanMature, researchEvidenceSortScore } from "./core/research-ranking";
 import {
   advancePaperStrategies,
   activePaperRuleDescriptions,
@@ -175,6 +176,9 @@ type ExecutableTopTraderScore = {
   summary: PaperSummarySnapshot;
   execRow: ActivatedAlgoRow;
   score: number;
+  dryScore: number;
+  researchScore: number;
+  researchEvidence: LocalFactorySweepCandidate | null;
   reliabilityScore: number;
   acceptanceRate: number;
   pnlPerCycle: number;
@@ -652,6 +656,7 @@ function App() {
   const visibleActiveView = normalizeActiveView(activeView);
   const visibleArenaAlgos = useMemo(() => arenaAlgosForArena(paperArena, generatedPaperAlgos, latestSweep, factoryAlgoBatches), [factoryAlgoBatches, generatedPaperAlgos, latestSweep, paperArena]);
   const topTraderCandidateAlgos = useMemo(() => topTraderCandidateAlgosForFactory(generatedPaperAlgos, factoryAlgoBatches), [factoryAlgoBatches, generatedPaperAlgos]);
+  const latestFactoryEvidenceBySource = useMemo(() => factoryResearchEvidenceBySource(latestSweep), [latestSweep]);
   const baseLiveTopTraderRows = useMemo(() => buildTopTraderRows(
       topTraderCandidateAlgos,
       realisticArenaAlgoArchives,
@@ -662,8 +667,8 @@ function App() {
       savedTradeSummaries,
     ), [clock, paperArena, realisticArenaAlgoArchives, savedTradeSummaries, topTraderCandidateAlgos, topTradersArena, visibleArenaAlgos]);
   const liveTopTraderRows = useMemo(
-    () => rankTopTraderRowsByExecutableStats(baseLiveTopTraderRows, topTradersExecutable, clock.toISOString()),
-    [baseLiveTopTraderRows, clock, topTradersExecutable],
+    () => rankTopTraderRowsByExecutableStats(baseLiveTopTraderRows, topTradersExecutable, clock.toISOString(), latestFactoryEvidenceBySource),
+    [baseLiveTopTraderRows, clock, latestFactoryEvidenceBySource, topTradersExecutable],
   );
 
   const syncVisibleEngineState = useCallback(() => {
@@ -1073,7 +1078,7 @@ function App() {
           arenaAlgosForArena(paperArenaRef.current, generatedPaperAlgosRef.current, latestSweepRef.current, factoryAlgoBatchesRef.current),
           savedTradeSummariesRef.current,
         );
-        const rankedRows = rankTopTraderRowsByExecutableStats(sourceRankedRows, topTradersExecutableRef.current, new Date(nowMs).toISOString());
+        const rankedRows = rankTopTraderRowsByExecutableStats(sourceRankedRows, topTradersExecutableRef.current, new Date(nowMs).toISOString(), factoryResearchEvidenceBySource(latestSweepRef.current));
         rosterIds = rankedRows
           .filter((row) => row.bucket !== "standby")
           .slice(0, topTradersRosterSize)
@@ -1487,6 +1492,7 @@ function App() {
         buildTopTraderRows(availableAlgos, archivesForRanking, rankingArena, startedAt, mainArena, mainArenaAlgos, savedTradeSummariesRef.current),
         config.reset ? defaultTopTradersExecutableState() : topTradersExecutableRef.current,
         startedAt,
+        factoryResearchEvidenceBySource(latestSweepRef.current),
       )
         .filter((row) => row.bucket !== "standby")
         .slice(0, topTradersRosterSize)
@@ -3318,6 +3324,8 @@ function FactoryResearchEvidencePanel({ latestSweep }: { latestSweep: LocalFacto
   const holdoutPassCount = rows.filter((row) => row.holdoutPass).length;
   const driftOkCount = rows.filter((row) => row.paperEvidence.available && row.paperEvidence.driftOk).length;
   const paperEvidenceCount = rows.filter((row) => row.paperEvidence.available).length;
+  const officialCount = rows.filter((row) => row.labelSource === "official_resolution" && row.settlementSource === "official_resolution").length;
+  const searchBudget = latestSweep?.searchBudget ?? null;
 
   return (
     <section className="panel factory-panel full generated-algos-panel">
@@ -3328,6 +3336,7 @@ function FactoryResearchEvidencePanel({ latestSweep }: { latestSweep: LocalFacto
         </div>
         <div className="heading-actions">
           <Badge tone={latestSweep ? "info" : "neutral"}>{latestSweep?.mode ?? "no run"}</Badge>
+          {searchBudget?.limited && <Badge tone="warn">Search capped</Badge>}
           <Badge tone={promotableCount > 0 ? "good" : "neutral"}>{promotableCount} promotable</Badge>
         </div>
       </div>
@@ -3335,9 +3344,11 @@ function FactoryResearchEvidencePanel({ latestSweep }: { latestSweep: LocalFacto
         <div className="stat-row compact">
           <Stat label="Algos" value={countOrDash(latestSweep.algoCount)} />
           <Stat label="Families" value={countOrDash(rows.length)} />
+          <Stat label="Official Labels" value={`${officialCount} / ${rows.length}`} tone={officialCount === rows.length && rows.length > 0 ? "positive" : undefined} />
           <Stat label="Holdout Pass" value={`${holdoutPassCount} / ${rows.length}`} tone={holdoutPassCount > 0 ? "positive" : undefined} />
           <Stat label="Paper Proof" value={`${paperEvidenceCount} / ${rows.length}`} tone={paperEvidenceCount > 0 ? "positive" : undefined} />
           <Stat label="Drift OK" value={`${driftOkCount} / ${rows.length}`} tone={driftOkCount === rows.length && rows.length > 0 ? "positive" : undefined} />
+          {searchBudget && <Stat label="Search Budget" value={searchBudget.limited ? `${countOrDash(searchBudget.maxGeneratedAlgos)} max` : "open"} />}
         </div>
       )}
       <div className="upgrade-table-wrap">
@@ -3348,6 +3359,7 @@ function FactoryResearchEvidencePanel({ latestSweep }: { latestSweep: LocalFacto
               <th>Verdict</th>
               <th>Robust</th>
               <th>Adj Conf</th>
+              <th>Settlement</th>
               <th>WF</th>
               <th>CPCV</th>
               <th>Holdout</th>
@@ -3359,7 +3371,7 @@ function FactoryResearchEvidencePanel({ latestSweep }: { latestSweep: LocalFacto
           <tbody>
             {rows.length === 0 ? (
               <tr>
-                <td className="empty-cell" colSpan={10}>No factory sweep evidence has been loaded yet.</td>
+                <td className="empty-cell" colSpan={11}>No factory sweep evidence has been loaded yet.</td>
               </tr>
             ) : rows.map((row) => {
               const cpcvPositive = recordNumber(row.cpcvSummary, "positiveFoldRate", 0);
@@ -3376,6 +3388,14 @@ function FactoryResearchEvidencePanel({ latestSweep }: { latestSweep: LocalFacto
                   <td><Badge tone={factoryVerdictTone(row)}>{row.promotionVerdict.replaceAll("_", " ")}</Badge></td>
                   <td>{row.robustScore.toFixed(1)}</td>
                   <td>{percent(row.adjustedConfidence)}</td>
+                  <td>
+                    <div className="factory-runtime-cell">
+                      <Badge tone={row.labelSource === "official_resolution" && row.settlementSource === "official_resolution" ? "good" : "warn"}>
+                        {row.settlementSource === "official_resolution" ? "official" : "proxy"}
+                      </Badge>
+                      <span>{percent(row.officialSettlementCoverage)}</span>
+                    </div>
+                  </td>
                   <td><Badge tone={row.walkForwardPass ? "good" : "bad"}>{row.walkForwardPass ? "pass" : "fail"}</Badge></td>
                   <td>
                     <div className="factory-runtime-cell">
@@ -3749,9 +3769,10 @@ function TopTradersView({
     () => buildTopTraderRows(candidateAlgos, arenaArchives, arena, asOf, mainArena, mainArenaAlgos, savedTradeSummaries),
     [arena, arenaArchives, asOf, candidateAlgos, mainArena, mainArenaAlgos, savedTradeSummaries],
   );
+  const factoryEvidenceBySource = useMemo(() => factoryResearchEvidenceBySource(latestSweep), [latestSweep]);
   const rows = useMemo(
-    () => rankTopTraderRowsByExecutableStats(sourceRows, executableState, asOf),
-    [asOf, executableState, sourceRows],
+    () => rankTopTraderRowsByExecutableStats(sourceRows, executableState, asOf, factoryEvidenceBySource),
+    [asOf, executableState, factoryEvidenceBySource, sourceRows],
   );
   const rosterRows = rows.filter((row) => row.bucket !== "standby").slice(0, topTradersRosterSize);
   const eligibleBatchCounts = useMemo(() => topTraderEligibleBatchCounts(rosterRows), [rosterRows]);
@@ -3772,7 +3793,6 @@ function TopTradersView({
   const selectedIds = useMemo(() => new Set(selectedIdList), [selectedIdList]);
   const selectedIdSignature = selectedIdList.join("|");
   const favoriteSourceSet = useMemo(() => new Set(favoriteSourceIds), [favoriteSourceIds]);
-  const factoryEvidenceBySource = useMemo(() => factoryResearchEvidenceBySource(latestSweep), [latestSweep]);
   const sortedRosterRows = sortTopTraderRows(
     rosterRows,
     topTraderSorts,
@@ -3810,7 +3830,7 @@ function TopTradersView({
           <div className="panel-heading compact">
             <div>
               <h2>Executable Top 600</h2>
-              <span className="panel-subtitle">Dry-run ranking with source-seeded watch slots</span>
+              <span className="panel-subtitle">Research-first roster with dry-run execution stats</span>
             </div>
             <Badge tone={arena.status === "running" ? "good" : arena.status === "paused" ? "warn" : "neutral"}>{arena.status.toUpperCase()}</Badge>
           </div>
@@ -3854,7 +3874,7 @@ function TopTradersView({
               <span className="muted">No promising factory algos have realistic single-entry arena evidence yet.</span>
             )}
           </div>
-          <p className="panel-note">This runner sources candidates from all generated algos, but its stats are fresh executable dry-run stats. It scans the full roster locally and throttles router checks so live controls stay responsive.</p>
+          <p className="panel-note">This runner sources candidates from all generated algos. Roster order now prioritizes factory research gates; the execution columns remain fresh dry-run telemetry.</p>
         </section>
 
         <section className="panel arena-status-panel">
@@ -3906,15 +3926,15 @@ function TopTradersView({
           <div className="automation-policy-grid arena-rules">
             <div>
               <strong>Champion Slots</strong>
-              <span>{topTradersChampionSlots} slots only for mature executable dry-run winners with at least 15 router attempts, 8 accepted buys, {topTradersChampionMinClosedTrades} closed exits, positive P/L per 15m, {percent(topTradersChampionMinWinRate)}+ win rate, and a non-early-spike confidence state.</span>
+              <span>{topTradersChampionSlots} slots only for research-gated algos with mature executable dry-run wins, at least 15 router attempts, 8 accepted buys, {topTradersChampionMinClosedTrades} closed exits, positive P/L per 15m, {percent(topTradersChampionMinWinRate)}+ win rate, and a non-early-spike confidence state.</span>
             </div>
             <div>
               <strong>Prospect Slots</strong>
-              <span>{topTradersProspectSlots} reserved slots for lower-tested algos with accepted dry-run buys, at least {topTradersProspectMinClosedTrades} closed exit, positive dry score, non-negative dry-run P/L, and 10%+ accept rate.</span>
+              <span>{topTradersProspectSlots} reserved slots for research-gated lower-tested algos with accepted dry-run buys, at least {topTradersProspectMinClosedTrades} closed exit, positive dry score, non-negative dry-run P/L, and 10%+ accept rate.</span>
             </div>
             <div>
               <strong>Watch Queue</strong>
-              <span>Untested or weak dry-run algos stay below dry-run winners and are only queued so they can earn executable evidence.</span>
+              <span>Low-evidence, insufficient, or dry-run-only algos stay visible as watch rows so they can earn evidence without implying research quality.</span>
             </div>
             <div>
               <strong>Rotation</strong>
@@ -3927,7 +3947,7 @@ function TopTradersView({
           <div className="panel-heading compact">
             <div>
               <h2>Current Ranked Roster</h2>
-              <span className="panel-subtitle">Roster is sourced from all algos; performance columns are executable dry-run only</span>
+              <span className="panel-subtitle">Roster is research-first; performance columns are executable dry-run only</span>
             </div>
             <Gauge size={16} />
           </div>
@@ -4355,8 +4375,13 @@ function topTraderExecutableSortRow(row: TopTraderRow, executableStats: Record<s
   return executableActivatedRow(row, topTraderExecutableSummary(stats), stats, executableStartedAt, asOf);
 }
 
-function rankTopTraderRowsByExecutableStats(rows: TopTraderRow[], executableState: TopTraderExecutableState, asOf: string): TopTraderRow[] {
-  const scored = rows.map((row) => executableTopTraderScore(row, executableState, asOf));
+function rankTopTraderRowsByExecutableStats(
+  rows: TopTraderRow[],
+  executableState: TopTraderExecutableState,
+  asOf: string,
+  factoryEvidenceBySource: Map<string, LocalFactorySweepCandidate> = new Map(),
+): TopTraderRow[] {
+  const scored = rows.map((row) => executableTopTraderScore(row, executableState, asOf, factoryEvidenceForTopTraderRow(row, factoryEvidenceBySource)));
   const selected = new Set<string>();
   const pickRows = (
     candidates: ExecutableTopTraderScore[],
@@ -4418,7 +4443,12 @@ function executableRankedTopTraderRow(item: ExecutableTopTraderScore, bucket: To
   };
 }
 
-function executableTopTraderScore(row: TopTraderRow, executableState: TopTraderExecutableState, asOf: string): ExecutableTopTraderScore {
+function executableTopTraderScore(
+  row: TopTraderRow,
+  executableState: TopTraderExecutableState,
+  asOf: string,
+  researchEvidence: LocalFactorySweepCandidate | null = null,
+): ExecutableTopTraderScore {
   const stats = executableState.stats[row.sourceAlgoId];
   const summary = topTraderExecutableSummary(stats);
   const execRow = executableActivatedRow(row, summary, stats, executableState.startedAt, asOf);
@@ -4454,16 +4484,22 @@ function executableTopTraderScore(row: TopTraderRow, executableState: TopTraderE
     - edgeRejects * 3
     - priceRejects
     : -10_000;
-  const score = hasDryEvidence
+  const dryScore = hasDryEvidence
     ? roundDisplayRatio(rawScore > 0 ? rawScore * confidence.scoreMultiplier : rawScore)
     : -10_000;
+  const researchScore = researchEvidenceSortScore(researchEvidence);
+  const dryContribution = hasDryEvidence ? Math.max(-40, Math.min(40, dryScore * 0.08)) : -25;
+  const score = roundDisplayRatio(researchScore + dryContribution);
   return {
     row,
     stats,
     summary,
     execRow,
     score,
-    reliabilityScore: hasDryEvidence ? score : 0,
+    dryScore,
+    researchScore,
+    researchEvidence,
+    reliabilityScore: hasDryEvidence ? dryScore : 0,
     acceptanceRate,
     pnlPerCycle,
     winRate,
@@ -4474,6 +4510,7 @@ function executableTopTraderScore(row: TopTraderRow, executableState: TopTraderE
 function executableChampionEligible(item: ExecutableTopTraderScore, asOf: string) {
   const confidence = activatedConfidence(item.execRow, asOf);
   return item.hasDryEvidence
+    && researchEvidenceCanMature(item.researchEvidence)
     && (item.stats?.attempts ?? 0) >= 15
     && (item.stats?.acceptedBuys ?? 0) >= 8
     && item.summary.sells >= topTradersChampionMinClosedTrades
@@ -4485,6 +4522,7 @@ function executableChampionEligible(item: ExecutableTopTraderScore, asOf: string
 
 function executableProspectEligible(item: ExecutableTopTraderScore, asOf: string) {
   return item.hasDryEvidence
+    && researchEvidenceCanMature(item.researchEvidence)
     && !executableChampionEligible(item, asOf)
     && (item.stats?.acceptedBuys ?? 0) > 0
     && item.summary.sells >= topTradersProspectMinClosedTrades
@@ -4496,6 +4534,7 @@ function executableProspectEligible(item: ExecutableTopTraderScore, asOf: string
 
 function compareExecutableTopTraderScores(left: ExecutableTopTraderScore, right: ExecutableTopTraderScore) {
   return right.score - left.score
+    || right.researchScore - left.researchScore
     || Number(right.hasDryEvidence) - Number(left.hasDryEvidence)
     || (right.stats?.acceptedBuys ?? 0) - (left.stats?.acceptedBuys ?? 0)
     || (right.stats?.attempts ?? 0) - (left.stats?.attempts ?? 0)
@@ -6678,8 +6717,10 @@ function factoryResearchEvidenceBySource(latestSweep: LocalFactorySweep | null) 
   const map = new Map<string, LocalFactorySweepCandidate>();
   if (!latestSweep) return map;
   for (const candidate of [...latestSweep.topMetrics, ...latestSweep.candidates]) {
-    const current = map.get(candidate.algoId);
-    map.set(candidate.algoId, current ? betterSweepCandidate(candidate, current) : candidate);
+    for (const key of [candidate.algoId, displayIdFromFactorySource(candidate.algoId), candidate.displayId].filter((item): item is string => typeof item === "string" && item.length > 0)) {
+      const current = map.get(key);
+      map.set(key, current ? betterSweepCandidate(candidate, current) : candidate);
+    }
   }
   return map;
 }
@@ -6690,6 +6731,9 @@ function factoryEvidenceForTopTraderRow(row: TopTraderRow, evidence: Map<string,
 
 function topTraderResearchTone(candidate: LocalFactorySweepCandidate | null): "info" | "warn" | "good" | "bad" | "neutral" {
   if (!candidate) return "neutral";
+  if (candidate.labelSource !== "official_resolution" || candidate.settlementSource !== "official_resolution") {
+    return candidate.nonPromotable ? "bad" : "warn";
+  }
   if (candidate.nonPromotable) return candidate.promotionVerdict === "insufficient_data" ? "warn" : "bad";
   if (candidate.promotionVerdict === "paper_only" || candidate.promotionVerdict === "tiny_live_eligible") return "good";
   if (candidate.promotionVerdict === "insufficient_data") return "warn";
@@ -6697,7 +6741,8 @@ function topTraderResearchTone(candidate: LocalFactorySweepCandidate | null): "i
 }
 
 function topTraderResearchLabel(candidate: LocalFactorySweepCandidate | null) {
-  if (!candidate) return "Research -";
+  if (!candidate) return "Dry-run only";
+  if (candidate.labelSource !== "official_resolution" || candidate.settlementSource !== "official_resolution") return "Proxy label";
   if (candidate.nonPromotable && candidate.promotionVerdict === "insufficient_data") return "Insufficient";
   if (candidate.nonPromotable) return "No promo";
   if (candidate.promotionVerdict === "paper_only") return "Research ok";
@@ -6850,6 +6895,11 @@ function sweepCandidateAutomationReview(
 ) {
   if (candidate.nonPromotable) {
     return { type: "hold" as const, detail: `Factory marked this candidate non-promotable: ${candidate.reasonCodes.join(", ") || candidate.promotionVerdict}.` };
+  }
+  if (candidate.reasonCodes.some((code) => code === "official_settlement_required" || code === "official_label_required" || code === "official_settlement_coverage_low")
+    || candidate.labelSource !== "official_resolution"
+    || candidate.settlementSource !== "official_resolution") {
+    return { type: "hold" as const, detail: "Waiting for official settlement evidence before automation can install this candidate." };
   }
   if (!generatedPaperAlgoSupportsFamily(candidate.family)) return { type: "hold" as const, detail: "Family is not supported by the generated paper runner." };
   if (!isFocusedSweepCandidate(candidate)) return { type: "hold" as const, detail: "Outside the current focus families." };

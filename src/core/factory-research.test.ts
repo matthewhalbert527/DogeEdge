@@ -19,6 +19,8 @@ import { paperEvidenceForAlgo, readPaperEvidence } from "../../scripts/factory/p
 import { markdownReport, metricsCsv } from "../../scripts/factory/reporting.mjs";
 import { auditReviewExports } from "../../scripts/factory/audit-exports.mjs";
 import { sampleSufficiency } from "../../scripts/factory/sample-gates.mjs";
+import { searchBudgetDecision } from "../../scripts/factory/search-budget.mjs";
+import { researchEvidenceCanMature, researchEvidenceSortScore } from "./research-ranking";
 
 const baseFrame = {
   id: "frame-1",
@@ -242,6 +244,101 @@ describe("factory research safeguards", () => {
 
     expect(review.promotionVerdict).toBe("paper_only");
     expect(review.reasonCodes).toContain("paper_evidence_required");
+  });
+
+  it("blocks tiny-live eligibility when settlement or label evidence is still estimated", () => {
+    const metric = {
+      ...robustMetric("estimated-settlement"),
+      paperEvidence: { available: true, status: "matched", closedMarkets: 120, closedTrades: 120, totalPnl: 5, roi: 0.1, driftOk: true, driftReasons: [], driftScore: 0 },
+      labelSource: "pre_close_frame_proxy",
+      settlementSource: "estimated",
+      officialResolutionAvailable: false,
+      officialSettlementCoverage: 0,
+    };
+    const review = promotionReview(metric, permissivePromotionThresholds());
+
+    expect(review.promotionVerdict).toBe("paper_only");
+    expect(review.promotionStage).toBe("validation_candidate");
+    expect(review.reasonCodes).toEqual(expect.arrayContaining(["official_label_required", "official_settlement_required"]));
+    expect(review.reasonCodes).not.toContain("manual_approval_required");
+  });
+
+  it("allows tiny-live review only when official settlement and paper drift gates pass", () => {
+    const metric = {
+      ...robustMetric("official-settlement"),
+      paperEvidence: { available: true, status: "matched", closedMarkets: 120, closedTrades: 120, totalPnl: 5, roi: 0.1, driftOk: true, driftReasons: [], driftScore: 0 },
+      labelSource: "official_resolution",
+      settlementSource: "official_resolution",
+      officialResolutionAvailable: true,
+      officialSettlementCoverage: 1,
+    };
+    const review = promotionReview(metric, permissivePromotionThresholds());
+
+    expect(review.promotionVerdict).toBe("tiny_live_eligible");
+    expect(review.reasonCodes).toContain("manual_approval_required");
+  });
+
+  it("caps deep sweeps when independent events or official settlement coverage are too low", () => {
+    const limited = searchBudgetDecision({
+      eventCount: 80,
+      officialSettlementCoverage: 0,
+      requestedSweepAlgos: 6045,
+      sweepMode: true,
+      deepSweepMode: true,
+    });
+    const open = searchBudgetDecision({
+      eventCount: 400,
+      officialSettlementCoverage: 0.98,
+      requestedSweepAlgos: 500,
+      sweepMode: true,
+      deepSweepMode: true,
+    });
+
+    expect(limited.limited).toBe(true);
+    expect(limited.deepSweepAllowed).toBe(false);
+    expect(limited.maxGeneratedAlgos).toBeLessThan(6045);
+    expect(limited.reasonCodes).toEqual(expect.arrayContaining(["search_budget_limited_by_sample_size", "deep_sweep_blocked_low_official_coverage"]));
+    expect(open.limited).toBe(false);
+    expect(open.deepSweepAllowed).toBe(true);
+  });
+
+  it("ranks research evidence ahead of dry-run-only appearance", () => {
+    const researchValidated = {
+      promotionVerdict: "paper_only",
+      promotionStage: "validation_candidate",
+      labelSource: "official_resolution",
+      settlementSource: "official_resolution",
+      officialResolutionAvailable: true,
+      officialSettlementCoverage: 1,
+      holdoutPass: true,
+      holdoutStrictlyLater: true,
+      adjustedConfidence: 0.8,
+      dsrApprox: 0.75,
+      pboApprox: 0.1,
+      robustScore: 15,
+      conservativeTotalPnl: 3,
+      stressTotalPnl: 1,
+      paperEvidence: { available: true, driftOk: true, closedMarkets: 30 },
+    };
+    const dryRunOnly = {
+      promotionVerdict: "insufficient_data",
+      promotionStage: "research_candidate",
+      nonPromotable: true,
+      labelSource: "pre_close_frame_proxy",
+      settlementSource: "estimated",
+      officialSettlementCoverage: 0,
+      holdoutPass: false,
+      adjustedConfidence: 0.1,
+      dsrApprox: 0.1,
+      pboApprox: 0.9,
+      robustScore: 100,
+      conservativeTotalPnl: 25,
+      stressTotalPnl: 10,
+    };
+
+    expect(researchEvidenceCanMature(researchValidated)).toBe(true);
+    expect(researchEvidenceCanMature(dryRunOnly)).toBe(false);
+    expect(researchEvidenceSortScore(researchValidated)).toBeGreaterThan(researchEvidenceSortScore(dryRunOnly));
   });
 
   it("keeps final holdout events strictly later than research windows", () => {

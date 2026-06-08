@@ -40,6 +40,7 @@ export function sampleSufficiency({ events = [], holdoutSplit = null, folds = []
 }
 
 export function insufficientDataMetric(algo, sufficiency, dataQuality = {}) {
+  const settlementEvidence = dataQuality.settlementEvidence ?? {};
   return {
     algoId: algo.id,
     algoName: algo.name,
@@ -62,6 +63,11 @@ export function insufficientDataMetric(algo, sufficiency, dataQuality = {}) {
     profitFactor: 0,
     conservativeTotalPnl: 0,
     stressTotalPnl: 0,
+    settlementEvidence,
+    labelSource: settlementEvidence.labelSource ?? "unknown",
+    settlementSource: settlementEvidence.settlementSource ?? "unknown",
+    officialResolutionAvailable: settlementEvidence.officialResolutionAvailable === true,
+    officialSettlementCoverage: settlementEvidence.officialSettlementCoverage ?? 0,
     foldSummary: emptyFoldSummary(),
     purgedSummary: emptyFoldSummary(),
     cpcvSummary: emptyFoldSummary(),

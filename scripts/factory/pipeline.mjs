@@ -1,4 +1,4 @@
-import { dataQualitySummary, filterFramesByTime, buildMarketEvents } from "./data.mjs";
+import { dataQualitySummary, filterFramesByTime, buildMarketEvents, settlementCoverageSummary } from "./data.mjs";
 import { chronologicalSplit, cpcvApproximationFolds, purgedEmbargoFolds } from "./splits.mjs";
 import { defaultCostModels, simulateAlgos } from "./simulator.mjs";
 import { costComparisonMetrics, executionTelemetryForSimulation, foldMetricsForAlgo, metricsForAlgo, summarizeFoldMetrics, trainMetricsForAlgo } from "./metrics.mjs";
@@ -12,6 +12,7 @@ export function runFactoryResearchPipeline({ algos, loadResult, since = null, un
   const filteredFrames = filterFramesByTime(loadResult.frames, { since, until });
   const eventResult = buildMarketEvents(filteredFrames, options);
   const events = eventResult.events;
+  const settlementEvidence = settlementCoverageSummary(events);
   const holdoutSplit = finalHoldoutSplit(events, {
     holdoutRatio: options.holdoutRatio ?? 0.2,
     minHoldoutEvents: options.minHoldoutEvents ?? options.thresholds?.minHoldoutEvents ?? defaultSampleGateThresholds.minHoldoutEvents,
@@ -36,6 +37,7 @@ export function runFactoryResearchPipeline({ algos, loadResult, since = null, un
     eventCount: events.length,
     warnings: [...loadResult.warnings, ...eventResult.warnings],
   });
+  baseDataQuality.settlementEvidence = settlementEvidence;
   const sufficiency = sampleSufficiency({
     events,
     holdoutSplit,
@@ -62,6 +64,7 @@ export function runFactoryResearchPipeline({ algos, loadResult, since = null, un
       candidates: [],
       trades: [],
       costModels: options.costModels ?? defaultCostModels,
+      searchBudget: options.searchBudget ?? null,
       dataQuality,
       warnings: [...loadResult.warnings, ...eventResult.warnings, sampleWarning],
     };
@@ -120,6 +123,11 @@ export function runFactoryResearchPipeline({ algos, loadResult, since = null, un
     const drift = paperEvidence.drift;
     const metric = attachClosedTrades({
       ...baseMetric,
+      settlementEvidence,
+      labelSource: settlementEvidence.labelSource,
+      settlementSource: settlementEvidence.settlementSource,
+      officialResolutionAvailable: settlementEvidence.officialResolutionAvailable,
+      officialSettlementCoverage: settlementEvidence.officialSettlementCoverage,
       costModels: costModelsMetrics,
       conservativeTotalPnl: costModelsMetrics.conservative?.totalPnl ?? 0,
       stressTotalPnl: costModelsMetrics.stress?.totalPnl ?? 0,
@@ -157,6 +165,7 @@ export function runFactoryResearchPipeline({ algos, loadResult, since = null, un
       dataQuality: {
         ...baseDataQuality,
         sampleSufficiency: sufficiency,
+        settlementEvidence,
         permissiveDebug: Boolean(options.permissiveDebug),
       },
     }, base.trades);
@@ -190,9 +199,11 @@ export function runFactoryResearchPipeline({ algos, loadResult, since = null, un
     candidates,
     trades,
     costModels,
+    searchBudget: options.searchBudget ?? null,
     dataQuality: {
       ...baseDataQuality,
       sampleSufficiency: sufficiency,
+      settlementEvidence,
     },
     warnings: [...loadResult.warnings, ...eventResult.warnings],
   };

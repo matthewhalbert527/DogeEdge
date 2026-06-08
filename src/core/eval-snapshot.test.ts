@@ -31,14 +31,35 @@ describe("continuous evaluation snapshot exporter", () => {
       algoId: "factory-batch-batch-z-test-0001",
       displayId: "Z-0001",
       promotionVerdict: "paper_only",
+      settlementSource: "estimated",
+    });
+    expect(snapshot.timestampSemantics.settlementSource).toBe("estimated");
+    expect(result.manifest).toMatchObject({
+      gitCommit: expect.any(String),
+      dataHash: "input-hash",
+      configHash: "config-hash",
+      timestampSemantics: expect.objectContaining({ settlementSource: "estimated" }),
     });
     expect(snapshot.filesManifest.map((file: { logicalName: string }) => file.logicalName)).toEqual(expect.arrayContaining([
       "algoMetrics.tsv.gz",
       "decisionAggregates.tsv.gz",
       "decisionRows.tsv.gz",
       "tradeRows.tsv.gz",
+      "decision_frames.jsonl",
+      "trades.csv",
+      "paper_decision_ledger.csv",
+      "raw_market_ticks/manifest.json",
     ]));
     expect(snapshot.filesManifest.every((file: { sha256: string; bytes: number }) => file.sha256 && file.bytes > 0)).toBe(true);
+    const ledger = readFileSync(path.join(result.snapshotDir, "paper_decision_ledger.csv"), "utf8");
+    expect(ledger).toContain("top_traders_reject_summary");
+    expect(ledger).toContain("edge_reject");
+    const rawTickManifest = JSON.parse(readFileSync(path.join(result.snapshotDir, "raw_market_ticks", "manifest.json"), "utf8"));
+    expect(rawTickManifest).toMatchObject({
+      schemaVersion: "dogeedge.raw-market-ticks.manifest.v1",
+      available: false,
+      warningCodes: ["raw_market_tick_parquet_absent"],
+    });
     const history = JSON.parse(readFileSync(path.join(fixture.outDir, "snapshot-history-48h.json"), "utf8"));
     expect(history.schemaVersion).toBe("dogeedge.eval.snapshot-history.v1");
     expect(history.latestSnapshotId).toBe(snapshot.snapshotId);
@@ -82,6 +103,10 @@ describe("continuous evaluation snapshot exporter", () => {
       "repo/package.json",
       "registry/experiment-registry.tar.gz",
       "snapshots/snapshot-history-48h.json",
+      "snapshots/decision_frames.jsonl",
+      "snapshots/trades.csv",
+      "snapshots/paper_decision_ledger.csv",
+      "snapshots/raw_market_ticks/manifest.json",
     ]));
     expect(manifest.safetyStatus.liveTradingEnabled).toBe(false);
   });
@@ -167,6 +192,10 @@ function writeEvalFixture(options: { liveSwitch?: unknown } = {}) {
     },
     promotionStage: "validation_candidate",
     promotionVerdict: "paper_only",
+    labelSource: "pre_close_frame_proxy",
+    settlementSource: "estimated",
+    officialResolutionAvailable: false,
+    officialSettlementCoverage: 0,
     reasonCodes: ["paper_evidence_required"],
     warnings: [],
     nonPromotable: false,
@@ -194,7 +223,16 @@ function writeEvalFixture(options: { liveSwitch?: unknown } = {}) {
     mode: "sweep",
     runDir,
     finishedAt: "2026-06-07T20:00:00.000Z",
-    dataQuality: { rawFrames: 10, usableFrames: 10, duplicateFramesRemoved: 0, overlappingFramesDownsampled: 0, marketEvents: 3, warningCount: 0, errorCount: 0 },
+    dataQuality: {
+      rawFrames: 10,
+      usableFrames: 10,
+      duplicateFramesRemoved: 0,
+      overlappingFramesDownsampled: 0,
+      marketEvents: 3,
+      warningCount: 0,
+      errorCount: 0,
+      settlementEvidence: { totalEvents: 3, officialEvents: 0, officialSettlementCoverage: 0, settlementSource: "estimated", labelSource: "pre_close_frame_proxy", officialResolutionAvailable: false },
+    },
     eventCount: 3,
     frameCount: 10,
     algoCount: 1,
@@ -270,6 +308,9 @@ function writeEvalFixture(options: { liveSwitch?: unknown } = {}) {
     featureTimestamp: "2026-06-07T20:10:00.000Z",
     labelTimestamp: "2026-06-07T20:15:00.000Z",
     settlementTimestamp: "2026-06-07T20:15:00.000Z",
+    labelSource: "pre_close_frame_proxy",
+    settlementSource: "estimated",
+    officialResolutionAvailable: false,
     marketCloseTimestamp: "2026-06-07T20:15:00.000Z",
     secondsToClose: 300,
     targetPrice: 0.25,

@@ -153,11 +153,28 @@ The review bundle includes:
 - `snapshots/tradeAggregates.tsv.gz`;
 - `snapshots/warnings.tsv.gz`;
 - capped `decisionRows.tsv.gz` and `tradeRows.tsv.gz` unless `--no-rows` is used;
+- exact review files `snapshots/decision_frames.jsonl`, `snapshots/trades.csv`, and `snapshots/paper_decision_ledger.csv`;
+- `snapshots/raw_market_ticks/manifest.json` and `snapshots/raw_market_ticks/schema.json`. When replayable per-market parquet ticks are unavailable, the manifest must say so explicitly with `raw_market_tick_parquet_absent`;
 - `snapshots/snapshot-history-48h.json` and `snapshots/snapshot-history-48h.md` with latest-vs-previous and latest-vs-baseline trend deltas;
 - `repo/` files needed to interpret the packet against the exact local code snapshot;
 - `registry/experiment-registry.tar.gz`.
 
 The exporter redacts absolute metadata paths in packet JSON to `_REPO_ROOT_` and `_DATA_ROOT_`. Market tickers, algo IDs, timestamps, prices, sizes, hashes, and git commits remain plain because they are needed for replay and audit.
+
+## Official Settlement And Search Budget Gates
+
+Decision frames and backtest metrics now carry:
+
+- `labelSource`: `official_resolution`, `pre_close_frame_proxy`, or `unknown`;
+- `settlementSource`: `official_resolution`, `estimated`, or `unknown`;
+- `officialResolutionAvailable`;
+- `officialSettlementCoverage`.
+
+Estimated/proxy labels remain useful for paper research and UI evidence collection, but they are not promotion-grade labels. A candidate can never become `tiny_live_eligible` unless `labelSource === "official_resolution"`, `settlementSource === "official_resolution"`, and official-settlement coverage clears the configured threshold. If official settlement is missing, the best possible verdict is `paper_only`, with reason codes such as `official_settlement_required`, `official_label_required`, and `official_settlement_coverage_low`.
+
+Sweep breadth is also governed by the available evidence. If the event count is too low or official-settlement coverage is below the configured threshold, the factory caps generated sweep algos and blocks deep-sweep expansion. The output includes a `searchBudget` object with `limited`, `deepSweepAllowed`, `requestedSweepAlgos`, `maxGeneratedAlgos`, `officialSettlementCoverage`, and reason codes such as `search_budget_limited_by_sample_size` or `deep_sweep_blocked_low_official_coverage`.
+
+The app's Top Traders roster is intentionally research-first. Dry-run executable stats remain visible and are still used as operational telemetry, but Champion/Prospect slots require research gates to be mature enough. Low-evidence rows may remain visible as watch rows so they can gather evidence without implying promotion quality.
 
 `merge:safety` is a local advisory guard for GPT-CLI patch passes. It prints `ALLOW` only for documentation/export/audit/report/test-artifact diffs. It prints `REQUIRE_HUMAN_APPROVAL` for app code, dependencies, factory kernel files, local worker/backtest entry points, Tauri/API files, and live/Kalshi/order-sensitive paths. It does not merge, push, or change runtime behavior.
 

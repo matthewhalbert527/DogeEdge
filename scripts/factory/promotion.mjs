@@ -22,6 +22,7 @@ export const defaultPromotionThresholds = {
   maxFalseDiscoveryRisk: 0.2,
   maxFamilyQValue: 0.1,
   maxGlobalQValue: 0.2,
+  minOfficialSettlementCoverageForTinyLive: 0.95,
 };
 
 export function promotionReview(metric, thresholds = defaultPromotionThresholds) {
@@ -36,6 +37,7 @@ export function promotionReview(metric, thresholds = defaultPromotionThresholds)
   const cpcv = metric.cpcvSummary ?? {};
   const holdout = metric.holdoutSummary ?? {};
   const paperEvidence = metric.paperEvidence ?? {};
+  const settlementGate = officialSettlementGate(metric, thresholds);
 
   if (metric.dataQuality?.permissiveDebug) reasonCodes.push("permissive_debug_not_promotable");
   if ((metric.closed ?? 0) < thresholds.minClosedTrades) reasonCodes.push("too_few_closed_trades");
@@ -66,6 +68,7 @@ export function promotionReview(metric, thresholds = defaultPromotionThresholds)
   if ((metric.globalQValue ?? 1) > thresholds.maxGlobalQValue) reasonCodes.push("global_q_value_too_high");
   if (paperEvidence.closedMarkets > 0 && !paperEvidence.driftOk) reasonCodes.push("paper_evidence_drift");
   if ((metric.totalPnl ?? 0) <= 0) reasonCodes.push("non_positive_full_sample_pnl");
+  if (!settlementGate.ok) warnings.push(...settlementGate.reasonCodes);
 
   if (closedMarkets < thresholds.minResearchMarkets) {
     return verdict("insufficient_data", "research_candidate", reasonCodes, warnings, true);
@@ -73,10 +76,34 @@ export function promotionReview(metric, thresholds = defaultPromotionThresholds)
   if (reasonCodes.length) {
     return verdict("reject", "research_candidate", reasonCodes, warnings, true);
   }
-  if ((paperEvidence.closedMarkets ?? 0) >= thresholds.preferredPaperMarkets && paperEvidence.driftOk) {
+  if ((paperEvidence.closedMarkets ?? 0) >= thresholds.preferredPaperMarkets && paperEvidence.driftOk && settlementGate.ok) {
     return verdict("tiny_live_eligible", "tiny_live_eligible", ["manual_approval_required", "live_disabled_by_default"], warnings, false);
   }
-  return verdict("paper_only", "validation_candidate", ["paper_evidence_required"], warnings, false);
+  return verdict("paper_only", "validation_candidate", [
+    ...(!settlementGate.ok ? settlementGate.reasonCodes : []),
+    "paper_evidence_required",
+  ], warnings, false);
+}
+
+export function officialSettlementGate(metric, thresholds = defaultPromotionThresholds) {
+  const labelSource = metric.labelSource ?? metric.settlementEvidence?.labelSource ?? "unknown";
+  const settlementSource = metric.settlementSource ?? metric.settlementEvidence?.settlementSource ?? "unknown";
+  const coverage = Number(metric.officialSettlementCoverage ?? metric.settlementEvidence?.officialSettlementCoverage ?? 0);
+  const officialAvailable = metric.officialResolutionAvailable === true
+    || metric.settlementEvidence?.officialResolutionAvailable === true
+    || coverage >= (thresholds.minOfficialSettlementCoverageForTinyLive ?? 0.95);
+  const reasonCodes = [];
+  if (labelSource !== "official_resolution") reasonCodes.push("official_label_required");
+  if (settlementSource !== "official_resolution") reasonCodes.push("official_settlement_required");
+  if (!officialAvailable || coverage < (thresholds.minOfficialSettlementCoverageForTinyLive ?? 0.95)) reasonCodes.push("official_settlement_coverage_low");
+  return {
+    ok: reasonCodes.length === 0,
+    reasonCodes,
+    labelSource,
+    settlementSource,
+    officialSettlementCoverage: coverage,
+    officialResolutionAvailable: officialAvailable,
+  };
 }
 
 function verdict(promotionVerdict, promotionStage, reasonCodes, warnings, nonPromotable) {

@@ -117,13 +117,32 @@ export function buildMarketEvents(frames, options = {}) {
     const first = sorted[0];
     const closeMs = first.marketCloseTimestampMs ?? inferCloseMs(sorted);
     const labelFrame = chooseLabelFrame(sorted, closeMs);
+    const official = officialOutcomeFor(marketTicker, options);
     if (!labelFrame) {
       warnings.push({ message: `${marketTicker} has no usable label frame` });
       continue;
     }
-    const labelMs = closeMs === null ? labelFrame.featureTimestampMs : Math.max(closeMs, labelFrame.featureTimestampMs ?? closeMs);
+    const officialLabelMs = official ? parseTime(official.labelTimestamp ?? official.settlementTimestamp ?? official.resolvedAt) : null;
+    const officialSettlementMs = official ? parseTime(official.settlementTimestamp ?? official.resolvedAt ?? official.labelTimestamp) : null;
+    const officialUsable = official
+      && official.outcomeSide
+      && closeMs !== null
+      && officialLabelMs !== null
+      && officialSettlementMs !== null
+      && officialLabelMs >= closeMs
+      && officialSettlementMs >= closeMs;
+    if (official && !officialUsable) {
+      warnings.push({ message: `${marketTicker} official outcome was ignored because label/settlement timing was missing or before close` });
+    }
+    const labelMs = officialUsable
+      ? officialLabelMs
+      : closeMs === null ? labelFrame.featureTimestampMs : Math.max(closeMs, labelFrame.featureTimestampMs ?? closeMs);
+    const settlementMs = officialUsable ? officialSettlementMs : labelMs;
     const labelTimestamp = labelMs === null ? null : new Date(labelMs).toISOString();
-    const yesWon = (labelFrame.estimate ?? first.estimate) >= first.targetPrice;
+    const settlementTimestamp = settlementMs === null ? null : new Date(settlementMs).toISOString();
+    const outcomeSide = officialUsable ? official.outcomeSide : (labelFrame.estimate ?? first.estimate) >= first.targetPrice ? "YES" : "NO";
+    const labelSource = officialUsable ? "official_resolution" : "pre_close_frame_proxy";
+    const settlementSource = officialUsable ? "official_resolution" : "estimated";
     events.push({
       id: marketTicker,
       marketTicker,
@@ -134,20 +153,22 @@ export function buildMarketEvents(frames, options = {}) {
       marketCloseTimestampMs: closeMs,
       labelTimestamp,
       labelTimestampMs: labelMs,
-      settlementTimestamp: labelTimestamp,
-      settlementTimestampMs: labelMs,
-      labelSource: "pre_close_frame_proxy",
-      settlementSource: "estimated",
-      outcomeSide: yesWon ? "YES" : "NO",
+      settlementTimestamp,
+      settlementTimestampMs: settlementMs,
+      labelSource,
+      settlementSource,
+      officialResolutionAvailable: officialUsable,
+      outcomeSide,
       targetPrice: first.targetPrice,
       frames: sorted.map((frame) => ({
         ...frame,
         labelTimestamp,
         labelTimestampMs: labelMs,
-        settlementTimestamp: labelTimestamp,
-        settlementTimestampMs: labelMs,
-        labelSource: "pre_close_frame_proxy",
-        settlementSource: "estimated",
+        settlementTimestamp,
+        settlementTimestampMs: settlementMs,
+        labelSource,
+        settlementSource,
+        officialResolutionAvailable: officialUsable,
       })),
       frameCount: sorted.length,
       independentFrameCount: new Set(sorted.map((frame) => frame.independentKey)).size,
@@ -157,6 +178,19 @@ export function buildMarketEvents(frames, options = {}) {
   return {
     events: events.sort((left, right) => (left.labelWindowEndMs ?? 0) - (right.labelWindowEndMs ?? 0) || left.marketTicker.localeCompare(right.marketTicker)),
     warnings,
+  };
+}
+
+export function settlementCoverageSummary(events) {
+  const total = events.length;
+  const official = events.filter((event) => event.settlementSource === "official_resolution" && event.labelSource === "official_resolution").length;
+  return {
+    totalEvents: total,
+    officialEvents: official,
+    officialSettlementCoverage: total > 0 ? roundRatio(official / total) : 0,
+    settlementSource: total > 0 && official === total ? "official_resolution" : official > 0 ? "mixed" : "estimated",
+    labelSource: total > 0 && official === total ? "official_resolution" : official > 0 ? "mixed" : "pre_close_frame_proxy",
+    officialResolutionAvailable: total > 0 && official === total,
   };
 }
 
@@ -197,6 +231,23 @@ function chooseLabelFrame(frames, closeMs) {
   if (closeMs === null) return frames.at(-1);
   const closeCandidates = frames.filter((frame) => (frame.featureTimestampMs ?? 0) < closeMs);
   return closeCandidates.at(-1) ?? null;
+}
+
+function officialOutcomeFor(marketTicker, options) {
+  const source = options.officialOutcomes ?? options.officialResolutions ?? null;
+  if (!source) return null;
+  const value = source instanceof Map ? source.get(marketTicker) : isRecord(source) ? source[marketTicker] : null;
+  if (!isRecord(value)) return null;
+  const rawSide = typeof value.outcomeSide === "string"
+    ? value.outcomeSide
+    : typeof value.winningSide === "string"
+      ? value.winningSide
+      : null;
+  const outcomeSide = rawSide?.toUpperCase() === "YES" ? "YES" : rawSide?.toUpperCase() === "NO" ? "NO" : null;
+  return {
+    ...value,
+    outcomeSide,
+  };
 }
 
 function regimeForFrame(frame) {

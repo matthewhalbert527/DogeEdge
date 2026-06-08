@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";

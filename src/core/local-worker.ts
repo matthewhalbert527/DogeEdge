@@ -79,6 +79,7 @@ export interface LocalPaperTradeSummaryResponse {
 
 export interface LocalFactorySweepCandidate {
   algoId: string;
+  displayId: string | null;
   algoName: string;
   family: string;
   params: Record<string, unknown>;
@@ -107,6 +108,10 @@ export interface LocalFactorySweepCandidate {
   robustScore: number;
   promotionVerdict: string;
   promotionStage: string;
+  labelSource: string;
+  settlementSource: string;
+  officialResolutionAvailable: boolean;
+  officialSettlementCoverage: number;
   nonPromotable: boolean;
   reasonCodes: string[];
   warnings: string[];
@@ -175,6 +180,15 @@ export interface LocalFactorySweep {
   walkForwardRatio: number;
   algoCount: number;
   deepSweepMode: boolean;
+  requestedDeepSweepMode: boolean;
+  searchBudget: {
+    limited: boolean;
+    deepSweepAllowed: boolean;
+    requestedSweepAlgos: number;
+    maxGeneratedAlgos: number;
+    officialSettlementCoverage: number;
+    reasonCodes: string[];
+  } | null;
   minCandidateClosed: number;
   minWalkForwardClosed: number;
   candidates: LocalFactorySweepCandidate[];
@@ -343,6 +357,8 @@ function normalizeFactorySweep(value: unknown): LocalFactorySweep | null {
     walkForwardRatio: numberOrDefault(value.walkForwardRatio, 0.3),
     algoCount: numberOrDefault(value.algoCount, 0),
     deepSweepMode: Boolean(value.deepSweepMode),
+    requestedDeepSweepMode: Boolean(value.requestedDeepSweepMode),
+    searchBudget: normalizeSearchBudget(value.searchBudget),
     minCandidateClosed: numberOrDefault(value.minCandidateClosed, 3),
     minWalkForwardClosed: numberOrDefault(value.minWalkForwardClosed, 2),
     candidates: normalizeSweepCandidates(value.candidates),
@@ -374,6 +390,7 @@ function normalizeSweepCandidate(value: unknown): LocalFactorySweepCandidate | n
   if (!isRecord(value)) return null;
   return {
     algoId: stringOrDefault(value.algoId, "unknown"),
+    displayId: typeof value.displayId === "string" && value.displayId.length > 0 ? value.displayId : displayIdFromAlgoId(stringOrDefault(value.algoId, "")),
     algoName: stringOrDefault(value.algoName, "Unknown algo"),
     family: stringOrDefault(value.family, "unknown"),
     params: isRecord(value.params) ? { ...value.params } : {},
@@ -402,6 +419,10 @@ function normalizeSweepCandidate(value: unknown): LocalFactorySweepCandidate | n
     robustScore: numberOrDefault(value.robustScore, numberOrDefault(value.candidateScore, 0)),
     promotionVerdict: stringOrDefault(value.promotionVerdict, "unknown"),
     promotionStage: stringOrDefault(value.promotionStage, "research_candidate"),
+    labelSource: stringOrDefault(value.labelSource, isRecord(value.settlementEvidence) ? stringOrDefault(value.settlementEvidence.labelSource, "unknown") : "unknown"),
+    settlementSource: stringOrDefault(value.settlementSource, isRecord(value.settlementEvidence) ? stringOrDefault(value.settlementEvidence.settlementSource, "unknown") : "unknown"),
+    officialResolutionAvailable: Boolean(value.officialResolutionAvailable || (isRecord(value.settlementEvidence) && value.settlementEvidence.officialResolutionAvailable === true)),
+    officialSettlementCoverage: numberOrDefault(value.officialSettlementCoverage, isRecord(value.settlementEvidence) ? numberOrDefault(value.settlementEvidence.officialSettlementCoverage, 0) : 0),
     nonPromotable: Boolean(value.nonPromotable),
     reasonCodes: Array.isArray(value.reasonCodes) ? value.reasonCodes.filter((item): item is string => typeof item === "string") : [],
     warnings: Array.isArray(value.warnings) ? value.warnings.filter((item): item is string => typeof item === "string") : [],
@@ -434,6 +455,18 @@ function normalizeSweepCandidate(value: unknown): LocalFactorySweepCandidate | n
     drift: normalizeFactoryDrift(value.drift),
     executionTelemetry: isRecord(value.executionTelemetry) ? { ...value.executionTelemetry } as LocalFactorySweepCandidate["executionTelemetry"] : undefined,
     paperEvidence: normalizeFactoryPaperEvidence(value.paperEvidence),
+  };
+}
+
+function normalizeSearchBudget(value: unknown): LocalFactorySweep["searchBudget"] {
+  if (!isRecord(value)) return null;
+  return {
+    limited: Boolean(value.limited),
+    deepSweepAllowed: value.deepSweepAllowed !== false,
+    requestedSweepAlgos: numberOrDefault(value.requestedSweepAlgos, 0),
+    maxGeneratedAlgos: numberOrDefault(value.maxGeneratedAlgos, 0),
+    officialSettlementCoverage: numberOrDefault(value.officialSettlementCoverage, 0),
+    reasonCodes: Array.isArray(value.reasonCodes) ? value.reasonCodes.filter((item): item is string => typeof item === "string") : [],
   };
 }
 
@@ -494,6 +527,15 @@ function normalizePaperTradeStrategySummary(value: unknown): LocalPaperTradeStra
 
 function stringOrDefault(value: unknown, fallback: string) {
   return typeof value === "string" && value.length > 0 ? value : fallback;
+}
+
+function displayIdFromAlgoId(algoId: string): string | null {
+  const match = algoId.match(/(?:batch-)?([a-z])-([a-z0-9]+)?-?(\d{4})$/i)
+    ?? algoId.match(/([A-Z])-(\d{4})$/i);
+  if (!match) return null;
+  const batch = match[1].toUpperCase();
+  const serial = match[3] ?? match[2];
+  return serial ? `${batch}-${serial.slice(-4).toUpperCase()}` : null;
 }
 
 function normalizeSweepMode(value: unknown): LocalFactorySweep["mode"] {

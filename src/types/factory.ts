@@ -43,6 +43,10 @@ export interface FactoryPaperEvidenceSummary extends FactoryDriftSummary {
 export interface FactoryResearchEvidence {
   promotionVerdict: string;
   reasonCodes: string[];
+  labelSource?: string;
+  settlementSource?: string;
+  officialResolutionAvailable?: boolean;
+  officialSettlementCoverage?: number;
   adjustedConfidence: number;
   purgedSummary?: FactoryEvidenceSummary;
   cpcvSummary?: FactoryEvidenceSummary;
