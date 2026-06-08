@@ -881,6 +881,16 @@ function rawMarketTickBundleSummary(manifest, manifestPresent) {
   const parseOk = isRecord(manifest);
   const sourceSnapshotFiles = Array.isArray(manifest?.sourceSnapshotFiles) ? manifest.sourceSnapshotFiles : [];
   const targetMarkets = Array.isArray(manifest?.targetMarkets) ? manifest.targetMarkets : [];
+  const coveredTargetMarkets = uniqueStrings(
+    Array.isArray(manifest?.coveredTargetMarkets)
+      ? manifest.coveredTargetMarkets
+      : [],
+  );
+  const uncoveredTargetMarkets = uniqueStrings(
+    Array.isArray(manifest?.uncoveredTargetMarkets)
+      ? manifest.uncoveredTargetMarkets
+      : targetMarkets.filter((marketTicker) => !coveredTargetMarkets.includes(marketTicker)),
+  );
   const jsonlFiles = Array.isArray(manifest?.jsonlFiles) ? manifest.jsonlFiles : [];
   const requestedFormat = typeof manifest?.requestedFormat === "string"
     ? manifest.requestedFormat
@@ -894,6 +904,17 @@ function rawMarketTickBundleSummary(manifest, manifestPresent) {
   const sourceSnapshotFileCount = numberOrZero(manifest?.sourceSnapshotFileCount ?? sourceSnapshotFiles.length);
   const hashedSourceSnapshotFileCount = numberOrZero(manifest?.hashedSourceSnapshotFileCount ?? sourceSnapshotFiles.filter((source) => source?.sha256).length);
   const hashSkippedSourceSnapshotFileCount = numberOrZero(manifest?.hashSkippedSourceSnapshotFileCount ?? sourceSnapshotFiles.filter((source) => source?.hashSkipped).length);
+  const coveredTargetSample = coveredTargetMarkets.slice(0, 10);
+  const uncoveredTargetSample = uncoveredTargetMarkets.slice(0, 10);
+  const skippedLargeFileSample = sourceSnapshotFiles
+    .filter((source) => source?.hashSkipped)
+    .slice(0, 5)
+    .map((source) => ({
+      relativePath: slashPath(source.relativePath ?? ""),
+      bytes: numberOrZero(source.bytes),
+      hashSkipped: true,
+    }))
+    .filter((source) => source.relativePath);
   const warningCodes = uniqueStrings([
     ...(!manifestPresent ? ["raw_market_tick_manifest_absent"] : []),
     ...(manifestPresent && !parseOk ? ["raw_market_tick_manifest_parse_failed"] : []),
@@ -918,9 +939,18 @@ function rawMarketTickBundleSummary(manifest, manifestPresent) {
       uncovered: uncoveredTargetMarketCount,
       ratio: targetMarketCount > 0 ? roundDisplayRatio(coveredTargetMarketCount / targetMarketCount) : null,
     },
+    targetMarketSamples: {
+      covered: coveredTargetSample,
+      uncovered: uncoveredTargetSample,
+      omittedCoveredCount: Math.max(0, coveredTargetMarketCount - coveredTargetSample.length),
+      omittedUncoveredCount: Math.max(0, uncoveredTargetMarketCount - uncoveredTargetSample.length),
+    },
     sourceHash: {
       hashedFileCount: hashedSourceSnapshotFileCount,
       skippedLargeFileCount: hashSkippedSourceSnapshotFileCount,
+      sha256MaxBytes: numberOrNull(manifest?.sourceHashPolicy?.sha256MaxBytes),
+      skippedLargeFileSample,
+      omittedSkippedLargeFileCount: Math.max(0, hashSkippedSourceSnapshotFileCount - skippedLargeFileSample.length),
     },
     warningCodes,
   };

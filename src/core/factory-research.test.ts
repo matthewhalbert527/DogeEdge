@@ -772,6 +772,21 @@ describe("factory research safeguards", () => {
           uncovered: 2,
           ratio: 0,
         },
+        targetMarketSamples: {
+          covered: [],
+          uncovered: ["m-0", "m-1"],
+          omittedCoveredCount: 0,
+          omittedUncoveredCount: 0,
+        },
+        sourceHash: {
+          hashedFileCount: 0,
+          skippedLargeFileCount: 1,
+          sha256MaxBytes: 50 * 1024 * 1024,
+          skippedLargeFileSample: [
+            { relativePath: "raw/snapshots/records.jsonl", bytes: 60_000_000, hashSkipped: true },
+          ],
+          omittedSkippedLargeFileCount: 0,
+        },
       },
       limitations: expect.arrayContaining(["rows_capped", "raw_market_tick_target_coverage_gap"]),
     });
@@ -780,6 +795,8 @@ describe("factory research safeguards", () => {
     expect(finalReview).toContain("Raw ticks: target_samples_absent");
     expect(finalReview).toContain("Coverage: 0/2 target markets");
     expect(finalReview).toContain("raw_market_tick_jsonl_absent");
+    expect(finalReview).toContain("Uncovered target sample: m-0, m-1");
+    expect(finalReview).toContain("Hash-skipped source sample: raw/snapshots/records.jsonl (60000000 bytes)");
   });
 
   it("strict export audit fails closed on post-close decision rows", async () => {
@@ -1119,10 +1136,15 @@ function writeReviewBundleFixture(input: string) {
     coveredTargetMarketCount: 0,
     uncoveredTargetMarketCount: 2,
     jsonlFiles: [],
-    sourceSnapshotFiles: [{ relativePath: "raw/snapshots/records.jsonl", bytes: 100, sha256: "hash", hashSkipped: false }],
+    sourceSnapshotFiles: [{ relativePath: "raw/snapshots/records.jsonl", bytes: 60_000_000, sha256: null, hashSkipped: true }],
     sourceSnapshotFileCount: 1,
-    hashedSourceSnapshotFileCount: 1,
-    hashSkippedSourceSnapshotFileCount: 0,
+    hashedSourceSnapshotFileCount: 0,
+    hashSkippedSourceSnapshotFileCount: 1,
+    sourceHashPolicy: {
+      sha256MaxBytes: 50 * 1024 * 1024,
+      hashedFileCount: 0,
+      skippedLargeFileCount: 1,
+    },
     warningCodes: [
       "raw_market_tick_parquet_absent",
       "raw_market_tick_jsonl_absent",
@@ -1159,8 +1181,9 @@ function writeReviewBundleFixture(input: string) {
         ratio: 0,
       },
       sourceHash: {
-        hashedFileCount: 1,
-        skippedLargeFileCount: 0,
+        hashedFileCount: 0,
+        skippedLargeFileCount: 1,
+        sha256MaxBytes: 50 * 1024 * 1024,
       },
       warningCodes: rawTickManifest.warningCodes,
     },

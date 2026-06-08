@@ -172,9 +172,18 @@ describe("continuous evaluation snapshot exporter", () => {
         uncovered: 0,
         ratio: 1,
       },
+      targetMarketSamples: {
+        covered: ["KXDOGE15M-FIXTURE"],
+        uncovered: [],
+        omittedCoveredCount: 0,
+        omittedUncoveredCount: 0,
+      },
       sourceHash: {
         hashedFileCount: 1,
         skippedLargeFileCount: 0,
+        sha256MaxBytes: 50 * 1024 * 1024,
+        skippedLargeFileSample: [],
+        omittedSkippedLargeFileCount: 0,
       },
     });
     expect(manifest.rawMarketTickExport.warningCodes).toEqual(expect.arrayContaining([
@@ -238,9 +247,18 @@ describe("continuous evaluation snapshot exporter", () => {
         uncovered: 1,
         ratio: 0,
       },
+      targetMarketSamples: {
+        covered: [],
+        uncovered: ["KXDOGE15M-FIXTURE"],
+        omittedCoveredCount: 0,
+        omittedUncoveredCount: 0,
+      },
       sourceHash: {
         hashedFileCount: 1,
         skippedLargeFileCount: 0,
+        sha256MaxBytes: 50 * 1024 * 1024,
+        skippedLargeFileSample: [],
+        omittedSkippedLargeFileCount: 0,
       },
     });
     expect(manifest.limitations).toEqual(expect.arrayContaining([

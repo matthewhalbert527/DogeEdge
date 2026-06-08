@@ -204,6 +204,7 @@ function bundleEvidenceSummary({ bundleManifest, rawTicksManifest }) {
   const rowExport = objectOrEmpty(bundleManifest?.rowExport);
   const rawExport = objectOrEmpty(bundleManifest?.rawMarketTickExport);
   const rawCoverage = objectOrEmpty(rawExport.targetMarketCoverage);
+  const rawTargetSamples = objectOrEmpty(rawExport.targetMarketSamples);
   const sourceHash = objectOrEmpty(rawExport.sourceHash);
   const covered = numberOrDefault(rawCoverage.covered, numberOrDefault(rawTicksManifest?.coveredTargetMarketCount, 0));
   const uncovered = numberOrDefault(rawCoverage.uncovered, numberOrDefault(rawTicksManifest?.uncoveredTargetMarketCount, 0));
@@ -219,6 +220,17 @@ function bundleEvidenceSummary({ bundleManifest, rawTicksManifest }) {
     ...arrayOfStrings(rawExport.warningCodes),
     ...arrayOfStrings(rawTicksManifest?.warningCodes),
   ]);
+  const coveredTargetSample = Array.isArray(rawTargetSamples.covered)
+    ? arrayOfStrings(rawTargetSamples.covered)
+    : arrayOfStrings(rawTicksManifest?.coveredTargetMarkets).slice(0, 10);
+  const uncoveredTargetSample = Array.isArray(rawTargetSamples.uncovered)
+    ? arrayOfStrings(rawTargetSamples.uncovered)
+    : arrayOfStrings(rawTicksManifest?.uncoveredTargetMarkets).slice(0, 10);
+  const skippedLargeFileSample = Array.isArray(sourceHash.skippedLargeFileSample)
+    ? sourceHash.skippedLargeFileSample.map(sourceFileSample).filter(Boolean)
+    : Array.isArray(rawTicksManifest?.sourceSnapshotFiles)
+      ? rawTicksManifest.sourceSnapshotFiles.filter((source) => source?.hashSkipped).slice(0, 5).map(sourceFileSample).filter(Boolean)
+      : [];
 
   return {
     rowExport: {
@@ -244,13 +256,36 @@ function bundleEvidenceSummary({ bundleManifest, rawTicksManifest }) {
         uncovered,
         ratio: coverageRatio,
       },
+      targetMarketSamples: {
+        covered: coveredTargetSample,
+        uncovered: uncoveredTargetSample,
+        omittedCoveredCount: numberOrDefault(rawTargetSamples.omittedCoveredCount, Math.max(0, covered - coveredTargetSample.length)),
+        omittedUncoveredCount: numberOrDefault(rawTargetSamples.omittedUncoveredCount, Math.max(0, uncovered - uncoveredTargetSample.length)),
+      },
       sourceHash: {
         hashedFileCount: numberOrDefault(sourceHash.hashedFileCount, numberOrDefault(rawTicksManifest?.hashedSourceSnapshotFileCount, 0)),
         skippedLargeFileCount: numberOrDefault(sourceHash.skippedLargeFileCount, numberOrDefault(rawTicksManifest?.hashSkippedSourceSnapshotFileCount, 0)),
+        sha256MaxBytes: numberOrDefault(sourceHash.sha256MaxBytes, numberOrDefault(rawTicksManifest?.sourceHashPolicy?.sha256MaxBytes, null)),
+        skippedLargeFileSample,
+        omittedSkippedLargeFileCount: numberOrDefault(
+          sourceHash.omittedSkippedLargeFileCount,
+          Math.max(0, numberOrDefault(sourceHash.skippedLargeFileCount, numberOrDefault(rawTicksManifest?.hashSkippedSourceSnapshotFileCount, 0)) - skippedLargeFileSample.length),
+        ),
       },
       warningCodes,
     },
     limitations: uniqueStrings(arrayOfStrings(bundleManifest?.limitations)),
+  };
+}
+
+function sourceFileSample(source) {
+  const record = objectOrEmpty(source);
+  const relativePath = stringOrNull(record.relativePath);
+  if (!relativePath) return null;
+  return {
+    relativePath,
+    bytes: numberOrDefault(record.bytes, 0),
+    hashSkipped: record.hashSkipped === true,
   };
 }
 
@@ -754,6 +789,8 @@ function bundleEvidenceMarkdown(summary) {
   }
   const raw = summary.rawTicks ?? {};
   const coverage = raw.coverage ?? {};
+  const targetSamples = raw.targetMarketSamples ?? {};
+  const sourceHash = raw.sourceHash ?? {};
   const totalTargets = raw.targetMarketCount || numberOrDefault(coverage.covered, 0) + numberOrDefault(coverage.uncovered, 0);
   const coveragePercent = typeof coverage.ratio === "number" ? `${Math.round(coverage.ratio * 1000) / 10}%` : "n/a";
   const rowText = summary.rowExport?.rowsCapped
@@ -764,14 +801,26 @@ function bundleEvidenceMarkdown(summary) {
         ? "Rows: full extracts exported."
         : `Rows: ${summary.rowExport?.mode ?? "unknown"} mode.`;
   const rawState = raw.availabilityStatus ?? (raw.available ? "available" : "unavailable");
-  return [
+  const uncoveredSample = Array.isArray(targetSamples.uncovered) ? targetSamples.uncovered : [];
+  const skippedSourceSample = Array.isArray(sourceHash.skippedLargeFileSample) ? sourceHash.skippedLargeFileSample : [];
+  const lines = [
     `- ${rowText}`,
     `- Raw ticks: ${rawState} (${raw.available ? "available" : "unavailable"}).`,
     `- Coverage: ${coverage.covered ?? 0}/${totalTargets} target markets (${coveragePercent}); jsonl files: ${raw.jsonlFileCount ?? 0}; source files: ${raw.sourceSnapshotFileCount ?? 0}.`,
-    `- Source hashes: ${raw.sourceHash?.hashedFileCount ?? 0} hashed, ${raw.sourceHash?.skippedLargeFileCount ?? 0} skipped as large.`,
+    `- Source hashes: ${sourceHash.hashedFileCount ?? 0} hashed, ${sourceHash.skippedLargeFileCount ?? 0} skipped as large.`,
     `- Limitations: ${summary.limitations?.join(", ") || "none"}.`,
     `- Raw tick warnings: ${raw.warningCodes?.join(", ") || "none"}.`,
-  ].join("\n");
+  ];
+  if (uncoveredSample.length) {
+    const omitted = numberOrDefault(targetSamples.omittedUncoveredCount, 0);
+    lines.push(`- Uncovered target sample: ${uncoveredSample.join(", ")}${omitted > 0 ? ` (+${omitted} more)` : ""}.`);
+  }
+  if (skippedSourceSample.length) {
+    const omitted = numberOrDefault(sourceHash.omittedSkippedLargeFileCount, 0);
+    const files = skippedSourceSample.map((source) => `${source.relativePath} (${source.bytes ?? 0} bytes)`);
+    lines.push(`- Hash-skipped source sample: ${files.join(", ")}${omitted > 0 ? ` (+${omitted} more)` : ""}.`);
+  }
+  return lines.join("\n");
 }
 
 function promotionTimelineMermaid() {
