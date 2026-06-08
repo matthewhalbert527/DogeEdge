@@ -95,16 +95,25 @@ export function researchEvidenceDefaultRankScore({
   executablePnlPerCycle?: number;
 }) {
   const gate = researchPromotionGate(evidence);
-  const supported = researchSupported && evidence ? 1 : 0;
+  if (!researchSupported || !evidence) {
+    return -1_000_000
+      + Math.max(-500, Math.min(100, executableTotalPnl))
+      + Math.max(-100, Math.min(25, executablePnlPerCycle * 25));
+  }
+  if (evidence.promotionVerdict === "reject" || evidence.promotionVerdict === "insufficient_data" || evidence.nonPromotable) {
+    return -500_000
+      + Math.max(-250, Math.min(100, executableTotalPnl))
+      + Math.max(-50, Math.min(25, executablePnlPerCycle * 25));
+  }
   const nonNegativeDryRun = executableTotalPnl >= 0 ? 1 : 0;
   const verdictScore = evidence?.promotionVerdict === "tiny_live_eligible"
     ? 4
-    : evidence?.promotionVerdict === "paper_only" ? 3 : evidence?.promotionVerdict === "reject" ? 1 : 0;
+    : evidence?.promotionVerdict === "paper_only" ? 3 : 0;
   const holdoutScore = evidence?.holdoutPass === true ? 1 : 0;
   const conservativeScore = finiteNumber(evidence?.conservativeTotalPnl, 0) > 0 ? 1 : 0;
   const lowerCi = Math.max(-1, Math.min(1, finiteNumber(evidence?.holdoutLowerCi, -1)));
   const cpcvScore = Math.max(0, Math.min(1, finiteNumber(evidence?.cpcvSummary?.positiveFoldRate, 0)));
-  return supported * 10_000
+  return 10_000
     + (gate.ok ? 5_000 : 0)
     + nonNegativeDryRun * 2_500
     + verdictScore * 500

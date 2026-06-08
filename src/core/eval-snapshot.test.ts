@@ -130,6 +130,8 @@ describe("continuous evaluation snapshot exporter", () => {
     const manifest = JSON.parse(readFileSync(path.join(result.bundleRoot, "manifest.json"), "utf8"));
 
     expect(manifest.schemaVersion).toBe("dogeedge.eval.review.bundle.v1");
+    expect(manifest.gitCommit).toMatch(/^[a-f0-9]{40}$|^UNAVAILABLE$/);
+    expect(manifest.codeVersion).toBe(manifest.gitCommit);
     expect(manifest.files.map((file: { relativePath: string }) => file.relativePath)).toEqual(expect.arrayContaining([
       "repo/COMMIT_HASH.txt",
       "repo/package.json",

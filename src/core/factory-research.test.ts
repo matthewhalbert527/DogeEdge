@@ -376,6 +376,41 @@ describe("factory research safeguards", () => {
     }));
   });
 
+  it("does not let reject or insufficient-data verdicts earn default-rank lift", () => {
+    const valid = strictResearchEvidence("valid-row");
+    const rejected = {
+      ...strictResearchEvidence("reject-row"),
+      promotionVerdict: "reject",
+      nonPromotable: true,
+      robustScore: 10_000,
+    };
+    const insufficient = {
+      ...strictResearchEvidence("insufficient-row"),
+      promotionVerdict: "insufficient_data",
+      nonPromotable: true,
+      robustScore: 10_000,
+    };
+    const validScore = researchEvidenceDefaultRankScore({
+      evidence: valid,
+      researchSupported: true,
+      executableTotalPnl: 1,
+      executablePnlPerCycle: 0.1,
+    });
+
+    expect(validScore).toBeGreaterThan(researchEvidenceDefaultRankScore({
+      evidence: rejected,
+      researchSupported: true,
+      executableTotalPnl: 10_000,
+      executablePnlPerCycle: 100,
+    }));
+    expect(validScore).toBeGreaterThan(researchEvidenceDefaultRankScore({
+      evidence: insufficient,
+      researchSupported: true,
+      executableTotalPnl: 10_000,
+      executablePnlPerCycle: 100,
+    }));
+  });
+
   it("uses one strict research gate before arena automation can treat a row as valid", () => {
     const valid = strictResearchEvidence("valid-gate");
     const dryRunOnly = {

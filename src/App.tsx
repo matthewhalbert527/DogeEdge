@@ -3822,11 +3822,12 @@ function TopTradersView({
     () => rankTopTraderRowsByExecutableStats(sourceRows, executableState, asOf, factoryEvidenceBySource),
     [asOf, executableState, factoryEvidenceBySource, sourceRows],
   );
-  const rosterRows = rows.filter((row) => row.bucket !== "standby").slice(0, topTradersRosterSize);
-  const eligibleBatchCounts = useMemo(() => topTraderEligibleBatchCounts(rosterRows), [rosterRows]);
-  const championRows = rosterRows.filter((row) => row.bucket === "champion");
-  const prospectRows = rosterRows.filter((row) => row.bucket === "prospect");
-  const wildcardRows = rosterRows.filter((row) => row.bucket === "wildcard");
+  const researchRosterRows = rows.filter((row) => row.bucket !== "standby").slice(0, topTradersRosterSize);
+  const telemetryWatchRows = rows.filter((row) => row.bucket === "standby").slice(0, topTradersTelemetryOnlyRosterSize);
+  const eligibleBatchCounts = useMemo(() => topTraderEligibleBatchCounts(researchRosterRows), [researchRosterRows]);
+  const championRows = researchRosterRows.filter((row) => row.bucket === "champion");
+  const prospectRows = researchRosterRows.filter((row) => row.bucket === "prospect");
+  const wildcardRows = researchRosterRows.filter((row) => row.bucket === "wildcard");
   const executableStats = executableState.stats;
   const executableSummaries = useMemo(() => Object.values(executableStats).map(topTraderExecutableSummary), [executableStats]);
   const executableSummary = useMemo(() => aggregatePaperSummarySnapshots(executableSummaries), [executableSummaries]);
@@ -3842,7 +3843,7 @@ function TopTradersView({
   const selectedIdSignature = selectedIdList.join("|");
   const favoriteSourceSet = useMemo(() => new Set(favoriteSourceIds), [favoriteSourceIds]);
   const sortedRosterRows = sortTopTraderRows(
-    rosterRows,
+    researchRosterRows,
     topTraderSorts,
     asOf,
     arena.status,
@@ -3850,8 +3851,8 @@ function TopTradersView({
     executableStats,
     executableState.startedAt,
   );
-  const activeRosterCount = rosterRows.filter((row) => selectedIds.has(paperStrategyIdForActivatedRow(row))).length;
-  const canPlay = rosterRows.length > 0 && numberFromInput(startingBalance) > 0 && numberFromInput(maxBet) > 0;
+  const activeRosterCount = researchRosterRows.filter((row) => selectedIds.has(paperStrategyIdForActivatedRow(row))).length;
+  const canPlay = researchRosterRows.length > 0 && numberFromInput(startingBalance) > 0 && numberFromInput(maxBet) > 0;
   const controlsLocked = arena.status === "running";
   const playLabel = arena.status === "paused" ? "Resume" : "Start";
   const changeSort = (key: TopTraderSortKey, additive: boolean) => {
@@ -3910,19 +3911,19 @@ function TopTradersView({
             </button>
           </div>
           <div className="arena-selected">
-            {rosterRows.length > 0 ? (
+            {researchRosterRows.length > 0 ? (
               <>
-                <span className="algo-id-pill">{rosterRows.length} eligible</span>
+                <span className="algo-id-pill">{researchRosterRows.length} validated</span>
                 <div>
-                  <strong>{rosterRows.slice(0, 5).map((row) => row.displayId).join(", ")}{rosterRows.length > 5 ? ` +${rosterRows.length - 5}` : ""}</strong>
+                  <strong>{researchRosterRows.slice(0, 5).map((row) => row.displayId).join(", ")}{researchRosterRows.length > 5 ? ` +${researchRosterRows.length - 5}` : ""}</strong>
                   <small>{money(numberFromInput(startingBalance))} bankroll per algo / max {money(numberFromInput(maxBet))} per fillable entry / one entry per contract</small>
                 </div>
               </>
             ) : (
-              <span className="muted">No promising factory algos have realistic single-entry arena evidence yet.</span>
+              <span className="muted">No research-validated algos yet. Still gathering evidence.</span>
             )}
           </div>
-          <p className="panel-note">This runner sources candidates from all generated algos. Roster order now prioritizes factory research gates; the execution columns remain fresh dry-run telemetry.</p>
+          <p className="panel-note">Default roster activation is research-only. Telemetry rows remain visible below for hypothesis generation.</p>
         </section>
 
         <section className="panel arena-status-panel">
@@ -3994,8 +3995,8 @@ function TopTradersView({
         <section className="panel arena-history-panel full">
           <div className="panel-heading compact">
             <div>
-              <h2>Current Ranked Roster</h2>
-              <span className="panel-subtitle">Roster is research-first; performance columns are executable dry-run only</span>
+              <h2>Research Validated Roster</h2>
+              <span className="panel-subtitle">Only research-supported rows with passing research gates appear here</span>
             </div>
             <Gauge size={16} />
           </div>
@@ -4032,9 +4033,9 @@ function TopTradersView({
                 </tr>
               </thead>
               <tbody>
-                {rosterRows.length === 0 ? (
+                {researchRosterRows.length === 0 ? (
                   <tr>
-                    <td className="empty-cell" colSpan={12}>No top-trader roster yet. Let batch tests produce realistic single-entry evidence first.</td>
+                    <td className="empty-cell" colSpan={12}>No research-validated algos yet. Still gathering evidence.</td>
                   </tr>
                 ) : sortedRosterRows.map((row) => {
                   const strategyId = paperStrategyIdForActivatedRow(row);
@@ -4133,6 +4134,55 @@ function TopTradersView({
                         </tr>
                       )}
                     </Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section className="panel arena-history-panel full">
+          <div className="panel-heading compact">
+            <div>
+              <h2>Telemetry Watchlist</h2>
+              <span className="panel-subtitle">Unsupported, rejected, or insufficient rows are visible here only</span>
+            </div>
+            <Badge tone="neutral">{telemetryWatchRows.length} rows</Badge>
+          </div>
+          <div className="upgrade-table-wrap">
+            <table className="activated-table top-traders-table">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Family</th>
+                  <th>Reason</th>
+                  <th>Accepted / Attempts</th>
+                  <th>Dry P/L</th>
+                  <th>Research</th>
+                </tr>
+              </thead>
+              <tbody>
+                {telemetryWatchRows.length === 0 ? (
+                  <tr>
+                    <td className="empty-cell" colSpan={6}>No telemetry-only rows are queued.</td>
+                  </tr>
+                ) : telemetryWatchRows.map((row) => {
+                  const research = factoryEvidenceForTopTraderRow(row, factoryEvidenceBySource);
+                  const execStats = executableStats[row.sourceAlgoId];
+                  const execSummary = topTraderExecutableSummary(execStats);
+                  const supportReason = familySupportReason(row.family);
+                  const reason = !familyResearchSupported(row.family)
+                    ? supportReason === "missing_research_adapter" ? "unsupported family" : "unregistered family"
+                    : !research ? "missing research evidence" : researchPromotionGate(research).reasonCodes.slice(0, 2).join(", ") || "research gate failed";
+                  return (
+                    <tr key={`telemetry-${row.sourceAlgoId}`}>
+                      <td><span className="algo-id-pill">{row.displayId}</span></td>
+                      <td>{familyLabel(row.family)}</td>
+                      <td><Badge tone="warn">{reason}</Badge></td>
+                      <td>{execStats ? `${execStats.acceptedBuys} / ${execStats.attempts}` : "0 / 0"}</td>
+                      <td className={execSummary.totalPnl >= 0 ? "positive" : "negative"}>{signedMoney(execSummary.totalPnl)}</td>
+                      <td><Badge tone={topTraderResearchTone(research)}>{topTraderResearchLabel(research)}</Badge></td>
+                    </tr>
                   );
                 })}
               </tbody>
@@ -4466,7 +4516,7 @@ function rankTopTraderRowsByExecutableStats(
   );
   const watchLimit = Math.max(0, topTradersRosterSize - champions.length - prospects.length);
   const watchQueue = pickRows(
-    scored.filter((item) => item.row.bucket !== "standby" && !selected.has(item.row.sourceAlgoId)),
+    scored.filter((item) => executableResearchRosterEligible(item) && item.row.bucket !== "standby" && !selected.has(item.row.sourceAlgoId)),
     watchLimit,
     "wildcard",
   );
@@ -4576,6 +4626,7 @@ function executableChampionEligible(item: ExecutableTopTraderScore, asOf: string
   const confidence = activatedConfidence(item.execRow, asOf);
   return item.hasDryEvidence
     && item.researchSupported
+    && researchPromotionGate(item.researchEvidence).ok
     && researchEvidenceCanMature(item.researchEvidence)
     && (item.stats?.attempts ?? 0) >= 15
     && (item.stats?.acceptedBuys ?? 0) >= 8
@@ -4589,6 +4640,7 @@ function executableChampionEligible(item: ExecutableTopTraderScore, asOf: string
 function executableProspectEligible(item: ExecutableTopTraderScore, asOf: string) {
   return item.hasDryEvidence
     && item.researchSupported
+    && researchPromotionGate(item.researchEvidence).ok
     && researchEvidenceCanMature(item.researchEvidence)
     && !executableChampionEligible(item, asOf)
     && (item.stats?.acceptedBuys ?? 0) > 0
@@ -4597,6 +4649,10 @@ function executableProspectEligible(item: ExecutableTopTraderScore, asOf: string
     && item.summary.totalPnl >= 0
     && item.pnlPerCycle >= 0
     && item.acceptanceRate >= 0.1;
+}
+
+function executableResearchRosterEligible(item: ExecutableTopTraderScore) {
+  return item.researchSupported && researchPromotionGate(item.researchEvidence).ok;
 }
 
 function compareExecutableTopTraderScores(left: ExecutableTopTraderScore, right: ExecutableTopTraderScore) {

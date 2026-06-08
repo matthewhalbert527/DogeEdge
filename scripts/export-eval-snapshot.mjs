@@ -832,6 +832,8 @@ export async function buildReviewBundle(options = {}) {
     bundleId,
     generatedAt,
     snapshotId: snapshotResult.snapshot.snapshotId,
+    gitCommit: snapshotResult.snapshot.repo.commitHash,
+    codeVersion: snapshotResult.snapshot.repo.commitHash,
     snapshotCount: latestSnapshotDirs.length,
     bundleHours,
     safetyStatus: snapshotResult.snapshot.appState.liveSafety,
@@ -1657,8 +1659,8 @@ function alignmentRows({ snapshotId, metrics, topStats, primaryRun, alignment, l
       dryRunTotalPnl,
       dryRunClosedExits: numberOrZero(stat.sells),
       dryRunAcceptedBuys: numberOrZero(stat.acceptedBuys),
-      defaultBucket: gate.ok && dryRunTotalPnl >= 0 ? "eligible_candidate" : "watch",
-      watchOnly: !gate.ok || dryRunTotalPnl < 0,
+      defaultBucket: gate.ok ? "research_validated" : "watch",
+      watchOnly: !gate.ok,
     };
   });
   const researchCoverage = Object.entries(alignment.researchFamilies ?? {}).map(([family, count]) => familyCoverageRow(snapshotId, family, count, "research"));
@@ -1793,12 +1795,16 @@ function familyAllocationRow(family) {
 
 function topRosterDefaultSortAudit({ snapshotId, alignmentArtifacts }) {
   const rows = alignmentArtifacts.rosterAlignment;
+  const researchRankedRows = rows.filter((row) => row.defaultBucket === "research_validated" && row.watchOnly !== true);
+  const telemetryWatchRows = rows.filter((row) => row.watchOnly === true || row.defaultBucket !== "research_validated");
   const supportedNonNegative = rows.filter((row) => row.researchSupported && row.dryRunTotalPnl >= 0 && row.researchVerdict !== "missing");
-  const first = rows[0] ?? null;
+  const first = researchRankedRows[0] ?? null;
   const unsafeFirst = Boolean(first && (!first.researchSupported || first.dryRunTotalPnl < 0) && supportedNonNegative.length > 0);
   return {
     snapshotId,
     checkedRows: rows.length,
+    researchRankedRosterCount: researchRankedRows.length,
+    telemetryWatchlistCount: telemetryWatchRows.length,
     supportedNonNegativeCount: supportedNonNegative.length,
     defaultRankOneAlgoId: first?.algoId ?? null,
     defaultRankOneFamily: first?.family ?? null,

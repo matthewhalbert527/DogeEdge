@@ -189,7 +189,12 @@ Sweep breadth is also governed by the available evidence. If the event count is 
 
 Post-close feature rows are fail-closed by default. If `featureTimestamp >= marketCloseTimestamp`, `readFactoryDecisionFrames` excludes the frame unless the caller explicitly enables a debug-only post-close mode. The loader and data-quality summaries publish `excludedFrames` and `postCloseFramesExcluded`, and review bundles repeat those counts in the leakage audit artifacts.
 
-The app's Top Traders roster is intentionally research-first. Dry-run executable stats remain visible and are still used as operational telemetry, but large arena batch churn is held when the latest research sweep has no candidate passing official settlement, holdout, walk-forward, CPCV, conservative/stress cost, and multiple-testing gates. In that state DogeEdge runs a capped telemetry-only pool so evidence continues to accumulate without presenting a dry-run winner as research-validated. Executable families must be listed in the family registry before they can become Champion or Prospect rows; unsupported families remain Watch-only and are exported through the research/live alignment artifacts until a research adapter exists.
+The app now keeps Top Traders in two explicit lanes:
+
+- `Research Validated Roster`: only rows whose executable family is research-supported and whose latest research evidence passes `researchPromotionGate`. This is the only lane that can supply Champion, Prospect, or active ranked roster rows.
+- `Telemetry Watchlist`: unsupported families, missing-evidence rows, rejected rows, and insufficient-data rows. These rows remain visible for hypothesis generation and dry-run evidence collection, but they cannot become the default ranked winner surface.
+
+Dry-run executable stats remain visible as operational telemetry, but large arena batch churn is held when the latest research sweep has no candidate passing official settlement, holdout, walk-forward, CPCV, conservative/stress cost, and multiple-testing gates. In that state DogeEdge shows "No research-validated algos yet" instead of backfilling the ranked roster with telemetry winners. Executable families must be listed in the family registry before they can become Champion or Prospect rows; unsupported families remain Watch-only and are exported through the research/live alignment artifacts until a research adapter exists.
 
 `merge:safety` is a local advisory guard for GPT-CLI patch passes. It prints `ALLOW` only for documentation/export/audit/report/test-artifact diffs. It prints `REQUIRE_HUMAN_APPROVAL` for app code, dependencies, factory kernel files, local worker/backtest entry points, Tauri/API files, and live/Kalshi/order-sensitive paths. It does not merge, push, or change runtime behavior.
 

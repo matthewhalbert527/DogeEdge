@@ -176,6 +176,14 @@ function validateSchemas({ roles, repoSnapshot, bundleManifest, fullRun, registr
   if (bundleMode && !roles.promotionGateResults) errors.push("missing_promotion_gate_results_tsv");
   if (bundleMode && !roles.postCloseFrameAudit) errors.push("missing_post_close_frame_audit_tsv");
   if (researchLiveAlignment?.unsupportedLiveAlgoCount > 0) warnings.push("unsupported_live_families_present");
+  if (
+    researchLiveAlignment
+    && Number(researchLiveAlignment.researchAlgoCount ?? 0) > 0
+    && Number(researchLiveAlignment.liveAlgoCount ?? 0) > 0
+    && Number(researchLiveAlignment.overlapByFamilyCount ?? 0) === 0
+  ) {
+    errors.push("research_live_family_overlap_zero");
+  }
   if (topRosterDefaultSortAudit?.unsafeRankOne === true) errors.push("unsafe_default_top_roster_rank_one");
   if (strict) {
     const temporal = temporalViolations(frameRows);
