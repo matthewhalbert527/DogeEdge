@@ -32,6 +32,8 @@ describe("continuous evaluation snapshot exporter", () => {
       displayId: "Z-0001",
       promotionVerdict: "paper_only",
       settlementSource: "estimated",
+      researchCandidateId: expect.stringMatching(/^rcid-[a-f0-9]{24}$/),
+      candidateConfigHash: expect.stringMatching(/^[a-f0-9]{64}$/),
     });
     expect(snapshot.timestampSemantics.settlementSource).toBe("estimated");
     expect(snapshot.leakageAudit).toMatchObject({
@@ -42,6 +44,20 @@ describe("continuous evaluation snapshot exporter", () => {
       familyRegistryVersion: "dogeedge.family-registry.v1",
       researchAlgoCount: expect.any(Number),
       liveAlgoCount: expect.any(Number),
+    });
+    expect(snapshot.researchLiveIdentityAlignment).toMatchObject({
+      schemaVersion: "dogeedge.research-live-identity-alignment.v1",
+      researchCandidateCount: 1,
+      liveRowCount: 1,
+      exactLinkedLiveRows: 1,
+    });
+    expect(snapshot.schedulerBudgetReport).toMatchObject({
+      schemaVersion: "dogeedge.scheduler-budget.v1",
+      unsupportedNormalBudgetRows: 0,
+    });
+    expect(snapshot.provenanceCompletenessReport).toMatchObject({
+      schemaVersion: "dogeedge.provenance-completeness.v1",
+      promotableEvidenceAllowedForMissingRows: false,
     });
     expect(snapshot.rowExport).toMatchObject({
       mode: "capped",
@@ -71,11 +87,24 @@ describe("continuous evaluation snapshot exporter", () => {
       "trades.csv",
       "paper_decision_ledger.csv",
       "raw_market_ticks/manifest.json",
+      "research_live_identity_alignment.json",
+      "scheduler_budget_report.json",
+      "provenance_completeness_report.json",
+      "candidate_lineage_audit.tsv.gz",
+      "unlinked_live_rows.tsv.gz",
+      "evidence_allocation_by_family.tsv.gz",
+      "evidence_allocation_by_candidate.tsv.gz",
+      "missing_provenance_rows.tsv.gz",
     ]));
     expect(snapshot.filesManifest.every((file: { sha256: string; bytes: number }) => file.sha256 && file.bytes > 0)).toBe(true);
     const ledger = readFileSync(path.join(result.snapshotDir, "paper_decision_ledger.csv"), "utf8");
     expect(ledger).toContain("top_traders_reject_summary");
     expect(ledger).toContain("edge_reject");
+    expect(ledger).toContain("researchCandidateId");
+    const identityAlignment = JSON.parse(readFileSync(path.join(result.snapshotDir, "research_live_identity_alignment.json"), "utf8"));
+    expect(identityAlignment).toMatchObject({ exactLinkedLiveRows: 1, failClosed: true });
+    const schedulerBudget = JSON.parse(readFileSync(path.join(result.snapshotDir, "scheduler_budget_report.json"), "utf8"));
+    expect(schedulerBudget).toMatchObject({ unsupportedNormalBudgetRows: 0 });
     const rawTickManifest = JSON.parse(readFileSync(path.join(result.snapshotDir, "raw_market_ticks", "manifest.json"), "utf8"));
     expect(rawTickManifest).toMatchObject({
       schemaVersion: "dogeedge.raw-market-ticks.manifest.v1",
@@ -139,11 +168,19 @@ describe("continuous evaluation snapshot exporter", () => {
       "snapshots/snapshot-history-48h.json",
       "snapshots/leakage_audit.json",
       "snapshots/research_live_alignment.json",
+      "snapshots/research_live_identity_alignment.json",
+      "snapshots/scheduler_budget_report.json",
+      "snapshots/provenance_completeness_report.json",
       "snapshots/roster_alignment.tsv.gz",
       "snapshots/promotion_gate_results.tsv.gz",
       "snapshots/post_close_frame_audit.tsv.gz",
       "snapshots/family_allocation_report.json",
       "snapshots/top_roster_default_sort_audit.json",
+      "snapshots/candidate_lineage_audit.tsv.gz",
+      "snapshots/unlinked_live_rows.tsv.gz",
+      "snapshots/evidence_allocation_by_family.tsv.gz",
+      "snapshots/evidence_allocation_by_candidate.tsv.gz",
+      "snapshots/missing_provenance_rows.tsv.gz",
       "snapshots/decision_frames.jsonl",
       "snapshots/trades.csv",
       "snapshots/paper_decision_ledger.csv",

@@ -19,6 +19,7 @@ import { paperEvidenceForAlgo, readPaperEvidence } from "../../scripts/factory/p
 import { markdownReport, metricsCsv } from "../../scripts/factory/reporting.mjs";
 import { auditReviewExports } from "../../scripts/factory/audit-exports.mjs";
 import { researchLiveAlignment } from "../../scripts/factory/family-registry.mjs";
+import { researchCandidateIdentity } from "../../scripts/factory/candidate-identity.mjs";
 import { sampleSufficiency } from "../../scripts/factory/sample-gates.mjs";
 import { applyFamilySearchBudget, searchBudgetDecision } from "../../scripts/factory/search-budget.mjs";
 import {
@@ -360,6 +361,31 @@ describe("factory research safeguards", () => {
     expect(alignment.supportedLiveAlgoCount).toBe(1);
     expect(alignment.unsupportedLiveAlgoCount).toBe(1);
     expect(alignment.supportedLiveFamilies).toEqual([{ family: "sweep-scalp", count: 1 }]);
+  });
+
+  it("derives stable exact candidate identity from canonical strategy material", () => {
+    const metric = {
+      algoId: "sweep-scalp-s200-f60-e0-best-strict",
+      family: "sweep-scalp",
+      params: { maxSpread: 0.02, feeBuffer: 0.006, sideMode: "best" },
+      labelSource: "pre_close_frame_proxy",
+      settlementSource: "estimated",
+    };
+    const context = {
+      seed: "dogeedge-test",
+      sourceRunId: "run-a",
+      configHash: "config-a",
+      costModelHash: "cost-a",
+      riskModelHash: "risk-a",
+    };
+    const left = researchCandidateIdentity(metric, context);
+    const right = researchCandidateIdentity({ ...metric, params: { sideMode: "best", feeBuffer: 0.006, maxSpread: 0.02 } }, context);
+    const changed = researchCandidateIdentity({ ...metric, params: { ...metric.params, feeBuffer: 0.01 } }, context);
+
+    expect(left.researchCandidateId).toMatch(/^rcid-[a-f0-9]{24}$/);
+    expect(left.candidateConfigHash).toHaveLength(64);
+    expect(left).toMatchObject(right);
+    expect(changed.researchCandidateId).not.toBe(left.researchCandidateId);
   });
 
   it("ranks research evidence ahead of dry-run-only appearance", () => {

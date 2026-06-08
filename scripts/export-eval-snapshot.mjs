@@ -9,6 +9,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { hashJson, isRecord, stableStringify } from "./factory/utils.mjs";
 import { loadSnapshotHistory, writeSnapshotHistory } from "./factory/snapshot-history.mjs";
 import { familyRegistryPublic, familyRegistryEntry, researchLiveAlignment } from "./factory/family-registry.mjs";
+import { researchCandidateIdentity, researchCandidateIdentityContext } from "./factory/candidate-identity.mjs";
 
 const execFileAsync = promisify(execFile);
 const schemaVersion = "dogeedge.eval.snapshot.v1";
@@ -23,6 +24,8 @@ const algoMetricsColumns = [
   "displayId",
   "algoName",
   "family",
+  "researchCandidateId",
+  "candidateConfigHash",
   "batchId",
   "lineageGeneration",
   "lineageParentIdsJson",
@@ -124,6 +127,8 @@ const decisionAggregateColumns = [
   "algoId",
   "displayId",
   "family",
+  "researchCandidateId",
+  "candidateConfigHash",
   "promotionStage",
   "promotionVerdict",
   "marketCount",
@@ -163,6 +168,8 @@ const tradeAggregateColumns = [
   "algoId",
   "displayId",
   "family",
+  "researchCandidateId",
+  "candidateConfigHash",
   "promotionStage",
   "promotionVerdict",
   "openedCount",
@@ -203,6 +210,8 @@ const decisionRowsColumns = [
   "algoId",
   "displayId",
   "family",
+  "researchCandidateId",
+  "candidateConfigHash",
   "featureTimestamp",
   "decisionTimestamp",
   "labelTimestamp",
@@ -260,6 +269,8 @@ const tradeRowsColumns = [
   "algoId",
   "displayId",
   "family",
+  "researchCandidateId",
+  "candidateConfigHash",
   "promotionStage",
   "promotionVerdict",
   "openedAt",
@@ -318,6 +329,9 @@ const rosterAlignmentColumns = [
   "algoId",
   "displayId",
   "family",
+  "researchCandidateId",
+  "candidateConfigHash",
+  "linkageStatus",
   "researchSupported",
   "supportReason",
   "sourceResearchAlgoId",
@@ -344,6 +358,8 @@ const promotionGateColumns = [
   "snapshotId",
   "algoId",
   "family",
+  "researchCandidateId",
+  "candidateConfigHash",
   "promotionVerdict",
   "researchSupported",
   "gatePass",
@@ -379,6 +395,8 @@ const paperDecisionLedgerColumns = [
   "algoId",
   "displayId",
   "family",
+  "researchCandidateId",
+  "candidateConfigHash",
   "promotionStage",
   "promotionVerdict",
   "decisionTimestamp",
@@ -419,6 +437,77 @@ const paperDecisionLedgerColumns = [
   "gitCommit",
   "dataHash",
   "configHash",
+];
+
+const candidateLineageAuditColumns = [
+  "snapshotId",
+  "researchCandidateId",
+  "candidateConfigHash",
+  "sourceResearchAlgoId",
+  "family",
+  "promotionVerdict",
+  "gatePass",
+  "linkedLiveRows",
+  "linkedDecisionRows",
+  "linkedTradeRows",
+  "officialSettlementCoverage",
+  "conservativeTotalPnl",
+  "stressTotalPnl",
+  "holdoutPass",
+  "adjustedConfidence",
+  "falseDiscoveryRisk",
+];
+
+const unlinkedLiveRowsColumns = [
+  "snapshotId",
+  "algoId",
+  "displayId",
+  "family",
+  "researchSupported",
+  "linkageStatus",
+  "reason",
+  "dryRunTotalPnl",
+  "attempts",
+  "acceptedBuys",
+  "closedExits",
+];
+
+const evidenceAllocationByFamilyColumns = [
+  "snapshotId",
+  "family",
+  "researchSupported",
+  "liveRows",
+  "exactLinkedRows",
+  "familyOnlyRows",
+  "unsupportedRows",
+  "normalBudgetRows",
+  "explorationBudgetRows",
+  "unsupportedBudgetRows",
+  "recommendedAction",
+];
+
+const evidenceAllocationByCandidateColumns = [
+  "snapshotId",
+  "algoId",
+  "displayId",
+  "family",
+  "researchCandidateId",
+  "candidateConfigHash",
+  "linkageStatus",
+  "budgetBucket",
+  "normalBudgetEligible",
+  "reason",
+  "dryRunTotalPnl",
+];
+
+const missingProvenanceRowsColumns = [
+  "snapshotId",
+  "source",
+  "rowId",
+  "algoId",
+  "family",
+  "missingFieldsJson",
+  "promotableEvidenceAllowed",
 ];
 
 export async function exportEvaluationSnapshot(options = {}) {
@@ -472,6 +561,14 @@ export async function exportEvaluationSnapshot(options = {}) {
   const runDir = stringOrNull(primaryRun?.runDir);
   const registry = primaryRun?.registry ?? await readJsonMaybe(runDir ? path.join(runDir, "experiment-registry.json") : null) ?? {};
   const metrics = await selectPrimaryRunMetrics(primaryRun, maxMetrics);
+  const snapshotCostModels = costModelsForSnapshot(registry, primaryRun);
+  const identityContext = researchCandidateIdentityContext({
+    primaryRun,
+    registry,
+    costModels: snapshotCostModels,
+    riskModel: registry.riskModel ?? primaryRun?.riskModel ?? {},
+  });
+  const identityByAlgoId = researchCandidateIdentityMap(metrics, identityContext);
   const metricByAlgoId = new Map(metrics.map((metric) => [metric.algoId, metric]));
   const topExecutable = topTradersFile?.topTradersExecutable ?? localLatest?.topTradersExecutable ?? null;
   const topStats = isRecord(topExecutable?.stats) ? topExecutable.stats : {};
@@ -487,14 +584,15 @@ export async function exportEvaluationSnapshot(options = {}) {
     sourceRunId: primaryRun?.runId ?? null,
     sourceSnapshotHash,
     topStats,
+    identityByAlgoId,
   }));
-  const decisionAggregates = decisionAggregateRows({ snapshotId, windowStartAt, windowEndAt, topStats, metricByAlgoId });
-  const tradeAggregates = tradeAggregateRows({ snapshotId, windowStartAt, windowEndAt, metrics, topStats });
+  const decisionAggregates = decisionAggregateRows({ snapshotId, windowStartAt, windowEndAt, topStats, metricByAlgoId, identityByAlgoId });
+  const tradeAggregates = tradeAggregateRows({ snapshotId, windowStartAt, windowEndAt, metrics, topStats, identityByAlgoId });
   const foldDefinitions = foldDefinitionRows(registry, primaryRun);
   const foldMetrics = foldMetricRows({ snapshotId, metrics, registry, primaryRun });
   const alignment = researchLiveAlignment({ researchMetrics: metrics, liveStats: topStats });
   const leakageAudit = leakageAuditSummary({ snapshotId, dataQuality, metrics });
-  const alignmentArtifacts = alignmentRows({ snapshotId, metrics, topStats, primaryRun, alignment, leakageAudit });
+  const alignmentArtifacts = alignmentRows({ snapshotId, metrics, topStats, primaryRun, alignment, leakageAudit, identityByAlgoId });
   let decisionRows = [];
   let tradeRows = [];
   const warnings = warningRows({
@@ -531,14 +629,34 @@ export async function exportEvaluationSnapshot(options = {}) {
       snapshotId,
       maxRowLines,
       metricByAlgoId,
+      identityByAlgoId,
       sourceRunId: primaryRun?.runId ?? null,
       sourceSnapshotHash,
     });
+    decisionRows = enrichRowsWithCandidateIdentity(decisionRows, identityByAlgoId);
+    tradeRows = enrichRowsWithCandidateIdentity(tradeRows, identityByAlgoId);
     filesToWrite.push(
       { logicalName: "decisionRows.tsv.gz", relativePath: "decisionRows.tsv.gz", content: tsv(decisionRowsColumns, decisionRows) },
       { logicalName: "tradeRows.tsv.gz", relativePath: "tradeRows.tsv.gz", content: tsv(tradeRowsColumns, tradeRows) },
     );
   }
+  const identityArtifacts = exactCandidateArtifacts({
+    snapshotId,
+    metrics,
+    topStats,
+    decisionRows,
+    tradeRows,
+    identityByAlgoId,
+    metricByAlgoId,
+    alignmentArtifacts,
+  });
+  filesToWrite.push(
+    { logicalName: "candidate_lineage_audit.tsv.gz", relativePath: "candidate_lineage_audit.tsv.gz", content: tsv(candidateLineageAuditColumns, identityArtifacts.candidateLineageAudit) },
+    { logicalName: "unlinked_live_rows.tsv.gz", relativePath: "unlinked_live_rows.tsv.gz", content: tsv(unlinkedLiveRowsColumns, identityArtifacts.unlinkedLiveRows) },
+    { logicalName: "evidence_allocation_by_family.tsv.gz", relativePath: "evidence_allocation_by_family.tsv.gz", content: tsv(evidenceAllocationByFamilyColumns, identityArtifacts.evidenceAllocationByFamily) },
+    { logicalName: "evidence_allocation_by_candidate.tsv.gz", relativePath: "evidence_allocation_by_candidate.tsv.gz", content: tsv(evidenceAllocationByCandidateColumns, identityArtifacts.evidenceAllocationByCandidate) },
+    { logicalName: "missing_provenance_rows.tsv.gz", relativePath: "missing_provenance_rows.tsv.gz", content: tsv(missingProvenanceRowsColumns, identityArtifacts.missingProvenanceRows) },
+  );
 
   const fileManifest = [];
   for (const file of filesToWrite) {
@@ -557,6 +675,7 @@ export async function exportEvaluationSnapshot(options = {}) {
     tradeRows,
     topStats,
     metricByAlgoId,
+    identityByAlgoId,
     primaryRun,
     registry,
     gitInfo,
@@ -573,6 +692,9 @@ export async function exportEvaluationSnapshot(options = {}) {
     leakageAudit,
     familyAllocationReport: familyAllocationReport({ snapshotId, alignment, metrics, topStats }),
     topRosterDefaultSortAudit: topRosterDefaultSortAudit({ snapshotId, alignmentArtifacts }),
+    researchLiveIdentityAlignment: identityArtifacts.researchLiveIdentityAlignment,
+    schedulerBudgetReport: identityArtifacts.schedulerBudgetReport,
+    provenanceCompletenessReport: identityArtifacts.provenanceCompletenessReport,
   });
   fileManifest.push(...auditExportFiles);
 
@@ -620,6 +742,9 @@ export async function exportEvaluationSnapshot(options = {}) {
     dataQuality,
     leakageAudit,
     researchLiveAlignment: alignment,
+    researchLiveIdentityAlignment: identityArtifacts.researchLiveIdentityAlignment,
+    schedulerBudgetReport: identityArtifacts.schedulerBudgetReport,
+    provenanceCompletenessReport: identityArtifacts.provenanceCompletenessReport,
     familyRegistry: familyRegistryPublic(),
     experimentRegistry: {
       gitCommit: registry.gitCommit ?? primaryRun?.gitCommit ?? null,
@@ -633,7 +758,7 @@ export async function exportEvaluationSnapshot(options = {}) {
       families: registry.families ?? {},
       seedPlan: registry.seedPlan ?? { rootSeed: registry.randomSeed ?? primaryRun?.randomSeed ?? defaultRootSeed, deterministic: true },
     },
-    costModels: costModelsForSnapshot(registry, primaryRun),
+    costModels: snapshotCostModels,
     simulatorAssumptions: {
       askSideEntries: true,
       bidSideExits: true,
@@ -770,13 +895,21 @@ export async function buildReviewBundle(options = {}) {
     "paper_decision_ledger.csv",
     "leakage_audit.json",
     "research_live_alignment.json",
+    "research_live_identity_alignment.json",
     "family_allocation_report.json",
+    "scheduler_budget_report.json",
+    "provenance_completeness_report.json",
     "top_roster_default_sort_audit.json",
     "roster_alignment.tsv.gz",
     "research_coverage_by_family.tsv.gz",
     "live_coverage_by_family.tsv.gz",
     "unsupported_live_families.tsv.gz",
     "promotion_gate_results.tsv.gz",
+    "candidate_lineage_audit.tsv.gz",
+    "unlinked_live_rows.tsv.gz",
+    "evidence_allocation_by_family.tsv.gz",
+    "evidence_allocation_by_candidate.tsv.gz",
+    "missing_provenance_rows.tsv.gz",
     "post_close_frame_audit.tsv.gz",
   ]) {
     const source = path.join(snapshotResult.snapshotDir, name);
@@ -1018,17 +1151,31 @@ function selectMetrics(primaryRun, maxMetrics) {
   return metrics.slice(0, maxMetrics);
 }
 
+function researchCandidateIdentityMap(metrics, context) {
+  const rows = new Map();
+  for (const metric of metrics) {
+    const identity = researchCandidateIdentity(metric, context);
+    if (identity.sourceResearchAlgoId) rows.set(identity.sourceResearchAlgoId, identity);
+    if (metric.algoId) rows.set(metric.algoId, identity);
+    if (metric.id) rows.set(metric.id, identity);
+  }
+  return rows;
+}
+
 function algoRollupRow(metric, context) {
   const topStat = topStatForMetric(context.topStats, metric);
   const paperEvidence = metric.paperEvidence ?? {};
   const drift = metric.drift ?? paperEvidence;
   const telemetry = metric.executionTelemetry?.conservative ?? metric.executionTelemetry?.base ?? {};
   const displayId = displayIdFromMetric(metric, topStat);
+  const identity = identityForAlgo(context.identityByAlgoId, metric.algoId);
   return {
     algoId: metric.algoId,
     displayId,
     algoName: metric.algoName ?? metric.name ?? metric.algoId,
     family: metric.family ?? topStat?.family ?? "unknown",
+    researchCandidateId: identity?.researchCandidateId ?? "",
+    candidateConfigHash: identity?.candidateConfigHash ?? "",
     batchId: batchIdFromAlgo(metric.algoId ?? topStat?.sourceAlgoId),
     lineageGeneration: metric.params?.generation ?? "",
     lineageParentIdsJson: jsonCell(metric.params?.parentIds ?? []),
@@ -1123,6 +1270,8 @@ function flattenAlgoMetrics(row) {
     displayId: row.displayId,
     algoName: row.algoName,
     family: row.family,
+    researchCandidateId: row.researchCandidateId,
+    candidateConfigHash: row.candidateConfigHash,
     batchId: row.batchId,
     lineageGeneration: row.lineageGeneration,
     lineageParentIdsJson: row.lineageParentIdsJson,
@@ -1188,9 +1337,10 @@ function flattenAlgoMetrics(row) {
   };
 }
 
-function decisionAggregateRows({ snapshotId, windowStartAt, windowEndAt, topStats, metricByAlgoId }) {
+function decisionAggregateRows({ snapshotId, windowStartAt, windowEndAt, topStats, metricByAlgoId, identityByAlgoId }) {
   return Object.values(topStats).map((stat) => {
     const metric = metricByAlgoId.get(stat.sourceAlgoId) ?? metricByAlgoId.get(stat.algoId) ?? {};
+    const identity = identityForAlgo(identityByAlgoId, stat.sourceAlgoId ?? stat.algoId);
     const attempts = numberOrZero(stat.attempts);
     return {
       snapshotId,
@@ -1199,6 +1349,8 @@ function decisionAggregateRows({ snapshotId, windowStartAt, windowEndAt, topStat
       algoId: stat.sourceAlgoId ?? stat.algoId ?? "",
       displayId: stat.displayId ?? displayIdFromMetric(metric, stat),
       family: stat.family ?? metric.family ?? "",
+      researchCandidateId: identity?.researchCandidateId ?? "",
+      candidateConfigHash: identity?.candidateConfigHash ?? "",
       promotionStage: metric.promotionStage ?? "dry_run_evidence",
       promotionVerdict: metric.promotionVerdict ?? "dry_run_evidence_only",
       marketCount: numberOrZero(metric.independentClosedMarkets),
@@ -1233,9 +1385,10 @@ function decisionAggregateRows({ snapshotId, windowStartAt, windowEndAt, topStat
   });
 }
 
-function tradeAggregateRows({ snapshotId, windowStartAt, windowEndAt, metrics, topStats }) {
+function tradeAggregateRows({ snapshotId, windowStartAt, windowEndAt, metrics, topStats, identityByAlgoId }) {
   return metrics.map((metric) => {
     const stat = topStatForMetric(topStats, metric);
+    const identity = identityForAlgo(identityByAlgoId, metric.algoId);
     return {
       snapshotId,
       windowStartAt,
@@ -1243,6 +1396,8 @@ function tradeAggregateRows({ snapshotId, windowStartAt, windowEndAt, metrics, t
       algoId: metric.algoId,
       displayId: displayIdFromMetric(metric, stat),
       family: metric.family ?? stat?.family ?? "",
+      researchCandidateId: identity?.researchCandidateId ?? "",
+      candidateConfigHash: identity?.candidateConfigHash ?? "",
       promotionStage: metric.promotionStage ?? "research_candidate",
       promotionVerdict: metric.promotionVerdict ?? "insufficient_data",
       openedCount: numberOrZero(metric.closed) + numberOrZero(metric.open),
@@ -1480,6 +1635,8 @@ function decisionRowFromFrame(frame, context) {
     algoId: frame.strategyId ?? frame.strategy_id ?? "",
     displayId: displayIdFromAlgo(frame.strategyId ?? frame.strategy_id ?? ""),
     family: frame.family ?? "",
+    researchCandidateId: frame.researchCandidateId ?? "",
+    candidateConfigHash: frame.candidateConfigHash ?? "",
     featureTimestamp: frame.featureTimestamp ?? frame.feature_timestamps?.estimate ?? observedAt,
     decisionTimestamp: frame.decisionTimestamp ?? observedAt,
     labelTimestamp: frame.labelTimestamp ?? frame.label_timestamp_utc ?? marketClose,
@@ -1531,17 +1688,18 @@ function decisionRowFromFrame(frame, context) {
   };
 }
 
-async function readTradeRows({ filePath, snapshotId, maxRowLines, metricByAlgoId, sourceRunId, sourceSnapshotHash }) {
+async function readTradeRows({ filePath, snapshotId, maxRowLines, metricByAlgoId, identityByAlgoId, sourceRunId, sourceSnapshotHash }) {
   const lines = await readTailLines(filePath, maxRowLines);
   return lines.map((line) => parseJsonLine(line))
     .filter(Boolean)
-    .map((trade) => tradeRowFromPaperTrade(trade, { snapshotId, metricByAlgoId, sourceRunId, sourceSnapshotHash }));
+    .map((trade) => tradeRowFromPaperTrade(trade, { snapshotId, metricByAlgoId, identityByAlgoId, sourceRunId, sourceSnapshotHash }));
 }
 
 function tradeRowFromPaperTrade(trade, context) {
   const rawAlgoId = trade.strategyId ?? trade.algoId ?? "";
   const algoId = rawAlgoId.startsWith("generated:") ? rawAlgoId.slice("generated:".length) : rawAlgoId;
   const metric = context.metricByAlgoId.get(algoId) ?? context.metricByAlgoId.get(rawAlgoId) ?? {};
+  const identity = identityForAlgo(context.identityByAlgoId, algoId);
   return {
     snapshotId: context.snapshotId,
     tradeId: trade.id ?? trade.tradeId ?? "",
@@ -1549,6 +1707,8 @@ function tradeRowFromPaperTrade(trade, context) {
     algoId,
     displayId: displayIdFromAlgo(algoId),
     family: trade.family ?? metric.family ?? "",
+    researchCandidateId: identity?.researchCandidateId ?? "",
+    candidateConfigHash: identity?.candidateConfigHash ?? "",
     promotionStage: metric.promotionStage ?? "paper_evidence",
     promotionVerdict: metric.promotionVerdict ?? "dry_run_evidence_only",
     openedAt: trade.openedAt ?? trade.timestamp ?? "",
@@ -1598,6 +1758,7 @@ async function writeExactReviewFiles({
   tradeRows,
   topStats,
   metricByAlgoId,
+  identityByAlgoId,
   primaryRun,
   registry,
   gitInfo,
@@ -1628,6 +1789,7 @@ async function writeExactReviewFiles({
     tradeRows,
     topStats,
     metricByAlgoId,
+    identityByAlgoId,
     sourceRunId,
     sourceSnapshotHash,
     gitCommit: gitInfo.commitHash ?? primaryRun?.gitCommit ?? registry?.gitCommit ?? "UNAVAILABLE",
@@ -1652,12 +1814,24 @@ async function writeExactReviewFiles({
   return files;
 }
 
-async function writeAuditReviewFiles({ snapshotDir, alignment, leakageAudit, familyAllocationReport, topRosterDefaultSortAudit }) {
+async function writeAuditReviewFiles({
+  snapshotDir,
+  alignment,
+  leakageAudit,
+  familyAllocationReport,
+  topRosterDefaultSortAudit,
+  researchLiveIdentityAlignment,
+  schedulerBudgetReport,
+  provenanceCompletenessReport,
+}) {
   const files = [];
   const writes = [
     ["leakage_audit.json", leakageAudit],
     ["research_live_alignment.json", alignment],
+    ["research_live_identity_alignment.json", researchLiveIdentityAlignment],
     ["family_allocation_report.json", familyAllocationReport],
+    ["scheduler_budget_report.json", schedulerBudgetReport],
+    ["provenance_completeness_report.json", provenanceCompletenessReport],
     ["top_roster_default_sort_audit.json", topRosterDefaultSortAudit],
   ];
   for (const [name, value] of writes) {
@@ -1668,7 +1842,7 @@ async function writeAuditReviewFiles({ snapshotDir, alignment, leakageAudit, fam
   return files;
 }
 
-function alignmentRows({ snapshotId, metrics, topStats, primaryRun, alignment, leakageAudit }) {
+function alignmentRows({ snapshotId, metrics, topStats, primaryRun, alignment, leakageAudit, identityByAlgoId }) {
   const metricById = new Map(metrics.map((metric) => [metric.algoId, metric]));
   const researchSnapshotId = primaryRun?.runId ?? null;
   const researchFinishedMs = parseTime(primaryRun?.finishedAt);
@@ -1681,6 +1855,10 @@ function alignmentRows({ snapshotId, metrics, topStats, primaryRun, alignment, l
     const familyEntry = familyRegistryEntry(family);
     const researchSupported = familyEntry.researchSupported === true;
     const researchVerdict = metric?.promotionVerdict ?? "missing";
+    const identity = metric ? identityForAlgo(identityByAlgoId, metric.algoId) : null;
+    const linkageStatus = metric
+      ? "exact_candidate_linked"
+      : researchSupported ? "family_only_unlinked" : "unsupported_unlinked";
     const dryRunTotalPnl = numberOrZero(stat.totalPnl);
     const gate = metricGate(metric, researchSupported);
     return {
@@ -1688,6 +1866,9 @@ function alignmentRows({ snapshotId, metrics, topStats, primaryRun, alignment, l
       algoId: stat.sourceAlgoId ?? stat.algoId ?? "",
       displayId: stat.displayId ?? displayIdFromAlgo(stat.sourceAlgoId ?? stat.algoId ?? ""),
       family,
+      researchCandidateId: identity?.researchCandidateId ?? "",
+      candidateConfigHash: identity?.candidateConfigHash ?? "",
+      linkageStatus,
       researchSupported,
       supportReason: familyEntry.reason ?? "research_adapter_available",
       sourceResearchAlgoId: metric ? metric.algoId : "",
@@ -1707,10 +1888,13 @@ function alignmentRows({ snapshotId, metrics, topStats, primaryRun, alignment, l
   const promotionGateResults = metrics.map((metric) => {
     const familyEntry = familyRegistryEntry(metric.family);
     const gate = metricGate(metric, familyEntry.researchSupported === true);
+    const identity = identityForAlgo(identityByAlgoId, metric.algoId);
     return {
       snapshotId,
       algoId: metric.algoId ?? "",
       family: metric.family ?? "unknown",
+      researchCandidateId: identity?.researchCandidateId ?? "",
+      candidateConfigHash: identity?.candidateConfigHash ?? "",
       promotionVerdict: metric.promotionVerdict ?? "unknown",
       researchSupported: familyEntry.researchSupported === true,
       gatePass: gate.ok,
@@ -1743,6 +1927,227 @@ function familyCoverageRow(snapshotId, family, count, source) {
     supportReason: entry.reason ?? "research_adapter_available",
     source,
   };
+}
+
+function exactCandidateArtifacts({ snapshotId, metrics, topStats, decisionRows, tradeRows, identityByAlgoId, metricByAlgoId, alignmentArtifacts }) {
+  const liveRows = Object.values(topStats);
+  const liveBySource = new Map(liveRows.map((row) => [String(row.sourceAlgoId ?? row.algoId ?? ""), row]));
+  const rosterRows = alignmentArtifacts.rosterAlignment;
+  const candidateLineageAudit = metrics.map((metric) => {
+    const identity = identityForAlgo(identityByAlgoId, metric.algoId);
+    const gate = metricGate(metric, familyRegistryEntry(metric.family).researchSupported === true);
+    const linkedLiveRows = liveBySource.has(metric.algoId) ? 1 : 0;
+    return {
+      snapshotId,
+      researchCandidateId: identity?.researchCandidateId ?? "",
+      candidateConfigHash: identity?.candidateConfigHash ?? "",
+      sourceResearchAlgoId: metric.algoId ?? "",
+      family: metric.family ?? "unknown",
+      promotionVerdict: metric.promotionVerdict ?? "unknown",
+      gatePass: gate.ok,
+      linkedLiveRows,
+      linkedDecisionRows: decisionRows.filter((row) => row.researchCandidateId === identity?.researchCandidateId).length,
+      linkedTradeRows: tradeRows.filter((row) => row.researchCandidateId === identity?.researchCandidateId).length,
+      officialSettlementCoverage: numberOrZero(metric.officialSettlementCoverage),
+      conservativeTotalPnl: numberOrNull(metric.conservativeTotalPnl) ?? 0,
+      stressTotalPnl: numberOrNull(metric.stressTotalPnl) ?? 0,
+      holdoutPass: metric.holdoutPass === true,
+      adjustedConfidence: numberOrNull(metric.adjustedConfidence) ?? 0,
+      falseDiscoveryRisk: numberOrNull(metric.falseDiscoveryRisk) ?? 1,
+    };
+  });
+  const evidenceAllocationByCandidate = rosterRows.map((row) => {
+    const exactLinked = row.linkageStatus === "exact_candidate_linked";
+    const metric = metricByAlgoId.get(row.sourceResearchAlgoId);
+    const gate = metricGate(metric, row.researchSupported);
+    const normalBudgetEligible = exactLinked && gate.ok;
+    const budgetBucket = normalBudgetEligible
+      ? "exploitation"
+      : exactLinked ? "linked_watch"
+        : row.researchSupported ? "controlled_exploration"
+          : "unsupported_zero";
+    return {
+      snapshotId,
+      algoId: row.algoId,
+      displayId: row.displayId,
+      family: row.family,
+      researchCandidateId: row.researchCandidateId,
+      candidateConfigHash: row.candidateConfigHash,
+      linkageStatus: row.linkageStatus,
+      budgetBucket,
+      normalBudgetEligible,
+      reason: allocationReason({ row, exactLinked, gate }),
+      dryRunTotalPnl: row.dryRunTotalPnl,
+    };
+  });
+  const unlinkedLiveRows = evidenceAllocationByCandidate
+    .filter((row) => row.linkageStatus !== "exact_candidate_linked")
+    .map((row) => {
+      const stat = liveBySource.get(row.algoId) ?? {};
+      return {
+        snapshotId,
+        algoId: row.algoId,
+        displayId: row.displayId,
+        family: row.family,
+        researchSupported: row.budgetBucket === "controlled_exploration",
+        linkageStatus: row.linkageStatus,
+        reason: row.reason,
+        dryRunTotalPnl: row.dryRunTotalPnl,
+        attempts: numberOrZero(stat.attempts),
+        acceptedBuys: numberOrZero(stat.acceptedBuys),
+        closedExits: numberOrZero(stat.sells),
+      };
+    });
+  const evidenceAllocationByFamily = evidenceAllocationFamilies({ snapshotId, evidenceAllocationByCandidate });
+  const missingProvenanceRows = missingProvenance({ snapshotId, rosterRows, decisionRows, tradeRows });
+  const exactLinkedLiveRows = evidenceAllocationByCandidate.filter((row) => row.linkageStatus === "exact_candidate_linked").length;
+  const exactLinkedNormalBudgetRows = evidenceAllocationByCandidate.filter((row) => row.normalBudgetEligible).length;
+  const familyOnlyLiveRows = evidenceAllocationByCandidate.filter((row) => row.linkageStatus === "family_only_unlinked").length;
+  const unsupportedLiveRows = evidenceAllocationByCandidate.filter((row) => row.linkageStatus === "unsupported_unlinked").length;
+  const researchLiveIdentityAlignment = {
+    schemaVersion: "dogeedge.research-live-identity-alignment.v1",
+    snapshotId,
+    researchCandidateCount: candidateLineageAudit.length,
+    liveRowCount: evidenceAllocationByCandidate.length,
+    exactLinkedLiveRows,
+    exactLinkCoverage: evidenceAllocationByCandidate.length ? roundDisplayRatio(exactLinkedLiveRows / evidenceAllocationByCandidate.length) : 0,
+    exactLinkedNormalBudgetRows,
+    familyOnlyLiveRows,
+    unsupportedLiveRows,
+    unlinkedLiveRows: familyOnlyLiveRows + unsupportedLiveRows,
+    status: exactLinkedLiveRows > 0 ? "exact_linkage_present" : "exact_linkage_absent",
+    failClosed: exactLinkedNormalBudgetRows === 0,
+  };
+  const provenanceCompletenessReport = {
+    schemaVersion: "dogeedge.provenance-completeness.v1",
+    snapshotId,
+    checkedRows: rosterRows.length + decisionRows.length + tradeRows.length,
+    missingRows: missingProvenanceRows.length,
+    missingFamilyRows: missingProvenanceRows.filter((row) => JSON.parse(row.missingFieldsJson).includes("family")).length,
+    missingResearchCandidateIdRows: missingProvenanceRows.filter((row) => JSON.parse(row.missingFieldsJson).includes("researchCandidateId")).length,
+    promotableEvidenceAllowedForMissingRows: false,
+  };
+  const schedulerBudgetReport = {
+    schemaVersion: "dogeedge.scheduler-budget.v1",
+    snapshotId,
+    state: exactLinkedNormalBudgetRows > 0 ? "evidence_allocation_ready" : "evidence_starved",
+    exploitationRows: exactLinkedNormalBudgetRows,
+    controlledExplorationRows: familyOnlyLiveRows,
+    unsupportedRows: unsupportedLiveRows,
+    unsupportedNormalBudgetRows: 0,
+    allocationTarget: {
+      exploitation: exactLinkedNormalBudgetRows > 0 ? "80-95%" : "0%",
+      controlledExploration: familyOnlyLiveRows > 0 ? "5-20%" : "0%",
+      unsupported: "0%",
+    },
+    reasonCodes: schedulerReasonCodes({ exactLinkedLiveRows, exactLinkedNormalBudgetRows, familyOnlyLiveRows, unsupportedLiveRows }),
+  };
+  return {
+    candidateLineageAudit,
+    unlinkedLiveRows,
+    evidenceAllocationByFamily,
+    evidenceAllocationByCandidate,
+    missingProvenanceRows,
+    researchLiveIdentityAlignment,
+    schedulerBudgetReport,
+    provenanceCompletenessReport,
+  };
+}
+
+function evidenceAllocationFamilies({ snapshotId, evidenceAllocationByCandidate }) {
+  const byFamily = new Map();
+  for (const row of evidenceAllocationByCandidate) {
+    const current = byFamily.get(row.family) ?? {
+      snapshotId,
+      family: row.family,
+      researchSupported: familyRegistryEntry(row.family).researchSupported === true,
+      liveRows: 0,
+      exactLinkedRows: 0,
+      familyOnlyRows: 0,
+      unsupportedRows: 0,
+      normalBudgetRows: 0,
+      explorationBudgetRows: 0,
+      unsupportedBudgetRows: 0,
+      recommendedAction: "",
+    };
+    current.liveRows += 1;
+    if (row.linkageStatus === "exact_candidate_linked") current.exactLinkedRows += 1;
+    if (row.linkageStatus === "family_only_unlinked") current.familyOnlyRows += 1;
+    if (row.linkageStatus === "unsupported_unlinked") current.unsupportedRows += 1;
+    if (row.normalBudgetEligible) current.normalBudgetRows += 1;
+    if (row.budgetBucket === "controlled_exploration") current.explorationBudgetRows += 1;
+    if (row.budgetBucket === "unsupported_zero") current.unsupportedBudgetRows += 0;
+    byFamily.set(row.family, current);
+  }
+  return [...byFamily.values()].map((row) => ({
+    ...row,
+    recommendedAction: row.normalBudgetRows > 0
+      ? "allocate_exploitation_budget"
+      : row.researchSupported ? "link_exact_candidate_before_primary_budget" : "freeze_unsupported_budget",
+  })).sort((left, right) => right.liveRows - left.liveRows || left.family.localeCompare(right.family));
+}
+
+function missingProvenance({ snapshotId, rosterRows, decisionRows, tradeRows }) {
+  const rows = [];
+  for (const row of rosterRows) {
+    const missing = missingFields(row, ["family", "algoId"]);
+    if (!row.researchCandidateId) missing.push("researchCandidateId");
+    if (missing.length) rows.push(missingProvenanceRow(snapshotId, "roster_alignment", row.algoId, row.algoId, row.family, missing));
+  }
+  for (const row of decisionRows) {
+    const missing = missingFields(row, ["family", "algoId"]);
+    if (!row.researchCandidateId) missing.push("researchCandidateId");
+    if (missing.length) rows.push(missingProvenanceRow(snapshotId, "decision_rows", row.rowId, row.algoId, row.family, missing));
+  }
+  for (const row of tradeRows) {
+    const missing = missingFields(row, ["family", "algoId", "sourceRunId"]);
+    if (!row.researchCandidateId) missing.push("researchCandidateId");
+    if (missing.length) rows.push(missingProvenanceRow(snapshotId, "trade_rows", row.tradeId, row.algoId, row.family, missing));
+  }
+  return rows;
+}
+
+function missingProvenanceRow(snapshotId, source, rowId, algoId, family, missing) {
+  return {
+    snapshotId,
+    source,
+    rowId: rowId ?? "",
+    algoId: algoId ?? "",
+    family: family ?? "",
+    missingFieldsJson: jsonCell(uniqueStrings(missing)),
+    promotableEvidenceAllowed: false,
+  };
+}
+
+function missingFields(row, fields) {
+  return fields.filter((field) => row?.[field] === null || row?.[field] === undefined || row?.[field] === "");
+}
+
+function allocationReason({ row, exactLinked, gate }) {
+  if (!row.researchSupported) return "unsupported_family_zero_budget";
+  if (!exactLinked) return "exact_candidate_link_required";
+  if (!gate.ok) return gate.reasonCodes.join(",") || "research_gate_failed";
+  return "research_gate_passed";
+}
+
+function schedulerReasonCodes({ exactLinkedLiveRows, exactLinkedNormalBudgetRows, familyOnlyLiveRows, unsupportedLiveRows }) {
+  const codes = [];
+  if (exactLinkedLiveRows === 0) codes.push("exact_candidate_linkage_absent");
+  if (exactLinkedNormalBudgetRows === 0) codes.push("no_gate_passing_exact_candidates");
+  if (familyOnlyLiveRows > 0) codes.push("family_only_live_rows_need_lineage");
+  if (unsupportedLiveRows > 0) codes.push("unsupported_live_rows_zero_budget");
+  return codes;
+}
+
+function enrichRowsWithCandidateIdentity(rows, identityByAlgoId) {
+  return rows.map((row) => {
+    const identity = identityForAlgo(identityByAlgoId, row.algoId);
+    return {
+      ...row,
+      researchCandidateId: identity?.researchCandidateId ?? row.researchCandidateId ?? "",
+      candidateConfigHash: identity?.candidateConfigHash ?? row.candidateConfigHash ?? "",
+    };
+  });
 }
 
 function leakageAuditSummary({ snapshotId, dataQuality, metrics }) {
@@ -1894,6 +2299,8 @@ function decisionFrameJsonLine(row) {
     market_close_timestamp: row.marketCloseTimestamp,
     market_ticker: row.marketTicker,
     target_price: row.targetPrice,
+    research_candidate_id: row.researchCandidateId ?? "",
+    candidate_config_hash: row.candidateConfigHash ?? "",
     estimate: row.estimate,
     spot_price: row.spotPrice,
     distance_from_target: row.distanceFromTarget,
@@ -1947,6 +2354,8 @@ function ledgerRowsFromDecisionRows(context) {
     algoId: row.algoId,
     displayId: row.displayId,
     family: row.family,
+    researchCandidateId: row.researchCandidateId ?? "",
+    candidateConfigHash: row.candidateConfigHash ?? "",
     promotionStage: metricForLedger(context, row.algoId).promotionStage ?? "paper_decision_ledger",
     promotionVerdict: metricForLedger(context, row.algoId).promotionVerdict ?? "dry_run_evidence_only",
     decisionTimestamp: row.decisionTimestamp,
@@ -1999,6 +2408,8 @@ function ledgerRowsFromTradeRows(context) {
     algoId: row.algoId,
     displayId: row.displayId,
     family: row.family,
+    researchCandidateId: row.researchCandidateId ?? "",
+    candidateConfigHash: row.candidateConfigHash ?? "",
     promotionStage: row.promotionStage,
     promotionVerdict: row.promotionVerdict,
     decisionTimestamp: row.decisionTimestamp,
@@ -2079,6 +2490,7 @@ function ledgerRowsFromTopStats(context) {
 
 function topStatLedgerRow(context, stat, metric, fields) {
   const timestamp = stat.lastAttemptAt ?? stat.lastSignalAt ?? stat.startedAt ?? "";
+  const identity = identityForAlgo(context.identityByAlgoId, stat.sourceAlgoId ?? stat.algoId);
   return {
     snapshotId: context.snapshotId,
     eventId: fields.eventId,
@@ -2087,6 +2499,8 @@ function topStatLedgerRow(context, stat, metric, fields) {
     algoId: stat.sourceAlgoId ?? stat.algoId ?? "",
     displayId: stat.displayId ?? displayIdFromAlgo(stat.sourceAlgoId ?? stat.algoId),
     family: stat.family ?? metric.family ?? "",
+    researchCandidateId: identity?.researchCandidateId ?? "",
+    candidateConfigHash: identity?.candidateConfigHash ?? "",
     promotionStage: metric.promotionStage ?? "dry_run_evidence",
     promotionVerdict: metric.promotionVerdict ?? "dry_run_evidence_only",
     decisionTimestamp: timestamp,
@@ -2843,6 +3257,13 @@ function numberOrNull(value) {
 
 function stringOrNull(value) {
   return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function identityForAlgo(identityByAlgoId, algoId) {
+  const text = String(algoId ?? "");
+  return identityByAlgoId?.get(text)
+    ?? identityByAlgoId?.get(text.replace(/^generated:/, ""))
+    ?? null;
 }
 
 function uniqueStrings(values) {
