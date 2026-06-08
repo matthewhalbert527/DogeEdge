@@ -148,7 +148,9 @@ export async function runCodexAutoImproveCycle(options = {}) {
       report.status = "no_staged_changes";
       return report;
     }
-    await command(["git", "commit", "-m", `Auto improve DogeEdge loop (${cycleId})`], { cwd: repoRoot, report });
+    const commitMessagePath = path.join(cycleDir, "commit-message.txt");
+    await writeFile(commitMessagePath, `Auto improve DogeEdge loop (${cycleId})\n`, "utf8");
+    await command(["git", "commit", "-F", commitMessagePath], { cwd: repoRoot, report });
     report.commit = (await command(["git", "rev-parse", "HEAD"], { cwd: repoRoot, report, capture: true })).stdout.trim();
     await command(["git", "push", "origin", report.branch], { cwd: repoRoot, report });
     await command(["git", "checkout", "main"], { cwd: repoRoot, report });
@@ -176,6 +178,8 @@ export async function runCodexAutoImproveCycle(options = {}) {
 async function preserveFailedChanges(report, cycleDir) {
   const diff = await command(["git", "diff"], { cwd: repoRoot, report, capture: true, allowFailure: true, maxBuffer: 20 * 1024 * 1024 });
   if (diff.stdout.trim()) await writeFile(path.join(cycleDir, "failed.diff"), diff.stdout, "utf8");
+  const stagedDiff = await command(["git", "diff", "--cached"], { cwd: repoRoot, report, capture: true, allowFailure: true, maxBuffer: 20 * 1024 * 1024 });
+  if (stagedDiff.stdout.trim()) await writeFile(path.join(cycleDir, "failed-staged.diff"), stagedDiff.stdout, "utf8");
   await command(["git", "stash", "push", "-u", "-m", `failed ${report.cycleId}`], { cwd: repoRoot, report, allowFailure: true });
 }
 

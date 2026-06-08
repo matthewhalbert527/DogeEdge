@@ -16,6 +16,8 @@
     "factory:compare": "node scripts/dogeedge-backtest.mjs --compare",
     "factory:promote-check": "node scripts/dogeedge-backtest.mjs --sweep --promote-check",
     "factory:audit-exports": "node scripts/factory/audit-exports.mjs",
+    "factory:gate-report": "node scripts/factory/audit-exports.mjs --gate-report",
+    "factory:reconcile-top-roster": "node scripts/factory/audit-exports.mjs --reconcile-top-roster",
     "eval:snapshot": "node scripts/export-eval-snapshot.mjs --window-minutes 30",
     "eval:bundle": "node scripts/export-eval-snapshot.mjs --bundle --window-minutes 30 --bundle-hours 2",
     "eval:loop": "node scripts/run-eval-loop.mjs --snapshot-minutes 30 --bundle-hours 2",

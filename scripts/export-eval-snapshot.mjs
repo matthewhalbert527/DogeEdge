@@ -377,8 +377,10 @@ export async function exportEvaluationSnapshot(options = {}) {
   const priorHistory = await loadSnapshotHistory({ snapshotsRoot, hours: 48 });
   const snapshotDir = path.join(outRoot, "snapshots", snapshotId);
   const includeRows = options.includeRows !== false;
-  const maxRowLines = numberOption(options.maxRowLines, 1_000);
+  const fullRows = options.fullRows === true;
+  const maxRowLines = fullRows ? Number.MAX_SAFE_INTEGER : numberOption(options.maxRowLines, 1_000);
   const maxMetrics = numberOption(options.maxMetrics, 600);
+  const rowExportMode = includeRows ? fullRows ? "full" : "capped" : "disabled";
   await mkdir(snapshotDir, { recursive: true });
 
   const localLatestPath = path.join(storageDir, "latest.json");
@@ -443,6 +445,7 @@ export async function exportEvaluationSnapshot(options = {}) {
     registry,
     topStats,
     includeRows,
+    rowExportMode,
   });
 
   const filesToWrite = [
@@ -488,6 +491,9 @@ export async function exportEvaluationSnapshot(options = {}) {
     primaryRun,
     registry,
     gitInfo,
+    rawTickFormat: options.rawTickFormat ?? "jsonl",
+    maxRawTickMarkets: numberOption(options.maxRawTickMarkets, 20),
+    maxRawTickRowsPerMarket: numberOption(options.maxRawTickRowsPerMarket, 50_000),
     sourceRunId: primaryRun?.runId ?? null,
     sourceSnapshotHash,
   });
@@ -584,6 +590,13 @@ export async function exportEvaluationSnapshot(options = {}) {
       .filter((warning) => ["high", "critical"].includes(warning.severity))
       .map((warning) => ({ code: warning.code, severity: warning.severity, objectId: warning.objectId, message: warning.message })),
     filesManifest: fileManifest,
+    rowExport: {
+      mode: rowExportMode,
+      includeRows,
+      rowsCapped: includeRows && !fullRows,
+      rowCap: includeRows && !fullRows ? maxRowLines : null,
+      promotionReviewComplete: includeRows && fullRows,
+    },
   };
 
   const validation = validateEvaluationSnapshot(snapshot);
@@ -619,6 +632,7 @@ export async function exportEvaluationSnapshot(options = {}) {
     primaryRunId: primaryRun?.runId ?? null,
     primaryRunDir: runDir ? "_DATA_ROOT_/backtests/" + path.basename(path.dirname(runDir)) + "/" + path.basename(runDir) : null,
     safetyStatus: safety,
+    rowExport: snapshot.rowExport,
     files: [snapshotInfo, ...fileManifest],
     warnings: snapshot.warnings,
     validation,
@@ -650,6 +664,7 @@ export async function buildReviewBundle(options = {}) {
   await mkdir(path.join(bundleRoot, "repo"), { recursive: true });
   await mkdir(path.join(bundleRoot, "registry"), { recursive: true });
 
+  const snapshotExportRows = snapshotExportRowsByName(snapshotResult);
   const latestSnapshotDirs = await latestNamedDirs(path.join(outRoot, "snapshots"), Math.max(1, Math.ceil((bundleHours * 60) / numberOption(options.windowMinutes, 30))));
   const bundleFiles = [];
   for (const dir of latestSnapshotDirs) {
@@ -678,7 +693,7 @@ export async function buildReviewBundle(options = {}) {
     if (await exists(source)) {
       const target = path.join(bundleRoot, "snapshots", name);
       await copyFile(source, target);
-      bundleFiles.push(await fileInfo(target, name, path.relative(bundleRoot, target), null));
+      bundleFiles.push(await fileInfo(target, name, path.relative(bundleRoot, target), snapshotExportRows.get(name) ?? null));
     }
   }
   const rawTicksManifest = path.join(snapshotResult.snapshotDir, "raw_market_ticks", "manifest.json");
@@ -686,14 +701,22 @@ export async function buildReviewBundle(options = {}) {
     const target = path.join(bundleRoot, "snapshots", "raw_market_ticks", "manifest.json");
     await mkdir(path.dirname(target), { recursive: true });
     await copyFile(rawTicksManifest, target);
-    bundleFiles.push(await fileInfo(target, "raw_market_ticks/manifest.json", path.relative(bundleRoot, target), null));
+    bundleFiles.push(await fileInfo(target, "raw_market_ticks/manifest.json", path.relative(bundleRoot, target), snapshotExportRows.get("raw_market_ticks/manifest.json") ?? null));
   }
   const rawTicksSchema = path.join(snapshotResult.snapshotDir, "raw_market_ticks", "schema.json");
   if (await exists(rawTicksSchema)) {
     const target = path.join(bundleRoot, "snapshots", "raw_market_ticks", "schema.json");
     await mkdir(path.dirname(target), { recursive: true });
     await copyFile(rawTicksSchema, target);
-    bundleFiles.push(await fileInfo(target, "raw_market_ticks/schema.json", path.relative(bundleRoot, target), null));
+    bundleFiles.push(await fileInfo(target, "raw_market_ticks/schema.json", path.relative(bundleRoot, target), snapshotExportRows.get("raw_market_ticks/schema.json") ?? null));
+  }
+  const rawTicksJsonlFiles = await latestFilesRecursive(path.join(snapshotResult.snapshotDir, "raw_market_ticks", "jsonl"), [".jsonl"], 200);
+  for (const source of rawTicksJsonlFiles.filter((file) => file.endsWith(".jsonl"))) {
+    const relative = slashPath(path.relative(snapshotResult.snapshotDir, source));
+    const target = path.join(bundleRoot, "snapshots", relative);
+    await mkdir(path.dirname(target), { recursive: true });
+    await copyFile(source, target);
+    bundleFiles.push(await fileInfo(target, relative, path.relative(bundleRoot, target), snapshotExportRows.get(relative) ?? null));
   }
   for (const name of ["snapshot-history-48h.json", "snapshot-history-48h.md"]) {
     const source = path.join(outRoot, name);
@@ -717,12 +740,19 @@ export async function buildReviewBundle(options = {}) {
     snapshotCount: latestSnapshotDirs.length,
     bundleHours,
     safetyStatus: snapshotResult.snapshot.appState.liveSafety,
+    rowExport: snapshotResult.snapshot.rowExport,
     alerts: snapshotResult.snapshot.alerts,
     files: bundleFiles,
+    limitations: [
+      ...(snapshotResult.snapshot.rowExport?.rowsCapped ? ["rows_capped"] : []),
+      ...((snapshotResult.snapshot.filesManifest ?? []).some((file) => file.logicalName === "raw_market_ticks/manifest.json")
+        ? []
+        : ["raw_market_tick_manifest_absent"]),
+    ],
     notes: [
       "Local-only review bundle. No external uploads were performed by DogeEdge.",
       "Absolute paths are replaced by _REPO_ROOT_ and _DATA_ROOT_ in JSON metadata.",
-      "Row-level extracts are capped by --max-row-lines unless explicitly increased.",
+      "Row-level extracts are capped by --max-row-lines unless --full-rows is supplied.",
     ],
   };
   await writeFile(path.join(bundleRoot, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
@@ -734,6 +764,21 @@ export async function buildReviewBundle(options = {}) {
     bundlePath: zipped ? bundlePath : null,
     bundleManifest: manifest,
   };
+}
+
+function snapshotExportRowsByName(snapshotResult) {
+  const rowsByName = new Map();
+  for (const file of [
+    ...(Array.isArray(snapshotResult?.manifest?.files) ? snapshotResult.manifest.files : []),
+    ...(Array.isArray(snapshotResult?.snapshot?.filesManifest) ? snapshotResult.snapshot.filesManifest : []),
+  ]) {
+    if (!isRecord(file)) continue;
+    const rows = typeof file.rows === "number" ? file.rows : null;
+    for (const key of [file.logicalName, file.relativePath]) {
+      if (typeof key === "string" && !rowsByName.has(slashPath(key))) rowsByName.set(slashPath(key), rows);
+    }
+  }
+  return rowsByName;
 }
 
 export function validateEvaluationSnapshot(snapshot) {
@@ -1354,6 +1399,9 @@ async function writeExactReviewFiles({
   primaryRun,
   registry,
   gitInfo,
+  rawTickFormat = "jsonl",
+  maxRawTickMarkets = 20,
+  maxRawTickRowsPerMarket = 50_000,
   sourceRunId,
   sourceSnapshotHash,
 }) {
@@ -1387,7 +1435,17 @@ async function writeExactReviewFiles({
   await writeFile(ledgerCsvPath, csv(paperDecisionLedgerColumns, ledgerRows), "utf8");
   files.push(await fileInfo(ledgerCsvPath, "paper_decision_ledger.csv", "paper_decision_ledger.csv", ledgerRows.length));
 
-  files.push(...await writeRawMarketTicksManifest({ snapshotDir, dataRoot, snapshotId, gitInfo }));
+  files.push(...await writeRawMarketTicksManifest({
+    snapshotDir,
+    dataRoot,
+    snapshotId,
+    gitInfo,
+    decisionRows,
+    tradeRows,
+    rawTickFormat,
+    maxRawTickMarkets,
+    maxRawTickRowsPerMarket,
+  }));
   return files;
 }
 
@@ -1676,12 +1734,22 @@ function metricForLedger(context, algoId) {
     ?? {};
 }
 
-async function writeRawMarketTicksManifest({ snapshotDir, dataRoot, snapshotId, gitInfo }) {
+async function writeRawMarketTicksManifest({
+  snapshotDir,
+  dataRoot,
+  snapshotId,
+  gitInfo,
+  decisionRows = [],
+  tradeRows = [],
+  rawTickFormat = "jsonl",
+  maxRawTickMarkets = 20,
+  maxRawTickRowsPerMarket = 50_000,
+}) {
   const dir = path.join(snapshotDir, "raw_market_ticks");
   await mkdir(dir, { recursive: true });
   const schema = {
     schemaVersion: "dogeedge.raw-market-ticks.schema.v1",
-    format: "parquet",
+    format: rawTickFormat === "jsonl" ? "jsonl" : "parquet",
     fields: [
       "ts_event",
       "ts_receive",
@@ -1706,6 +1774,20 @@ async function writeRawMarketTicksManifest({ snapshotDir, dataRoot, snapshotId, 
     ],
   };
   const rawSnapshotFiles = await latestFilesRecursive(path.join(dataRoot, "raw", "snapshots"), [".jsonl", ".ndjson", ".json", ".csv"], 10);
+  const targetMarkets = uniqueStrings([
+    ...decisionRows.map((row) => row.marketTicker),
+    ...tradeRows.map((row) => row.marketTicker),
+  ]).slice(0, Math.max(1, maxRawTickMarkets));
+  const jsonlFiles = rawTickFormat === "jsonl"
+    ? await writeRawTickJsonlSamples({
+      dir,
+      rawSnapshotFiles,
+      snapshotId,
+      gitInfo,
+      targetMarkets,
+      maxRowsPerMarket: maxRawTickRowsPerMarket,
+    })
+    : [];
   const sources = [];
   for (const file of rawSnapshotFiles) {
     const info = await stat(file).catch(() => null);
@@ -1720,14 +1802,26 @@ async function writeRawMarketTicksManifest({ snapshotDir, dataRoot, snapshotId, 
     schemaVersion: "dogeedge.raw-market-ticks.manifest.v1",
     snapshotId,
     generatedAt: new Date().toISOString(),
-    available: false,
-    format: "parquet",
-    reason: "Replayable per-market parquet tick export is not present in current local artifacts; schema and source manifest are exported so calibration gaps remain explicit.",
+    available: jsonlFiles.length > 0,
+    format: jsonlFiles.length > 0 ? "jsonl" : "parquet",
+    parquetAvailable: false,
+    jsonlAvailable: jsonlFiles.length > 0,
+    reason: jsonlFiles.length > 0
+      ? "Replayable compact JSONL raw-tick samples are exported for current review markets; parquet remains absent."
+      : "Replayable per-market parquet tick export is not present in current local artifacts; schema and source manifest are exported so calibration gaps remain explicit.",
     gitCommit: gitInfo.commitHash ?? "UNAVAILABLE",
     expectedDirectory: "raw_market_ticks/<market_ticker>.parquet",
+    jsonlDirectory: "raw_market_ticks/jsonl/<market_ticker>.jsonl",
+    targetMarkets,
+    jsonlFiles: jsonlFiles.map((file) => ({
+      relativePath: slashPath(path.relative(snapshotDir, file.path)),
+      marketTicker: file.marketTicker,
+      rows: file.rows,
+    })),
     sourceSnapshotFiles: sources,
     warningCodes: [
       "raw_market_tick_parquet_absent",
+      ...(jsonlFiles.length > 0 ? ["raw_market_tick_jsonl_sample"] : []),
       ...(sources.some((source) => source.hashSkipped) ? ["raw_snapshot_hash_skipped_large_file"] : []),
     ],
   };
@@ -1738,10 +1832,72 @@ async function writeRawMarketTicksManifest({ snapshotDir, dataRoot, snapshotId, 
   return [
     await fileInfo(schemaPath, "raw_market_ticks/schema.json", "raw_market_ticks/schema.json", null),
     await fileInfo(manifestPath, "raw_market_ticks/manifest.json", "raw_market_ticks/manifest.json", null),
+    ...await Promise.all(jsonlFiles.map((file) => fileInfo(file.path, `raw_market_ticks/jsonl/${file.marketTicker}.jsonl`, slashPath(path.relative(snapshotDir, file.path)), file.rows))),
   ];
 }
 
-function warningRows({ snapshotId, generatedAt, safety, localStoredAt, dataQuality, gitInfo, registry, topStats, includeRows }) {
+async function writeRawTickJsonlSamples({ dir, rawSnapshotFiles, snapshotId, gitInfo, targetMarkets, maxRowsPerMarket }) {
+  if (!rawSnapshotFiles.length) return [];
+  const jsonlDir = path.join(dir, "jsonl");
+  await mkdir(jsonlDir, { recursive: true });
+  const targets = new Set(targetMarkets);
+  const rowsByMarket = new Map();
+  const sourceLineLimit = Math.min(10_000, Math.max(1_000, targetMarkets.length * 500));
+  for (const file of rawSnapshotFiles.slice(0, 3)) {
+    const lines = await readTailLines(file, sourceLineLimit);
+    for (const line of lines) {
+      const raw = parseJsonLine(line);
+      const marketTicker = stringOrNull(raw?.marketTicker ?? raw?.paperInput?.ticker);
+      if (!marketTicker) continue;
+      if (targets.size > 0 && !targets.has(marketTicker)) continue;
+      const current = rowsByMarket.get(marketTicker) ?? [];
+      if (current.length >= maxRowsPerMarket) continue;
+      current.push(JSON.stringify(compactRawTickRow(raw, line, { snapshotId, gitCommit: gitInfo.commitHash ?? "UNAVAILABLE" })));
+      rowsByMarket.set(marketTicker, current);
+      if (targets.size === 0 && rowsByMarket.size >= 20) break;
+    }
+  }
+  const files = [];
+  for (const [marketTicker, rows] of rowsByMarket) {
+    const safeTicker = marketTicker.replace(/[^A-Za-z0-9_.-]/g, "_");
+    const filePath = path.join(jsonlDir, `${safeTicker}.jsonl`);
+    await writeFile(filePath, `${rows.join("\n")}${rows.length ? "\n" : ""}`, "utf8");
+    files.push({ marketTicker, rows: rows.length, path: filePath });
+  }
+  return files;
+}
+
+function compactRawTickRow(raw, sourceLine, context) {
+  const input = raw?.paperInput ?? {};
+  const feed = raw?.runtimeSnapshot?.feed ?? {};
+  return {
+    ts_event: input.observedAt ?? raw?.capturedAt ?? null,
+    ts_receive: raw?.capturedAt ?? raw?.runtimeSnapshot?.generatedAt ?? null,
+    market_ticker: raw?.marketTicker ?? input.ticker ?? null,
+    channel: "local_raw_snapshot",
+    event_type: "orderbook_snapshot",
+    side: input.action?.includes("no") ? "NO" : input.action?.includes("yes") ? "YES" : "",
+    book_side: "top",
+    price: numberOrNull(input.selectedAsk ?? input.yesAsk ?? input.noAsk),
+    size: numberOrNull(input.sizeContracts),
+    level: 0,
+    sequence_number: null,
+    best_yes_bid: numberOrNull(input.yesBid),
+    best_yes_ask: numberOrNull(input.yesAsk),
+    best_no_bid: numberOrNull(input.noBid),
+    best_no_ask: numberOrNull(input.noAsk),
+    market_status: input.marketLive === true ? "open" : "unknown",
+    source: "local_raw_snapshot",
+    source_message_hash: sha256(sourceLine),
+    snapshot_id: context.snapshotId,
+    git_commit: context.gitCommit,
+    spot_price: numberOrNull(input.spotPrice ?? feed.price),
+    target_price: numberOrNull(input.targetPrice),
+    seconds_to_close: numberOrNull(input.secondsToClose),
+  };
+}
+
+function warningRows({ snapshotId, generatedAt, safety, localStoredAt, dataQuality, gitInfo, registry, topStats, includeRows, rowExportMode }) {
   const warnings = [];
   const add = (code, severity, message, remediationHint, fields = {}) => {
     warnings.push({
@@ -1780,6 +1936,8 @@ function warningRows({ snapshotId, generatedAt, safety, localStoredAt, dataQuali
   }
   if (!includeRows) {
     add("row_exports_disabled", "warn", "Decision/trade row extracts were not included in this packet.", "Run with --include-rows for first upload or when reject/drift alerts fire.");
+  } else if (rowExportMode === "capped") {
+    add("row_exports_capped", "warn", "Decision/trade row extracts are capped.", "Run eval:bundle with --full-rows for promotion-review or reconciliation audits.");
   }
   const rejectTotals = Object.values(topStats).reduce((total, stat) => total + numberOrZero(stat.rejected), 0);
   if (rejectTotals === 0) {
@@ -1997,12 +2155,15 @@ async function readTailLines(filePath, maxLines) {
   if (!filePath || !(await exists(filePath))) return [];
   const info = await stat(filePath);
   const chunkSize = 256 * 1024;
+  const maxBytes = Math.min(info.size, 8 * 1024 * 1024);
   const chunks = [];
   let position = info.size;
+  let loaded = 0;
   let text = "";
-  while (position > 0 && countLines(text) <= maxLines + 1) {
-    const readSize = Math.min(chunkSize, position);
+  while (position > 0 && loaded < maxBytes && countLines(text) <= maxLines + 1) {
+    const readSize = Math.min(chunkSize, position, maxBytes - loaded);
     position -= readSize;
+    loaded += readSize;
     const buffer = Buffer.alloc(readSize);
     const handle = await import("node:fs/promises").then((mod) => mod.open(filePath, "r"));
     try {
@@ -2206,6 +2367,14 @@ function stringOrNull(value) {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
+function uniqueStrings(values) {
+  return [...new Set(values.filter((value) => typeof value === "string" && value.length > 0))];
+}
+
+function sha256(value) {
+  return createHash("sha256").update(String(value)).digest("hex");
+}
+
 function jsonCell(value) {
   return JSON.stringify(value ?? null);
 }
@@ -2237,8 +2406,12 @@ function parseArgs(argv) {
     bundleHours: result["bundle-hours"],
     bundle: Boolean(result.bundle),
     includeRows: result["no-rows"] ? false : true,
+    fullRows: Boolean(result["full-rows"]),
     maxRowLines: result["max-row-lines"],
     maxMetrics: result["max-metrics"],
+    rawTickFormat: result["raw-tick-format"],
+    maxRawTickMarkets: result["max-raw-tick-markets"],
+    maxRawTickRowsPerMarket: result["max-raw-tick-rows-per-market"],
     sourceTimezone: result.timezone,
   };
 }

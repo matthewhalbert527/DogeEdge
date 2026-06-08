@@ -34,6 +34,13 @@ describe("continuous evaluation snapshot exporter", () => {
       settlementSource: "estimated",
     });
     expect(snapshot.timestampSemantics.settlementSource).toBe("estimated");
+    expect(snapshot.rowExport).toMatchObject({
+      mode: "capped",
+      includeRows: true,
+      rowsCapped: true,
+      rowCap: 5,
+      promotionReviewComplete: false,
+    });
     expect(result.manifest).toMatchObject({
       gitCommit: expect.any(String),
       dataHash: "input-hash",
@@ -57,9 +64,11 @@ describe("continuous evaluation snapshot exporter", () => {
     const rawTickManifest = JSON.parse(readFileSync(path.join(result.snapshotDir, "raw_market_ticks", "manifest.json"), "utf8"));
     expect(rawTickManifest).toMatchObject({
       schemaVersion: "dogeedge.raw-market-ticks.manifest.v1",
-      available: false,
-      warningCodes: ["raw_market_tick_parquet_absent"],
+      available: true,
+      jsonlAvailable: true,
+      warningCodes: expect.arrayContaining(["raw_market_tick_parquet_absent", "raw_market_tick_jsonl_sample"]),
     });
+    expect(readFileSync(path.join(result.snapshotDir, "raw_market_ticks", "jsonl", "KXDOGE15M-FIXTURE.jsonl"), "utf8")).toContain("orderbook_snapshot");
     const history = JSON.parse(readFileSync(path.join(fixture.outDir, "snapshot-history-48h.json"), "utf8"));
     expect(history.schemaVersion).toBe("dogeedge.eval.snapshot-history.v1");
     expect(history.latestSnapshotId).toBe(snapshot.snapshotId);
@@ -108,6 +117,14 @@ describe("continuous evaluation snapshot exporter", () => {
       "snapshots/paper_decision_ledger.csv",
       "snapshots/raw_market_ticks/manifest.json",
     ]));
+    const rowsByPath = Object.fromEntries(manifest.files.map((file: { relativePath: string; rows: number | null }) => [file.relativePath, file.rows]));
+    expect(rowsByPath["snapshots/algoMetrics.tsv.gz"]).toBe(1);
+    expect(rowsByPath["snapshots/decisionRows.tsv.gz"]).toBe(1);
+    expect(rowsByPath["snapshots/tradeRows.tsv.gz"]).toBe(1);
+    expect(rowsByPath["snapshots/paper_decision_ledger.csv"]).toBeGreaterThan(1);
+    expect(manifest.rowExport.rowsCapped).toBe(true);
+    expect(manifest.limitations).toContain("rows_capped");
+    expect(manifest.files.map((file: { relativePath: string }) => file.relativePath)).toContain("snapshots/raw_market_ticks/jsonl/KXDOGE15M-FIXTURE.jsonl");
     expect(manifest.safetyStatus.liveTradingEnabled).toBe(false);
   });
 
@@ -131,8 +148,9 @@ function writeEvalFixture(options: { liveSwitch?: unknown } = {}) {
   const backtestsDir = path.join(dataRoot, "backtests");
   const runDir = path.join(backtestsDir, "sweeps", "fixture-run");
   const framesDir = path.join(dataRoot, "features", "decision-frames");
+  const rawSnapshotsDir = path.join(dataRoot, "raw", "snapshots");
   const outDir = path.join(root, "review-packets");
-  for (const dir of [storageDir, backtestsDir, runDir, framesDir, outDir]) {
+  for (const dir of [storageDir, backtestsDir, runDir, framesDir, rawSnapshotsDir, outDir]) {
     mkdirSync(dir, { recursive: true });
   }
 
@@ -321,6 +339,26 @@ function writeEvalFixture(options: { liveSwitch?: unknown } = {}) {
     yesAsk: 0.41,
     noBid: 0.58,
     noAsk: 0.59,
+  })}\n`);
+  writeFileSync(path.join(rawSnapshotsDir, "records.jsonl"), `${JSON.stringify({
+    capturedAt: "2026-06-07T20:10:00.250Z",
+    runtimeSnapshot: { generatedAt: "2026-06-07T20:10:00.250Z", feed: { status: "ok" } },
+    paperInput: {
+      ticker: "KXDOGE15M-FIXTURE",
+      observedAt: "2026-06-07T20:10:00.000Z",
+      action: "buy_yes",
+      selectedAsk: 0.41,
+      sizeContracts: 2,
+      yesBid: 0.4,
+      yesAsk: 0.41,
+      noBid: 0.58,
+      noAsk: 0.59,
+      yesBidSize: 50,
+      yesAskSize: 40,
+      noBidSize: 35,
+      noAskSize: 30,
+      marketStatus: "open",
+    },
   })}\n`);
   writeFileSync(path.join(backtestsDir, "latest-sweep.json"), `${JSON.stringify(latestSweep)}\n`);
   writeFileSync(path.join(backtestsDir, "latest.json"), `${JSON.stringify({ ...latestSweep, mode: "backtest", metrics: [metric], topMetrics: undefined })}\n`);

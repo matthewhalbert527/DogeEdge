@@ -68,7 +68,13 @@ import {
   type LocalWorkerExportPayload,
   type LocalWorkerStatus,
 } from "./core/local-worker";
-import { researchEvidenceCanMature, researchEvidenceSortScore } from "./core/research-ranking";
+import {
+  hasResearchPromotionCandidate,
+  researchEvidenceCanMature,
+  researchEvidenceClassLabel,
+  researchEvidenceSortScore,
+  researchPromotionGate,
+} from "./core/research-ranking";
 import {
   advancePaperStrategies,
   activePaperRuleDescriptions,
@@ -450,6 +456,7 @@ const topTradersChampionSlots = 100;
 const topTradersProspectSlots = 300;
 const topTradersWildcardSlots = 200;
 const topTradersRosterSize = topTradersChampionSlots + topTradersProspectSlots + topTradersWildcardSlots;
+const topTradersTelemetryOnlyRosterSize = 50;
 const topTradersMinClosedTrades = 3;
 const topTradersChampionMinClosedTrades = 25;
 const topTradersChampionMinPnlPerCycle = 0.10;
@@ -1474,7 +1481,7 @@ function App() {
     });
   };
 
-  const playTopTraders = (config: { startingBalance: number; maxBet: number; reset: boolean }) => {
+  const playTopTraders = (config: { startingBalance: number; maxBet: number; reset: boolean; rosterLimit?: number }) => {
     const startedAt = new Date().toISOString();
     const availableAlgos = topTraderCandidateAlgosForFactory(generatedPaperAlgosRef.current, factoryAlgoBatchesRef.current);
     const mainArena = paperArenaRef.current;
@@ -1495,7 +1502,7 @@ function App() {
         factoryResearchEvidenceBySource(latestSweepRef.current),
       )
         .filter((row) => row.bucket !== "standby")
-        .slice(0, topTradersRosterSize)
+        .slice(0, config.rosterLimit ?? topTradersRosterSize)
         .map(paperStrategyIdForActivatedRow);
       if (selectedAlgoIds.length === 0) return current;
       topTradersRosterIdsRef.current = selectedAlgoIds;
@@ -1569,6 +1576,8 @@ function App() {
   };
 
   const createFactoryBatchFromCurrentEvidence = useCallback((createdAt: string) => {
+    const researchGate = factoryResearchGateSummary(latestSweepRef.current);
+    const targetSize = researchGate.hasValidCandidate ? factoryBatchSize : topTradersTelemetryOnlyRosterSize;
     const retainedBatches = factoryAlgoBatchesRef.current.filter(isSingleLetterFactoryBatch);
     const currentArena = paperArenaRef.current;
     const candidateAlgos = topTraderCandidateAlgosForFactory(generatedPaperAlgosRef.current, retainedBatches);
@@ -1584,7 +1593,7 @@ function App() {
       ...filterFactoryBatchActivatedRows(realisticArenaAlgoArchivesRef.current),
     ]);
     const batchIndex = nextFactoryBatchIndex(retainedBatches, evolutionHistory, currentArena);
-    const batch = createFactoryAlgoBatch(retainedBatches, evolutionHistory, createdAt, batchIndex);
+    const batch = createFactoryAlgoBatch(retainedBatches, evolutionHistory, createdAt, batchIndex, targetSize);
     const nextBatches = [batch, ...retainedBatches].slice(0, 12);
     factoryAlgoBatchesRef.current = nextBatches;
     setFactoryAlgoBatches(nextBatches);
@@ -1612,6 +1621,8 @@ function App() {
     const batches = requestedIds
       .map((id) => factoryAlgoBatchesRef.current.find((item) => item.id === id) ?? null)
       .filter((batch): batch is FactoryAlgoBatch => batch !== null);
+    const researchGate = factoryResearchGateSummary(latestSweepRef.current);
+    const telemetryOnly = startTesting && !researchGate.hasValidCandidate;
     if (batches.length === 0) {
       const defaultAlgos = factoryBatchUserAlgos(generatedPaperAlgosRef.current);
       commitPaperArena((current) => ({
@@ -1632,8 +1643,8 @@ function App() {
       if (archiveRows.length > 0) {
         setRealisticArenaAlgoArchives((archives) => normalizeGeneratedPaperAlgoArchives([...archiveRows, ...archives]));
       }
-      const activeBatchIds = batches.map((item) => item.id);
-      const selectedAlgoIds = batches.flatMap((item) => item.algos.map((algo) => algo.id)).slice(0, arenaBatchMax);
+      const activeBatchIds = telemetryOnly ? [] : batches.map((item) => item.id);
+      const selectedAlgoIds = batches.flatMap((item) => item.algos.map((algo) => algo.id)).slice(0, telemetryOnly ? topTradersTelemetryOnlyRosterSize : arenaBatchMax);
       return {
         ...current,
         status: startTesting ? "running" : "idle",
@@ -1661,6 +1672,35 @@ function App() {
       if (!automation.enabled) return;
       const slot = latestFactoryBatchScheduleSlot(new Date());
       if (automation.lastScheduledBatchSlot === slot.id) return;
+      const researchGate = factoryResearchGateSummary(latestSweepRef.current);
+      if (!researchGate.hasValidCandidate) {
+        const runAt = new Date().toISOString();
+        playTopTraders({
+          startingBalance: scheduledTopTradersStartingBalance,
+          maxBet: scheduledTopTradersMaxBet,
+          reset: false,
+          rosterLimit: topTradersTelemetryOnlyRosterSize,
+        });
+        const decision = automationDecision(
+          runAt,
+          "hold",
+          "warning",
+          `Factory ${slot.label} held`,
+          `No research-valid candidate is available (${researchGate.reasonCodes.join(", ") || "research gates empty"}). Large arena batch creation is paused; Top Traders is gathering capped telemetry-only evidence with up to ${topTradersTelemetryOnlyRosterSize} algos.`,
+        );
+        setFactoryAutomation((current) => {
+          const next = {
+            ...current,
+            lastRunAt: runAt,
+            lastScheduledBatchSlot: slot.id,
+            lastScheduledBatchAt: slot.scheduledAt,
+            decisions: mergeAutomationDecisions([decision], current.decisions),
+          };
+          factoryAutomationRef.current = next;
+          return next;
+        });
+        return;
+      }
 
       const existingBatch = latestFactoryBatchForScheduleSlot(factoryAlgoBatchesRef.current, slot);
       const batch = existingBatch ?? createFactoryBatchFromCurrentEvidence(slot.scheduledAt);
@@ -1685,6 +1725,7 @@ function App() {
           startingBalance: scheduledTopTradersStartingBalance,
           maxBet: scheduledTopTradersMaxBet,
           reset: false,
+          rosterLimit: topTradersRosterSize,
         });
       }
 
@@ -3320,7 +3361,7 @@ function FactoryResearchEvidencePanel({ latestSweep }: { latestSweep: LocalFacto
     }
     return bestSweepCandidateByFamily([...byId.values()]).slice(0, 12).map((row) => row.best);
   }, [latestSweep]);
-  const promotableCount = rows.filter((row) => !row.nonPromotable).length;
+  const researchGate = factoryResearchGateSummary(latestSweep);
   const holdoutPassCount = rows.filter((row) => row.holdoutPass).length;
   const driftOkCount = rows.filter((row) => row.paperEvidence.available && row.paperEvidence.driftOk).length;
   const paperEvidenceCount = rows.filter((row) => row.paperEvidence.available).length;
@@ -3337,7 +3378,7 @@ function FactoryResearchEvidencePanel({ latestSweep }: { latestSweep: LocalFacto
         <div className="heading-actions">
           <Badge tone={latestSweep ? "info" : "neutral"}>{latestSweep?.mode ?? "no run"}</Badge>
           {searchBudget?.limited && <Badge tone="warn">Search capped</Badge>}
-          <Badge tone={promotableCount > 0 ? "good" : "neutral"}>{promotableCount} promotable</Badge>
+          <Badge tone={researchGate.hasValidCandidate ? "good" : "warn"}>{researchGate.validCount} valid</Badge>
         </div>
       </div>
       {latestSweep && (
@@ -3350,6 +3391,9 @@ function FactoryResearchEvidencePanel({ latestSweep }: { latestSweep: LocalFacto
           <Stat label="Drift OK" value={`${driftOkCount} / ${rows.length}`} tone={driftOkCount === rows.length && rows.length > 0 ? "positive" : undefined} />
           {searchBudget && <Stat label="Search Budget" value={searchBudget.limited ? `${countOrDash(searchBudget.maxGeneratedAlgos)} max` : "open"} />}
         </div>
+      )}
+      {latestSweep && !researchGate.hasValidCandidate && (
+        <p className="panel-note warning-note">No valid research winner yet. Large arena batch churn is held; DogeEdge will gather capped telemetry-only evidence until official settlement, holdout, cost, CPCV, and multiple-testing gates pass.</p>
       )}
       <div className="upgrade-table-wrap">
         <table className="factory-batch-table">
@@ -3430,7 +3474,7 @@ function FactoryResearchEvidencePanel({ latestSweep }: { latestSweep: LocalFacto
           </tbody>
         </table>
       </div>
-      <p className="panel-note">Promotion is blocked unless walk-forward, CPCV consistency, and the strictly later conservative holdout all pass. Real orders remain disabled unless explicitly enabled outside the Factory.</p>
+      <p className="panel-note">Promotion is blocked unless official settlement, walk-forward, CPCV consistency, multiple-testing, stress costs, and the strictly later conservative holdout all pass. Real orders remain disabled unless explicitly enabled outside the Factory.</p>
     </section>
   );
 }
@@ -6725,29 +6769,36 @@ function factoryResearchEvidenceBySource(latestSweep: LocalFactorySweep | null) 
   return map;
 }
 
+function factoryResearchGateSummary(latestSweep: LocalFactorySweep | null) {
+  const rows = latestSweep ? [...latestSweep.candidates, ...latestSweep.topMetrics] : [];
+  const hasValidCandidate = hasResearchPromotionCandidate(rows);
+  const failedReasons = new Set<string>();
+  for (const row of rows.slice(0, 200)) {
+    const gate = researchPromotionGate(row);
+    if (!gate.ok) gate.reasonCodes.slice(0, 4).forEach((reason) => failedReasons.add(reason));
+  }
+  return {
+    hasValidCandidate,
+    validCount: rows.filter((row) => researchPromotionGate(row).ok).length,
+    checkedCount: rows.length,
+    reasonCodes: rows.length ? [...failedReasons].slice(0, 6) : ["no_factory_research_evidence"],
+  };
+}
+
 function factoryEvidenceForTopTraderRow(row: TopTraderRow, evidence: Map<string, LocalFactorySweepCandidate>) {
   return evidence.get(row.sourceAlgoId) ?? evidence.get(row.displayId) ?? null;
 }
 
 function topTraderResearchTone(candidate: LocalFactorySweepCandidate | null): "info" | "warn" | "good" | "bad" | "neutral" {
-  if (!candidate) return "neutral";
-  if (candidate.labelSource !== "official_resolution" || candidate.settlementSource !== "official_resolution") {
-    return candidate.nonPromotable ? "bad" : "warn";
-  }
-  if (candidate.nonPromotable) return candidate.promotionVerdict === "insufficient_data" ? "warn" : "bad";
-  if (candidate.promotionVerdict === "paper_only" || candidate.promotionVerdict === "tiny_live_eligible") return "good";
-  if (candidate.promotionVerdict === "insufficient_data") return "warn";
+  const gate = researchPromotionGate(candidate);
+  if (gate.ok) return "good";
+  if (gate.classification === "telemetry_only") return "neutral";
+  if (gate.classification === "insufficient_data") return "warn";
   return "bad";
 }
 
 function topTraderResearchLabel(candidate: LocalFactorySweepCandidate | null) {
-  if (!candidate) return "Dry-run only";
-  if (candidate.labelSource !== "official_resolution" || candidate.settlementSource !== "official_resolution") return "Proxy label";
-  if (candidate.nonPromotable && candidate.promotionVerdict === "insufficient_data") return "Insufficient";
-  if (candidate.nonPromotable) return "No promo";
-  if (candidate.promotionVerdict === "paper_only") return "Research ok";
-  if (candidate.promotionVerdict === "tiny_live_eligible") return "Tiny gated";
-  return candidate.promotionVerdict.replaceAll("_", " ");
+  return researchEvidenceClassLabel(candidate);
 }
 
 function betterSweepCandidate(candidate: LocalFactorySweepCandidate, current: LocalFactorySweepCandidate) {
@@ -7187,9 +7238,16 @@ function generatedPaperAlgoFromCandidate(
   };
 }
 
-function createFactoryAlgoBatch(existingBatches: FactoryAlgoBatch[], arenaArchives: GeneratedPaperAlgoArchive[], createdAt: string, batchIndex = existingBatches.length): FactoryAlgoBatch {
+function createFactoryAlgoBatch(
+  existingBatches: FactoryAlgoBatch[],
+  arenaArchives: GeneratedPaperAlgoArchive[],
+  createdAt: string,
+  batchIndex = existingBatches.length,
+  targetSize = factoryBatchSize,
+): FactoryAlgoBatch {
   const name = `Batch ${batchNameForIndex(batchIndex)}`;
   const id = `factory-batch-${name.toLowerCase().replace(/\s+/g, "-")}-${Date.parse(createdAt).toString(36)}`;
+  const batchSize = Math.max(1, Math.min(factoryBatchSize, Math.round(targetSize)));
   const trainingArchives = arenaArchives
     .filter(factoryArchiveCanTrain)
     .filter((archive) => factoryFamilyCanGenerate(archive.family));
@@ -7269,8 +7327,8 @@ function createFactoryAlgoBatch(existingBatches: FactoryAlgoBatch[], arenaArchiv
     });
   }
 
-  const targetProbeCount = Math.min(winners.length > 0 ? 430 : 760, Math.max(0, factoryBatchSize - algos.length));
-  const probeLimit = Math.min(factoryBatchSize, algos.length + targetProbeCount);
+  const targetProbeCount = Math.min(winners.length > 0 ? 430 : 760, Math.max(0, batchSize - algos.length));
+  const probeLimit = Math.min(batchSize, algos.length + targetProbeCount);
   while (algos.length < probeLimit) {
     const probe = createRealisticFactoryProbeParams(rng, algos.length);
     const resolved = resolveFailureAvoidance(probe.family, probe.params, failures, rng, algos.length, 0.75);
@@ -7282,8 +7340,8 @@ function createFactoryAlgoBatch(existingBatches: FactoryAlgoBatch[], arenaArchiv
     });
   }
 
-  const targetStrategicSeedCount = Math.min(winners.length > 0 ? 120 : 180, Math.max(0, factoryBatchSize - algos.length));
-  const strategicSeedLimit = Math.min(factoryBatchSize, algos.length + targetStrategicSeedCount);
+  const targetStrategicSeedCount = Math.min(winners.length > 0 ? 120 : 180, Math.max(0, batchSize - algos.length));
+  const strategicSeedLimit = Math.min(batchSize, algos.length + targetStrategicSeedCount);
   while (strategicSeedArchives.length > 0 && algos.length < strategicSeedLimit) {
     const seed = strategicSeedArchives[algos.length % strategicSeedArchives.length];
     const resolved = resolveFailureAvoidance(seed.family, seed.params, failures, rng, algos.length, 1.35);
@@ -7297,7 +7355,7 @@ function createFactoryAlgoBatch(existingBatches: FactoryAlgoBatch[], arenaArchiv
 
   const targetCrossoverCount = winners.length >= 2 ? 200 : 0;
   const targetMutationCount = winners.length > 0 ? 640 : 0;
-  const crossoverLimit = Math.min(factoryBatchSize, algos.length + targetCrossoverCount);
+  const crossoverLimit = Math.min(batchSize, algos.length + targetCrossoverCount);
   while (algos.length < crossoverLimit) {
     const parentA = pickWeightedArchive(winnerSeeds, rng);
     const parentB = pickCompatibleParent(parentA, winnerSeeds, rng);
@@ -7311,7 +7369,7 @@ function createFactoryAlgoBatch(existingBatches: FactoryAlgoBatch[], arenaArchiv
     });
   }
 
-  const mutationLimit = Math.min(factoryBatchSize, algos.length + targetMutationCount);
+  const mutationLimit = Math.min(batchSize, algos.length + targetMutationCount);
   while (algos.length < mutationLimit) {
     const parent = pickWeightedArchive(winnerSeeds, rng);
     const resolved = resolveFailureAvoidance(parent.family, parent.params, failures, rng, algos.length, 1);
@@ -7323,7 +7381,7 @@ function createFactoryAlgoBatch(existingBatches: FactoryAlgoBatch[], arenaArchiv
     });
   }
 
-  while (algos.length < factoryBatchSize) {
+  while (algos.length < batchSize) {
     const seedAlgo = fallbackSeedAlgos[algos.length % Math.max(1, fallbackSeedAlgos.length)] ?? defaultArenaAlgos[0];
     const seed = archiveFromSeedAlgo(seedAlgo, createdAt);
     const resolved = resolveFailureAvoidance(seed.family, seed.params, failures, rng, algos.length, 1.4);
@@ -7350,9 +7408,10 @@ function createFactoryAlgoBatch(existingBatches: FactoryAlgoBatch[], arenaArchiv
   };
   const skippedEarlyWinners = Math.max(0, positiveArchives.length - winners.length);
   const championSourceCount = uniqueStringList(winners.map((archive) => archive.sourceRunId ?? archive.sourceAlgoId)).length;
+  const evidencePrefix = batchSize < factoryBatchSize ? "Telemetry-only capped evidence pool" : "Dry-run optimized";
   const source = winners.length > 0
-    ? `Dry-run optimized generation from ${winners.length} winners, including ${dryRunWinnerCount} Top Traders dry-run winners, across ${championSourceCount} tested sources and ${failures.length} mature failures; trained on ${dryRunTrainingCount} executable dry-run samples; ignored ${skippedEarlyWinners} early positive spikes; includes ${targetProbeCount} late-lock, Kalshi-lag, and order-flow probes plus ${targetStrategicSeedCount} strategic seed mutations`
-    : `Dry-run optimized reset from default executable algos; trained on ${dryRunTrainingCount} executable dry-run samples; ignored ${skippedEarlyWinners} early positive spikes; includes ${targetProbeCount} late-lock, Kalshi-lag, and order-flow probes plus ${targetStrategicSeedCount} strategic seed mutations`;
+    ? `${evidencePrefix} generation from ${winners.length} winners, including ${dryRunWinnerCount} Top Traders dry-run winners, across ${championSourceCount} tested sources and ${failures.length} mature failures; trained on ${dryRunTrainingCount} executable dry-run samples; ignored ${skippedEarlyWinners} early positive spikes; includes ${targetProbeCount} late-lock, Kalshi-lag, and order-flow probes plus ${targetStrategicSeedCount} strategic seed mutations`
+    : `${evidencePrefix} reset from default executable algos; trained on ${dryRunTrainingCount} executable dry-run samples; ignored ${skippedEarlyWinners} early positive spikes; includes ${targetProbeCount} late-lock, Kalshi-lag, and order-flow probes plus ${targetStrategicSeedCount} strategic seed mutations`;
   return { id, name, createdAt, source, generation, parentBatchIds, summary, algos };
 }
 

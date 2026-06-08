@@ -20,7 +20,13 @@ import { markdownReport, metricsCsv } from "../../scripts/factory/reporting.mjs"
 import { auditReviewExports } from "../../scripts/factory/audit-exports.mjs";
 import { sampleSufficiency } from "../../scripts/factory/sample-gates.mjs";
 import { searchBudgetDecision } from "../../scripts/factory/search-budget.mjs";
-import { researchEvidenceCanMature, researchEvidenceSortScore } from "./research-ranking";
+import {
+  hasResearchPromotionCandidate,
+  researchEvidenceCanMature,
+  researchEvidenceClassLabel,
+  researchEvidenceSortScore,
+  researchPromotionGate,
+} from "./research-ranking";
 
 const baseFrame = {
   id: "frame-1",
@@ -341,6 +347,39 @@ describe("factory research safeguards", () => {
     expect(researchEvidenceSortScore(researchValidated)).toBeGreaterThan(researchEvidenceSortScore(dryRunOnly));
   });
 
+  it("uses one strict research gate before arena automation can treat a row as valid", () => {
+    const valid = strictResearchEvidence("valid-gate");
+    const dryRunOnly = {
+      ...valid,
+      promotionVerdict: "insufficient_data",
+      nonPromotable: true,
+      labelSource: "pre_close_frame_proxy",
+      settlementSource: "estimated",
+      officialResolutionAvailable: false,
+      officialSettlementCoverage: 0,
+      holdoutPass: false,
+      adjustedConfidence: 0.2,
+      dsrApprox: 0.2,
+      pboApprox: 0.9,
+    };
+
+    expect(researchPromotionGate(valid)).toMatchObject({ ok: true, classification: "research_validated" });
+    expect(researchEvidenceClassLabel(valid)).toBe("Research validated");
+    expect(hasResearchPromotionCandidate([dryRunOnly])).toBe(false);
+    expect(hasResearchPromotionCandidate([dryRunOnly, valid])).toBe(true);
+
+    const blocked = researchPromotionGate(dryRunOnly);
+    expect(blocked.ok).toBe(false);
+    expect(blocked.reasonCodes).toEqual(expect.arrayContaining([
+      "insufficient_data",
+      "official_label_required",
+      "official_settlement_required",
+      "holdout_failed",
+      "pbo_approx_high",
+    ]));
+    expect(researchEvidenceClassLabel(dryRunOnly)).toBe("Insufficient data");
+  });
+
   it("keeps final holdout events strictly later than research windows", () => {
     const events = Array.from({ length: 10 }, (_, index) => event(
       `m-${index}`,
@@ -583,13 +622,38 @@ describe("factory research safeguards", () => {
     const out = path.join(root, "artifacts", "factory-audit");
     writeReviewExportFixture(input);
 
-    const audit = await auditReviewExports({ input, outDir: out, foldCount: 2, embargoMs: 60_000 });
+    const audit = await auditReviewExports({ input, outDir: out, foldCount: 2, embargoMs: 60_000, gateReport: true });
     const finalReview = readFileSync(path.join(out, "final-review.md"), "utf8");
     const foldDiff = JSON.parse(readFileSync(path.join(out, "fold-diff.json"), "utf8"));
 
     expect(audit.verdict).not.toBe("fail_closed");
+    expect(audit.gate?.state).toBe("hold_gather_evidence");
+    expect(audit.gate?.allowedToLoadArenaBatch).toBe(false);
     expect(finalReview).toContain("Executive Summary");
+    expect(finalReview).toContain("Research Gate");
     expect(foldDiff.tables.foldCounts.recomputedPurged).toBeGreaterThan(0);
+  });
+
+  it("strict export audit fails closed on post-close decision rows", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "dogeedge-postclose-audit-"));
+    const input = path.join(root, "review_exports");
+    const out = path.join(root, "artifacts", "factory-audit");
+    writeReviewExportFixture(input);
+    writeFileSync(path.join(input, "frames", "decision-frames.sample.ndjson"), `${JSON.stringify({
+      frame_id: "bad-post-close",
+      market_id: "m-post",
+      frame_timestamp_utc: "2026-06-01T00:16:00.000Z",
+      decision_timestamp: "2026-06-01T00:16:00.000Z",
+      feature_timestamp: "2026-06-01T00:15:59.000Z",
+      label_timestamp_utc: "2026-06-01T00:15:00.000Z",
+      market_close_timestamp_utc: "2026-06-01T00:15:00.000Z",
+      settlement_timestamp: "2026-06-01T00:15:00.000Z",
+    })}\n`);
+
+    const audit = await auditReviewExports({ input, outDir: out, strict: true });
+
+    expect(audit.verdict).toBe("fail_closed");
+    expect(audit.schema.errors).toEqual(expect.arrayContaining(["post_close_decision_rows"]));
   });
 
   it("reports holdout, CPCV, bootstrap, drift, and approximate metric fields", () => {
@@ -733,6 +797,28 @@ function robustMetric(algoId: string) {
       pnl: index % 3 ? 0.05 : -0.02,
       entryContext: { regime: { timeToClose: "final_60s" } },
     })),
+  };
+}
+
+function strictResearchEvidence(algoId: string) {
+  return {
+    ...robustMetric(algoId),
+    promotionVerdict: "paper_only",
+    promotionStage: "validation_candidate",
+    nonPromotable: false,
+    labelSource: "official_resolution",
+    settlementSource: "official_resolution",
+    officialResolutionAvailable: true,
+    officialSettlementCoverage: 1,
+    conservativeTotalPnl: 3,
+    stressTotalPnl: 1,
+    dsrApprox: 0.85,
+    pboApprox: 0.1,
+    familyAdjustedPValue: 0.05,
+    globalAdjustedPValue: 0.05,
+    falseDiscoveryRisk: 0.1,
+    adjustedConfidence: 0.8,
+    paperEvidence: { available: true, driftOk: true, closedMarkets: 50 },
   };
 }
 

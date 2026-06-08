@@ -6,7 +6,18 @@ import { finalHoldoutSplit } from "./holdout.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
-export async function auditReviewExports({ input = "review_exports", outDir = "artifacts/factory-audit", foldCount = 5, embargoMs = 15 * 60_000, debugOnly = false } = {}) {
+export async function auditReviewExports({
+  input = "review_exports",
+  outDir = "artifacts/factory-audit",
+  foldCount = 5,
+  embargoMs = 15 * 60_000,
+  debugOnly = false,
+  strict = false,
+  promotionReview = false,
+  requireRawTicks = false,
+  gateReport = false,
+  reconcileTopRoster = false,
+} = {}) {
   const inputRoot = path.resolve(repoRoot, input);
   const outputRoot = path.resolve(repoRoot, outDir);
   await mkdir(outputRoot, { recursive: true });
@@ -16,18 +27,23 @@ export async function auditReviewExports({ input = "review_exports", outDir = "a
   await writeJson(path.join(inputRoot, "normalized", "manifest.json"), roles);
 
   const repoSnapshot = roles.repoSnapshot ? parseRepoSnapshot(await readText(roles.repoSnapshot)) : {};
+  const bundleManifest = roles.bundleManifest ? await readJson(roles.bundleManifest) : null;
   const fullRun = roles.factoryFullRun ? await readJson(roles.factoryFullRun) : null;
   const registry = roles.experimentRegistry ? await readJson(roles.experimentRegistry) : null;
   const latestSweep = roles.latestSweep ? await readJson(roles.latestSweep) : null;
+  const rawTicksManifest = roles.rawTicksManifest ? await readJson(roles.rawTicksManifest) : null;
+  const topTradersExecutable = roles.topTradersExecutable ? await readJson(roles.topTradersExecutable) : null;
   const simulatorConfig = roles.simulatorConfig ? await readJson(roles.simulatorConfig) : null;
   const frameRows = roles.decisionFramesSample ? await readNdjson(roles.decisionFramesSample) : [];
   const events = eventsFromDecisionFrameSample(frameRows);
   const recomputed = recomputeFolds(events, { foldCount, embargoMs });
   const foldDiff = diffFolds({ fullRun, registry, recomputed, debugOnly });
-  const schema = validateSchemas({ roles, repoSnapshot, fullRun, registry, latestSweep, simulatorConfig, frameRows });
+  const schema = validateSchemas({ roles, repoSnapshot, bundleManifest, fullRun, registry, latestSweep, simulatorConfig, frameRows, rawTicksManifest, strict, promotionReview, requireRawTicks });
   const metrics = fullRun?.metrics ?? latestSweep?.topMetrics ?? [];
   const metricsCompare = metricsComparison(metrics);
   const promotionSummary = promotionVerdictSummary(metrics);
+  const gate = gateReport ? gateReportSummary(metrics) : null;
+  const topRosterReconciliation = reconcileTopRoster ? await reconcileTopRosterSummary({ roles, topTradersExecutable }) : null;
   const reproducibility = reproducibilityWarnings({ repoSnapshot, fullRun, registry, roles });
   const audit = {
     generatedAtUtc: new Date().toISOString(),
@@ -38,6 +54,8 @@ export async function auditReviewExports({ input = "review_exports", outDir = "a
     foldDiff,
     metricsSummary: metricsCompare.summary,
     promotionSummary,
+    gate,
+    topRosterReconciliation,
     verdict: auditVerdict({ schema, foldDiff, reproducibility }),
   };
 
@@ -72,12 +90,18 @@ async function discoverRoles(root) {
     factoryFullRun: rolePath("factory/factory-full-run.json"),
     perTradeCsv: rolePath("trades/per-trade.csv"),
     perTradeManifest: rolePath("trades/per-trade-manifest.json"),
-    decisionFramesSample: rolePath("frames/decision-frames.sample.ndjson"),
+    decisionFramesSample: rolePath("frames/decision-frames.sample.ndjson") ?? rolePath("snapshots/decision_frames.jsonl"),
     decisionFrameManifest: rolePath("frames/decision-frame-manifest.json"),
     simulatorConfig: rolePath("simulator/simulator-config.json"),
     experimentRegistry: rolePath("registry/experiment-registry.json"),
-    latestJson: rolePath("ui/latest.json"),
-    latestSweep: rolePath("ui/latest-sweep.json"),
+    latestJson: rolePath("ui/latest.json") ?? rolePath("repo/local-worker-latest.json"),
+    latestSweep: rolePath("ui/latest-sweep.json") ?? rolePath("repo/latest-sweep.json"),
+    bundleManifest: rolePath("manifest.json"),
+    bundleLatestSweep: rolePath("repo/latest-sweep.json"),
+    topTradersExecutable: rolePath("repo/top-traders-executable.json"),
+    rawTicksManifest: rolePath("snapshots/raw_market_ticks/manifest.json"),
+    snapshotDecisionFrames: rolePath("snapshots/decision_frames.jsonl"),
+    snapshotTradesCsv: rolePath("snapshots/trades.csv"),
     candidatesJson: rolePath("ui/candidates.json"),
     metricsJson: rolePath("ui/metrics.json"),
     reportMd: rolePath("ui/report.md"),
@@ -91,10 +115,18 @@ async function discoverRoles(root) {
   };
 }
 
-function validateSchemas({ roles, repoSnapshot, fullRun, registry, latestSweep, simulatorConfig, frameRows }) {
+function validateSchemas({ roles, repoSnapshot, bundleManifest, fullRun, registry, latestSweep, simulatorConfig, frameRows, rawTicksManifest, strict, promotionReview, requireRawTicks }) {
   const warnings = [];
   const errors = [];
-  const criticalRoles = ["repoSnapshot", "factoryFullRun", "perTradeCsv", "decisionFramesSample", "simulatorConfig", "experimentRegistry", "latestSweep", "reportMd"];
+  const bundleMode = Boolean(bundleManifest);
+  const factorySource = fullRun ?? latestSweep ?? {};
+  const registrySource = registry ?? factorySource.registry ?? {};
+  const metricsSource = Array.isArray(fullRun?.metrics) && fullRun.metrics.length
+    ? fullRun.metrics
+    : Array.isArray(latestSweep?.topMetrics) ? latestSweep.topMetrics : [];
+  const criticalRoles = bundleMode
+    ? ["bundleManifest", "decisionFramesSample", "snapshotTradesCsv", "experimentRegistry", "latestSweep", "rawTicksManifest"]
+    : ["repoSnapshot", "factoryFullRun", "perTradeCsv", "decisionFramesSample", "simulatorConfig", "experimentRegistry", "latestSweep", "reportMd"];
   for (const role of criticalRoles) {
     if (!roles[role]) errors.push(`missing_role:${role}`);
   }
@@ -102,26 +134,35 @@ function validateSchemas({ roles, repoSnapshot, fullRun, registry, latestSweep, 
   if (!roles.metricsJson && !roles.splitFiles.some((item) => item.originalFile === "metrics.json")) warnings.push("metrics_json_is_split_or_missing");
   if (!roles.factoryPageScreenshot) warnings.push("missing_factory_page_png");
   if (!repoSnapshot.git_rev_parse_head) warnings.push("repo_snapshot_missing_git_head");
-  if (!fullRun?.gitCommit && !fullRun?.codeVersion) errors.push("full_run_missing_git_commit");
-  if (!fullRun?.randomSeed) errors.push("full_run_missing_random_seed");
-  if (!fullRun?.configHash) errors.push("full_run_missing_config_hash");
-  if (!fullRun?.dataHash) errors.push("full_run_missing_data_hash");
-  if (!Array.isArray(fullRun?.purgedFolds) || !fullRun.purgedFolds.length) errors.push("full_run_missing_purged_folds");
-  if (!Array.isArray(fullRun?.cpcvFolds) || !fullRun.cpcvFolds.length) errors.push("full_run_missing_cpcv_folds");
-  if (!fullRun?.holdoutDefinition) errors.push("full_run_missing_holdout_definition");
-  if (!registry?.inputManifestHash) errors.push("registry_missing_input_manifest_hash");
-  if (!Array.isArray(registry?.inputFiles) || !registry.inputFiles.length) errors.push("registry_missing_input_file_hashes");
-  if (!registry?.randomSeed) errors.push("registry_missing_random_seed");
-  if (!Array.isArray(registry?.foldDefinitions) || !registry.foldDefinitions.length) errors.push("registry_missing_fold_definitions");
-  if (!Array.isArray(registry?.cpcvFoldDefinitions) || !registry.cpcvFoldDefinitions.length) errors.push("registry_missing_cpcv_fold_definitions");
-  if (!registry?.holdoutDefinition) errors.push("registry_missing_holdout_definition");
+  if (!factorySource?.gitCommit && !factorySource?.codeVersion && !registrySource?.gitCommit && !registrySource?.codeVersion) errors.push("factory_output_missing_git_commit");
+  if (!factorySource?.randomSeed && !registrySource?.randomSeed) errors.push("factory_output_missing_random_seed");
+  if (!factorySource?.configHash && !registrySource?.configHash) errors.push("factory_output_missing_config_hash");
+  if (!factorySource?.dataHash && !registrySource?.dataHash && !registrySource?.inputManifestHash) errors.push("factory_output_missing_data_hash");
+  if (!Array.isArray(factorySource?.purgedFolds) && !Array.isArray(registrySource?.foldDefinitions)) errors.push("factory_output_missing_purged_folds");
+  if (!Array.isArray(factorySource?.cpcvFolds) && !Array.isArray(registrySource?.cpcvFoldDefinitions)) errors.push("factory_output_missing_cpcv_folds");
+  if (!factorySource?.holdoutDefinition && !registrySource?.holdoutDefinition) errors.push("factory_output_missing_holdout_definition");
+  if (!registrySource?.inputManifestHash) errors.push("registry_missing_input_manifest_hash");
+  if (!bundleMode && (!Array.isArray(registrySource?.inputFiles) || !registrySource.inputFiles.length)) errors.push("registry_missing_input_file_hashes");
+  if (!registrySource?.randomSeed) errors.push("registry_missing_random_seed");
+  if (!Array.isArray(registrySource?.foldDefinitions) || !registrySource.foldDefinitions.length) errors.push("registry_missing_fold_definitions");
+  if (!Array.isArray(registrySource?.cpcvFoldDefinitions) || !registrySource.cpcvFoldDefinitions.length) errors.push("registry_missing_cpcv_fold_definitions");
+  if (!registrySource?.holdoutDefinition) errors.push("registry_missing_holdout_definition");
   if (!Array.isArray(simulatorConfig?.costModels) || simulatorConfig.costModels.length < 2) warnings.push("simulator_config_missing_multiple_cost_models");
-  if (!Array.isArray(fullRun?.metrics) || !fullRun.metrics.length) errors.push("full_run_missing_metrics");
+  if (!metricsSource.length) errors.push("factory_output_missing_metrics");
   for (const field of ["promotionVerdict", "reasonCodes", "robustScore", "adjustedConfidence", "holdoutPass", "cpcvSummary", "foldMetrics"]) {
-    if (fullRun?.metrics?.length && !Object.prototype.hasOwnProperty.call(fullRun.metrics[0], field)) errors.push(`metric_missing_field:${field}`);
+    if (metricsSource.length && !Object.prototype.hasOwnProperty.call(metricsSource[0], field)) errors.push(`metric_missing_field:${field}`);
   }
   if (!frameRows.length) errors.push("decision_frame_sample_empty");
   if (latestSweep && !Array.isArray(latestSweep.topMetrics)) warnings.push("latest_sweep_missing_top_metrics");
+  if (strict) {
+    const temporal = temporalViolations(frameRows);
+    if (temporal.postCloseDecisionCount > 0) errors.push("post_close_decision_rows");
+    if (temporal.impossibleOrderCount > 0) errors.push("temporal_order_violations");
+  }
+  if (promotionReview && (bundleManifest?.rowExport?.rowsCapped === true || bundleManifest?.limitations?.includes?.("rows_capped"))) {
+    errors.push("promotion_review_requires_full_rows");
+  }
+  if (requireRawTicks && rawTicksManifest?.available !== true) errors.push("raw_ticks_required_missing");
   return { warnings, errors, warningCount: warnings.length, errorCount: errors.length };
 }
 
@@ -274,12 +315,146 @@ function promotionVerdictSummary(metrics) {
   return counts;
 }
 
+function gateReportSummary(metrics) {
+  const reasonCounts = {};
+  const rows = [];
+  let validCount = 0;
+  for (const metric of metrics ?? []) {
+    const gate = metricPassesResearchGate(metric);
+    if (gate.ok) validCount += 1;
+    for (const reason of gate.reasonCodes) reasonCounts[reason] = (reasonCounts[reason] ?? 0) + 1;
+    rows.push({
+      algoId: metric.algoId ?? metric.id ?? "unknown",
+      promotionVerdict: metric.promotionVerdict ?? "unknown",
+      ok: gate.ok,
+      reasonCodes: gate.reasonCodes,
+      robustScore: metric.robustScore ?? null,
+      adjustedConfidence: metric.adjustedConfidence ?? null,
+      holdoutPass: metric.holdoutPass ?? null,
+      conservativeTotalPnl: metric.conservativeTotalPnl ?? null,
+      stressTotalPnl: metric.stressTotalPnl ?? null,
+    });
+  }
+  return {
+    checkedCount: metrics?.length ?? 0,
+    validCount,
+    allowedToLoadArenaBatch: validCount > 0,
+    state: validCount > 0 ? "research_validated" : "hold_gather_evidence",
+    reasonCounts,
+    topBlocked: rows.filter((row) => !row.ok).slice(0, 25),
+  };
+}
+
+function metricPassesResearchGate(metric) {
+  if (!metric) return { ok: false, reasonCodes: ["missing_metric"] };
+  const reasonCodes = [];
+  if (metric.nonPromotable) reasonCodes.push("non_promotable");
+  if (metric.promotionVerdict !== "paper_only" && metric.promotionVerdict !== "tiny_live_eligible") {
+    reasonCodes.push(metric.promotionVerdict === "insufficient_data" ? "insufficient_data" : "promotion_verdict_not_validated");
+  }
+  if (metric.labelSource !== "official_resolution") reasonCodes.push("official_label_required");
+  if (metric.settlementSource !== "official_resolution") reasonCodes.push("official_settlement_required");
+  if (numberOrDefault(metric.officialSettlementCoverage, 0) < 0.95) reasonCodes.push("official_settlement_coverage_low");
+  if (metric.holdoutPass !== true || metric.holdoutStrictlyLater === false) reasonCodes.push("holdout_failed");
+  if (numberOrDefault(metric.holdoutConservativeTotalPnl, Number.NEGATIVE_INFINITY) <= 0) reasonCodes.push("holdout_conservative_pnl_not_positive");
+  if (!Number.isFinite(Number(metric.holdoutLowerCi)) || Number(metric.holdoutLowerCi) < 0) reasonCodes.push("holdout_lower_ci_below_zero");
+  if (metric.walkForwardPass !== true) reasonCodes.push("walk_forward_failed");
+  if (numberOrDefault(metric.cpcvSummary?.positiveFoldRate ?? metric.cpcvPositivePathRate ?? metric.cpcvPositiveRate, 0) < 0.7) reasonCodes.push("poor_cpcv_consistency");
+  if (numberOrDefault(metric.conservativeTotalPnl, Number.NEGATIVE_INFINITY) <= 0) reasonCodes.push("conservative_pnl_not_positive");
+  if (numberOrDefault(metric.stressTotalPnl, Number.NEGATIVE_INFINITY) <= 0) reasonCodes.push("stress_pnl_not_positive");
+  if (numberOrDefault(metric.adjustedConfidence, 0) < 0.7) reasonCodes.push("adjusted_confidence_low");
+  if (numberOrDefault(metric.dsrApprox, 0) < 0.8) reasonCodes.push("dsr_approx_low");
+  if (numberOrDefault(metric.pboApprox, 1) > 0.2) reasonCodes.push("pbo_approx_high");
+  if (numberOrDefault(metric.familyAdjustedPValue, 1) > 0.1) reasonCodes.push("family_adjusted_p_value_high");
+  if (numberOrDefault(metric.globalAdjustedPValue, 1) > 0.1) reasonCodes.push("global_adjusted_p_value_high");
+  if (numberOrDefault(metric.falseDiscoveryRisk, 1) > 0.2) reasonCodes.push("false_discovery_risk_high");
+  if (metric.paperEvidence?.available && metric.paperEvidence.driftOk === false) reasonCodes.push("paper_drift_detected");
+  return { ok: reasonCodes.length === 0, reasonCodes };
+}
+
+function temporalViolations(rows) {
+  const examples = [];
+  let postCloseDecisionCount = 0;
+  let impossibleOrderCount = 0;
+  for (const row of rows ?? []) {
+    const id = row.row_id ?? row.frame_id ?? row.id ?? row.market_id ?? row.marketTicker ?? "unknown";
+    const featureMs = timestampMs(row.feature_timestamp ?? row.featureTimestamp ?? row.frame_timestamp_utc ?? row.observedAt);
+    const decisionMs = timestampMs(row.decision_timestamp ?? row.decisionTimestamp ?? row.frame_timestamp_utc ?? row.featureTimestamp ?? row.observedAt);
+    const closeMs = timestampMs(row.market_close_timestamp ?? row.marketCloseTimestamp ?? row.market_close_timestamp_utc ?? row.marketCloseTime);
+    const labelMs = timestampMs(row.label_timestamp ?? row.labelTimestamp ?? row.label_timestamp_utc);
+    const settlementMs = timestampMs(row.settlement_timestamp ?? row.settlementTimestamp ?? row.settlement_timestamp_utc);
+    if (Number.isFinite(decisionMs) && Number.isFinite(closeMs) && decisionMs > closeMs) {
+      postCloseDecisionCount += 1;
+      if (examples.length < 20) examples.push({ id, problem: "post_close_decision", decisionTimestamp: new Date(decisionMs).toISOString(), marketCloseTimestamp: new Date(closeMs).toISOString() });
+    }
+    const impossible =
+      (Number.isFinite(featureMs) && Number.isFinite(decisionMs) && featureMs > decisionMs) ||
+      (Number.isFinite(closeMs) && Number.isFinite(labelMs) && labelMs < closeMs) ||
+      (Number.isFinite(closeMs) && Number.isFinite(settlementMs) && settlementMs < closeMs);
+    if (impossible) {
+      impossibleOrderCount += 1;
+      if (examples.length < 20) examples.push({ id, problem: "temporal_order" });
+    }
+  }
+  return { postCloseDecisionCount, impossibleOrderCount, examples };
+}
+
+async function reconcileTopRosterSummary({ roles, topTradersExecutable }) {
+  const stats = topTradersExecutable?.stats ?? topTradersExecutable?.topTradersExecutable?.stats ?? {};
+  const statRows = Object.values(stats).filter((row) => row && typeof row === "object");
+  const tradePath = roles.snapshotTradesCsv ?? roles.perTradeCsv;
+  if (!statRows.length) {
+    return { available: false, compared: 0, unmatchedStats: 0, mismatchedPnl: 0, warnings: ["top_traders_stats_missing"] };
+  }
+  if (!tradePath) {
+    return { available: false, compared: 0, unmatchedStats: statRows.length, mismatchedPnl: 0, warnings: ["trade_rows_missing_for_top_roster_reconciliation"] };
+  }
+  const tradeRows = await readCsvRows(tradePath).catch(() => []);
+  const pnlByAlgo = new Map();
+  for (const row of tradeRows) {
+    const id = row.algoId ?? row.algo_id ?? row.strategy_id ?? row.strategyId;
+    if (!id) continue;
+    pnlByAlgo.set(id, (pnlByAlgo.get(id) ?? 0) + numberOrDefault(row.pnl, 0));
+  }
+  let compared = 0;
+  let unmatchedStats = 0;
+  let mismatchedPnl = 0;
+  const examples = [];
+  for (const stat of statRows) {
+    const id = stat.sourceAlgoId ?? stat.algoId ?? stat.id ?? stat.strategyId;
+    if (!id) continue;
+    const expected = numberOrDefault(stat.totalPnl, null);
+    const actual = pnlByAlgo.get(id);
+    if (actual === undefined) {
+      unmatchedStats += 1;
+      if (examples.length < 20) examples.push({ algoId: id, problem: "missing_trade_rows" });
+      continue;
+    }
+    compared += 1;
+    if (expected !== null && Math.abs(expected - actual) > 0.01) {
+      mismatchedPnl += 1;
+      if (examples.length < 20) examples.push({ algoId: id, problem: "pnl_mismatch", statsPnl: expected, rowPnl: actual });
+    }
+  }
+  return {
+    available: true,
+    compared,
+    unmatchedStats,
+    mismatchedPnl,
+    warnings: [
+      ...(unmatchedStats ? ["top_roster_stats_without_trade_rows"] : []),
+      ...(mismatchedPnl ? ["top_roster_pnl_mismatch"] : []),
+    ],
+    examples,
+  };
+}
+
 function eventsFromDecisionFrameSample(rows) {
   const byMarket = new Map();
   for (const row of rows) {
-    const id = row.market_id ?? row.marketTicker ?? row.market_id;
-    const featureMs = Date.parse(row.frame_timestamp_utc ?? row.featureTimestamp ?? row.observedAt ?? "");
-    const closeMs = Date.parse(row.market_close_timestamp_utc ?? row.marketCloseTimestamp ?? row.marketCloseTime ?? "");
+    const id = row.market_id ?? row.marketTicker ?? row.market_ticker;
+    const featureMs = timestampMs(row.frame_timestamp_utc ?? row.feature_timestamp ?? row.featureTimestamp ?? row.observed_at ?? row.observedAt);
+    const closeMs = timestampMs(row.market_close_timestamp_utc ?? row.market_close_timestamp ?? row.marketCloseTimestamp ?? row.marketCloseTime);
     if (!id || !Number.isFinite(featureMs)) continue;
     const current = byMarket.get(id) ?? {
       id,
@@ -354,6 +529,29 @@ function auditMarkdown(audit) {
     "",
     audit.reproducibility.warnings.length ? audit.reproducibility.warnings.map((item) => `- ${item}`).join("\n") : "- No reproducibility warnings.",
     "",
+    "## Research Gate",
+    "",
+    audit.gate
+      ? [
+        `- State: ${audit.gate.state}`,
+        `- Valid research candidates: ${audit.gate.validCount}/${audit.gate.checkedCount}`,
+        `- Arena batch loading allowed: ${audit.gate.allowedToLoadArenaBatch ? "yes" : "no"}`,
+        `- Block reasons: ${Object.entries(audit.gate.reasonCounts).map(([key, value]) => `${key}=${value}`).join(", ") || "none"}`,
+      ].join("\n")
+      : "- Gate report was not requested.",
+    "",
+    "## Top Roster Reconciliation",
+    "",
+    audit.topRosterReconciliation
+      ? [
+        `- Available: ${audit.topRosterReconciliation.available ? "yes" : "no"}`,
+        `- Compared rows: ${audit.topRosterReconciliation.compared}`,
+        `- Unmatched stats: ${audit.topRosterReconciliation.unmatchedStats}`,
+        `- P/L mismatches: ${audit.topRosterReconciliation.mismatchedPnl}`,
+        `- Warnings: ${audit.topRosterReconciliation.warnings.join(", ") || "none"}`,
+      ].join("\n")
+      : "- Top roster reconciliation was not requested.",
+    "",
     "## Fold Diff",
     "",
     foldDiffMarkdown(audit.foldDiff),
@@ -401,6 +599,18 @@ function finalReviewMarkdown(finalReview) {
     "",
     "- UI-compatible fields checked: promotionVerdict, reasonCodes, robustScore, adjustedConfidence, holdoutPass, cpcvSummary.",
     "- Split `latest.json` and `metrics.json` are accepted when split manifests are present.",
+    "",
+    "## Research Gate",
+    "",
+    finalReview.audit.gate
+      ? `State: ${finalReview.audit.gate.state}; valid candidates: ${finalReview.audit.gate.validCount}/${finalReview.audit.gate.checkedCount}; arena load allowed: ${finalReview.audit.gate.allowedToLoadArenaBatch ? "yes" : "no"}.`
+      : "Gate report was not requested.",
+    "",
+    "## Top Roster Reconciliation",
+    "",
+    finalReview.audit.topRosterReconciliation
+      ? `Compared ${finalReview.audit.topRosterReconciliation.compared} rows; unmatched stats ${finalReview.audit.topRosterReconciliation.unmatchedStats}; P/L mismatches ${finalReview.audit.topRosterReconciliation.mismatchedPnl}.`
+      : "Top roster reconciliation was not requested.",
     "",
     "## Promotion Timeline",
     "",
@@ -479,6 +689,59 @@ async function readNdjson(file) {
   return text.split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
 }
 
+async function readCsvRows(file) {
+  const text = await readText(file);
+  const lines = text.split(/\r?\n/).filter(Boolean);
+  if (lines.length < 2) return [];
+  const headers = parseCsvLine(lines[0]);
+  return lines.slice(1).map((line) => {
+    const cells = parseCsvLine(line);
+    const row = {};
+    headers.forEach((header, index) => {
+      row[header] = cells[index] ?? "";
+    });
+    return row;
+  });
+}
+
+function parseCsvLine(line) {
+  const cells = [];
+  let current = "";
+  let quoted = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+    if (char === '"' && quoted && line[index + 1] === '"') {
+      current += '"';
+      index += 1;
+      continue;
+    }
+    if (char === '"') {
+      quoted = !quoted;
+      continue;
+    }
+    if (char === "," && !quoted) {
+      cells.push(current);
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+  cells.push(current);
+  return cells;
+}
+
+function timestampMs(value) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value !== "string" || value.length === 0) return Number.NaN;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : Number.NaN;
+}
+
+function numberOrDefault(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
 async function writeJson(file, value) {
   await mkdir(path.dirname(file), { recursive: true });
   await writeFile(file, `${JSON.stringify(value, null, 2)}\n`);
@@ -499,6 +762,11 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     foldCount: Number(args.folds ?? 5),
     embargoMs: Number(args["embargo-ms"] ?? 15 * 60_000),
     debugOnly: Boolean(args["debug-only"]),
+    strict: Boolean(args.strict),
+    promotionReview: Boolean(args["promotion-review"]),
+    requireRawTicks: Boolean(args["require-raw-ticks"]),
+    gateReport: Boolean(args["gate-report"]),
+    reconcileTopRoster: Boolean(args["reconcile-top-roster"]),
   });
   console.log(`DogeEdge export audit: ${audit.verdict}`);
   console.log(`Report: ${path.resolve(repoRoot, args.out ?? "artifacts/factory-audit", "final-review.md")}`);

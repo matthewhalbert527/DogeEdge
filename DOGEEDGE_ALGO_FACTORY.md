@@ -87,6 +87,8 @@ npm run factory:replay-run
 npm run factory:compare
 npm run factory:promote-check
 npm run factory:audit-exports -- --input review_exports
+npm run factory:gate-report -- --input review_exports
+npm run factory:reconcile-top-roster -- --input review_exports
 npm run eval:snapshot
 npm run eval:bundle
 npm run eval:loop
@@ -130,11 +132,17 @@ Useful exporter options:
 npm run eval:snapshot -- --max-row-lines 1000
 npm run eval:bundle -- --max-row-lines 1000
 npm run eval:loop -- --max-row-lines 1000
+npm run eval:bundle -- --full-rows
+npm run eval:bundle -- --raw-tick-format jsonl --max-raw-tick-markets 20
 npm run eval:bundle -- --no-rows
 npm run eval:bundle -- --out D:\DogeEdge\data\gpt-review-packets
 ```
 
-The row-level decision/trade extracts are capped by `--max-row-lines` so the packet does not accidentally include the full paper-trade log. Increase the cap only for first-upload audits or when a reject/drift alert needs row-level debugging.
+The row-level decision/trade extracts are capped by `--max-row-lines` so the packet does not accidentally include the full paper-trade log. Routine two-hour reviews should stay capped. Promotion-review audits should use `--full-rows`, which marks `rowExport.promotionReviewComplete = true` in the snapshot and bundle manifest. `factory:audit-exports -- --promotion-review` fails closed when it sees capped rows.
+
+`--raw-tick-format jsonl` writes compact per-market raw-tick samples from `raw\snapshots` under `snapshots\raw_market_ticks\jsonl\`. This is the current lightweight replay-calibration export. The manifest still emits `raw_market_tick_parquet_absent` until true per-market parquet replay files exist, so execution-realism scoring remains explicitly limited.
+
+`factory:gate-report` runs the export audit with the research gate report enabled. It says whether arena batch loading is allowed or whether DogeEdge should stay in `hold_gather_evidence`. `factory:reconcile-top-roster` compares Top Traders aggregate P/L with exported trade rows and flags unreconciled telemetry.
 
 ## Continuous Improvement Review Loop
 
@@ -178,7 +186,7 @@ Estimated/proxy labels remain useful for paper research and UI evidence collecti
 
 Sweep breadth is also governed by the available evidence. If the event count is too low or official-settlement coverage is below the configured threshold, the factory caps generated sweep algos and blocks deep-sweep expansion. The output includes a `searchBudget` object with `limited`, `deepSweepAllowed`, `requestedSweepAlgos`, `maxGeneratedAlgos`, `officialSettlementCoverage`, and reason codes such as `search_budget_limited_by_sample_size` or `deep_sweep_blocked_low_official_coverage`.
 
-The app's Top Traders roster is intentionally research-first. Dry-run executable stats remain visible and are still used as operational telemetry, but Champion/Prospect slots require research gates to be mature enough. Low-evidence rows may remain visible as watch rows so they can gather evidence without implying promotion quality.
+The app's Top Traders roster is intentionally research-first. Dry-run executable stats remain visible and are still used as operational telemetry, but large arena batch churn is held when the latest research sweep has no candidate passing official settlement, holdout, walk-forward, CPCV, conservative/stress cost, and multiple-testing gates. In that state DogeEdge runs a capped telemetry-only pool so evidence continues to accumulate without presenting a dry-run winner as research-validated.
 
 `merge:safety` is a local advisory guard for GPT-CLI patch passes. It prints `ALLOW` only for documentation/export/audit/report/test-artifact diffs. It prints `REQUIRE_HUMAN_APPROVAL` for app code, dependencies, factory kernel files, local worker/backtest entry points, Tauri/API files, and live/Kalshi/order-sensitive paths. It does not merge, push, or change runtime behavior.
 

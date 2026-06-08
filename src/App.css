@@ -1042,6 +1042,11 @@
   padding: 10px 14px;
 }
 
+.panel-note.warning-note {
+  color: #9a5b00;
+  background: #fff7e8;
+}
+
 .table-note {
   padding: 8px 14px;
 }
