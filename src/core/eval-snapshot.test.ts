@@ -123,7 +123,24 @@ describe("continuous evaluation snapshot exporter", () => {
     expect(rowsByPath["snapshots/tradeRows.tsv.gz"]).toBe(1);
     expect(rowsByPath["snapshots/paper_decision_ledger.csv"]).toBeGreaterThan(1);
     expect(manifest.rowExport.rowsCapped).toBe(true);
-    expect(manifest.limitations).toContain("rows_capped");
+    expect(manifest.rawMarketTickExport).toMatchObject({
+      manifestPresent: true,
+      parseOk: true,
+      available: true,
+      parquetAvailable: false,
+      jsonlAvailable: true,
+      targetMarketCount: 1,
+      jsonlFileCount: 1,
+    });
+    expect(manifest.rawMarketTickExport.warningCodes).toEqual(expect.arrayContaining([
+      "raw_market_tick_parquet_absent",
+      "raw_market_tick_jsonl_sample",
+    ]));
+    expect(manifest.limitations).toEqual(expect.arrayContaining([
+      "rows_capped",
+      "raw_market_tick_parquet_absent",
+      "raw_market_tick_jsonl_sample",
+    ]));
     expect(manifest.files.map((file: { relativePath: string }) => file.relativePath)).toContain("snapshots/raw_market_ticks/jsonl/KXDOGE15M-FIXTURE.jsonl");
     expect(manifest.safetyStatus.liveTradingEnabled).toBe(false);
   });

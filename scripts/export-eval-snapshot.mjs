@@ -697,7 +697,11 @@ export async function buildReviewBundle(options = {}) {
     }
   }
   const rawTicksManifest = path.join(snapshotResult.snapshotDir, "raw_market_ticks", "manifest.json");
+  let rawTicksManifestPresent = false;
+  let rawTicksManifestJson = null;
   if (await exists(rawTicksManifest)) {
+    rawTicksManifestPresent = true;
+    rawTicksManifestJson = await readJsonMaybe(rawTicksManifest);
     const target = path.join(bundleRoot, "snapshots", "raw_market_ticks", "manifest.json");
     await mkdir(path.dirname(target), { recursive: true });
     await copyFile(rawTicksManifest, target);
@@ -731,6 +735,7 @@ export async function buildReviewBundle(options = {}) {
   bundleFiles.push(...repoFiles);
   const registryFile = await writeRegistryTarball({ bundleRoot, options, snapshot: snapshotResult.snapshot });
   if (registryFile) bundleFiles.push(registryFile);
+  const rawMarketTickExport = rawMarketTickBundleSummary(rawTicksManifestJson, rawTicksManifestPresent);
 
   const manifest = {
     schemaVersion: "dogeedge.eval.review.bundle.v1",
@@ -741,14 +746,13 @@ export async function buildReviewBundle(options = {}) {
     bundleHours,
     safetyStatus: snapshotResult.snapshot.appState.liveSafety,
     rowExport: snapshotResult.snapshot.rowExport,
+    rawMarketTickExport,
     alerts: snapshotResult.snapshot.alerts,
     files: bundleFiles,
-    limitations: [
-      ...(snapshotResult.snapshot.rowExport?.rowsCapped ? ["rows_capped"] : []),
-      ...((snapshotResult.snapshot.filesManifest ?? []).some((file) => file.logicalName === "raw_market_ticks/manifest.json")
-        ? []
-        : ["raw_market_tick_manifest_absent"]),
-    ],
+    limitations: bundleLimitations({
+      rowExport: snapshotResult.snapshot.rowExport,
+      rawMarketTickExport,
+    }),
     notes: [
       "Local-only review bundle. No external uploads were performed by DogeEdge.",
       "Absolute paths are replaced by _REPO_ROOT_ and _DATA_ROOT_ in JSON metadata.",
@@ -779,6 +783,34 @@ function snapshotExportRowsByName(snapshotResult) {
     }
   }
   return rowsByName;
+}
+
+function rawMarketTickBundleSummary(manifest, manifestPresent) {
+  const parseOk = isRecord(manifest);
+  const warningCodes = uniqueStrings([
+    ...(!manifestPresent ? ["raw_market_tick_manifest_absent"] : []),
+    ...(manifestPresent && !parseOk ? ["raw_market_tick_manifest_parse_failed"] : []),
+    ...(Array.isArray(manifest?.warningCodes) ? manifest.warningCodes : []),
+  ]);
+  return {
+    manifestPresent,
+    parseOk,
+    available: manifest?.available === true,
+    format: typeof manifest?.format === "string" ? manifest.format : null,
+    parquetAvailable: manifest?.parquetAvailable === true,
+    jsonlAvailable: manifest?.jsonlAvailable === true,
+    targetMarketCount: Array.isArray(manifest?.targetMarkets) ? manifest.targetMarkets.length : 0,
+    jsonlFileCount: Array.isArray(manifest?.jsonlFiles) ? manifest.jsonlFiles.length : 0,
+    sourceSnapshotFileCount: Array.isArray(manifest?.sourceSnapshotFiles) ? manifest.sourceSnapshotFiles.length : 0,
+    warningCodes,
+  };
+}
+
+function bundleLimitations({ rowExport, rawMarketTickExport }) {
+  return uniqueStrings([
+    ...(rowExport?.rowsCapped ? ["rows_capped"] : []),
+    ...(Array.isArray(rawMarketTickExport?.warningCodes) ? rawMarketTickExport.warningCodes : []),
+  ]);
 }
 
 export function validateEvaluationSnapshot(snapshot) {
