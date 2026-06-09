@@ -1,5 +1,5 @@
 import { gunzipSync } from "node:zlib";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -134,6 +134,59 @@ describe("continuous evaluation snapshot exporter", () => {
     const history = JSON.parse(readFileSync(path.join(fixture.outDir, "snapshot-history-48h.json"), "utf8"));
     expect(history.schemaVersion).toBe("dogeedge.eval.snapshot-history.v1");
     expect(history.latestSnapshotId).toBe(snapshot.snapshotId);
+  });
+
+  it("scans all available raw snapshot files for raw-tick coverage", async () => {
+    const fixture = writeEvalFixture({ rawSnapshotMarketTicker: null });
+    const rawSnapshotsDir = path.join(fixture.dataRoot, "raw", "snapshots");
+    const formatRawSnapshot = (marketTicker: string, ts: string) => {
+      return `${JSON.stringify({
+        capturedAt: ts,
+        runtimeSnapshot: { generatedAt: ts, feed: { status: "ok" } },
+        paperInput: {
+          ticker: marketTicker,
+          observedAt: ts,
+          action: "buy_yes",
+          selectedAsk: 0.41,
+          sizeContracts: 1,
+          yesBid: 0.4,
+          yesAsk: 0.41,
+          noBid: 0.58,
+          noAsk: 0.59,
+          marketStatus: "open",
+        },
+      })}\n`;
+    };
+    const rawFileForSnapshot = (fileName: string, marketTicker: string, at: Date) => {
+      const filePath = path.join(rawSnapshotsDir, fileName);
+      writeFileSync(filePath, formatRawSnapshot(marketTicker, at.toISOString()));
+      utimesSync(filePath, at, at);
+    };
+    rawFileForSnapshot("recent-3.jsonl", "KXDOGE15M-UNRELATED", new Date("2026-06-07T20:18:00.000Z"));
+    rawFileForSnapshot("recent-2.jsonl", "KXDOGE15M-UNRELATED", new Date("2026-06-07T20:19:00.000Z"));
+    rawFileForSnapshot("recent-1.jsonl", "KXDOGE15M-UNRELATED", new Date("2026-06-07T20:20:00.000Z"));
+    rawFileForSnapshot("oldest-target.jsonl", "KXDOGE15M-FIXTURE", new Date("2026-06-07T19:55:00.000Z"));
+
+    const result = await exportEvaluationSnapshot({
+      dataRoot: fixture.dataRoot,
+      storageDir: fixture.storageDir,
+      backtestsDir: fixture.backtestsDir,
+      outDir: fixture.outDir,
+      now: "2026-06-07T20:30:00.000Z",
+      maxRowLines: 5,
+      maxMetrics: 10,
+      maxRawTickMarkets: 10,
+    });
+
+    const rawTickManifest = JSON.parse(readFileSync(path.join(result.snapshotDir, "raw_market_ticks", "manifest.json"), "utf8"));
+    const extractedFile = path.join(result.snapshotDir, "raw_market_ticks", "jsonl", "KXDOGE15M-FIXTURE.jsonl");
+
+    expect(rawTickManifest.available).toBe(true);
+    expect(rawTickManifest.coveredTargetMarkets).toEqual(["KXDOGE15M-FIXTURE"]);
+    expect(rawTickManifest.uncoveredTargetMarkets).toEqual([]);
+    expect(rawTickManifest.warningCodes).toContain("raw_market_tick_jsonl_sample");
+    expect(rawTickManifest.warningCodes).not.toContain("raw_market_tick_target_coverage_gap");
+    expect(readFileSync(extractedFile, "utf8")).toContain("KXDOGE15M-FIXTURE");
   });
 
   it("emits a critical alert if exported safety flags are not paper-only", async () => {

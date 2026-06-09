@@ -2761,9 +2761,10 @@ async function writeRawTickJsonlSamples({ dir, rawSnapshotFiles, snapshotId, git
   await mkdir(jsonlDir, { recursive: true });
   const targets = new Set(targetMarkets);
   const rowsByMarket = new Map();
-  const sourceLineLimit = Math.min(10_000, Math.max(1_000, targetMarkets.length * 500));
-  for (const file of rawSnapshotFiles.slice(0, 3)) {
-    const lines = await readTailLines(file, sourceLineLimit);
+  const sourceLineLimit = Math.max(2_000, Math.min(50_000, targetMarkets.length * 2_000));
+  const sourceScanBytes = Math.min(64 * 1024 * 1024, Math.max(4 * 1024 * 1024, targetMarkets.length * 4 * 1024 * 1024));
+  for (const file of rawSnapshotFiles) {
+    const lines = await readTailLines(file, sourceLineLimit, sourceScanBytes);
     for (const line of lines) {
       const raw = parseJsonLine(line);
       const marketTicker = stringOrNull(raw?.marketTicker ?? raw?.paperInput?.ticker);
@@ -2775,6 +2776,7 @@ async function writeRawTickJsonlSamples({ dir, rawSnapshotFiles, snapshotId, git
       rowsByMarket.set(marketTicker, current);
       if (targets.size === 0 && rowsByMarket.size >= 20) break;
     }
+    if (targets.size > 0 && rowsByMarket.size >= targets.size) break;
   }
   const files = [];
   for (const [marketTicker, rows] of rowsByMarket) {
@@ -3072,17 +3074,17 @@ async function latestFilesRecursive(root, extensions, limit) {
   return found.sort((left, right) => right.time - left.time).slice(0, limit).map((entry) => entry.absolutePath);
 }
 
-async function readTailLines(filePath, maxLines) {
+async function readTailLines(filePath, maxLines, maxBytes = 8 * 1024 * 1024) {
   if (!filePath || !(await exists(filePath))) return [];
   const info = await stat(filePath);
   const chunkSize = 256 * 1024;
-  const maxBytes = Math.min(info.size, 8 * 1024 * 1024);
+  const byteBudget = Math.min(info.size, maxBytes);
   const chunks = [];
   let position = info.size;
   let loaded = 0;
   let text = "";
-  while (position > 0 && loaded < maxBytes && countLines(text) <= maxLines + 1) {
-    const readSize = Math.min(chunkSize, position, maxBytes - loaded);
+  while (position > 0 && loaded < byteBudget && countLines(text) <= maxLines + 1) {
+    const readSize = Math.min(chunkSize, position, byteBudget - loaded);
     position -= readSize;
     loaded += readSize;
     const buffer = Buffer.alloc(readSize);
