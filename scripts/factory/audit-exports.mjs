@@ -817,8 +817,16 @@ function bundleEvidenceMarkdown(summary) {
   const coverage = raw.coverage ?? {};
   const targetSamples = raw.targetMarketSamples ?? {};
   const sourceHash = raw.sourceHash ?? {};
+  const extractionPolicy = raw.extractionPolicy ?? {};
   const totalTargets = raw.targetMarketCount || numberOrDefault(coverage.covered, 0) + numberOrDefault(coverage.uncovered, 0);
   const coveragePercent = typeof coverage.ratio === "number" ? `${Math.round(coverage.ratio * 1000) / 10}%` : "n/a";
+  const sourceScanBudget = [
+    numberOrDefault(extractionPolicy.sourceFileDiscoveryLimit, null),
+    numberOrDefault(extractionPolicy.sourceLineLimit, null),
+    numberOrDefault(extractionPolicy.sourceScanBytes, null),
+    numberOrDefault(extractionPolicy.sourceHeadScanBytes, null),
+  ];
+  const hasExtractionPolicy = [extractionPolicy.maxTargetMarkets, extractionPolicy.maxRowsPerMarket, extractionPolicy.sourceFileDiscoveryLimit].every((value) => Number.isFinite(value));
   const rowText = summary.rowExport?.rowsCapped
     ? `Rows: capped at ${summary.rowExport.rowCap ?? "configured limit"} (${summary.rowExport.mode ?? "unknown"} mode).`
     : summary.rowExport?.includeRows === false
@@ -834,6 +842,9 @@ function bundleEvidenceMarkdown(summary) {
     `- ${rowText}`,
     `- Raw ticks: ${rawState} (${raw.available ? "available" : "unavailable"}).`,
     `- Coverage: ${coverage.covered ?? 0}/${totalTargets} target markets (${coveragePercent}); jsonl files: ${raw.jsonlFileCount ?? 0}; source files: ${raw.sourceSnapshotFileCount ?? 0}.`,
+    hasExtractionPolicy
+      ? `- Raw tick extraction policy: max ${extractionPolicy.maxTargetMarkets} target markets, ${extractionPolicy.maxRowsPerMarket} rows/market; scan budget ${extractionPolicy.sourceFileDiscoveryLimit ?? "n/a"} files, ${sourceScanBudget[1] ?? "n/a"} lines per file with ${sourceScanBudget[2] ?? "n/a"}/${sourceScanBudget[3] ?? "n/a"} bytes (tail/head).`
+      : "- Raw tick extraction policy: not recorded.",
     `- Source hashes: ${sourceHash.hashedFileCount ?? 0} hashed, ${sourceHash.skippedLargeFileCount ?? 0} skipped as large; skipped bytes: ${sourceHash.hashSkippedSourceBytes ?? 0}/${sourceHash.totalSourceBytes ?? 0} (${skippedByteRatio}).`,
     `- Limitations: ${summary.limitations?.join(", ") || "none"}.`,
     `- Raw tick warnings: ${raw.warningCodes?.join(", ") || "none"}.`,

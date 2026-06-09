@@ -126,6 +126,14 @@ describe("continuous evaluation snapshot exporter", () => {
         hashSkippedSourceBytes: 0,
         hashSkippedByteRatio: 0,
       },
+      extractionPolicy: {
+        maxTargetMarkets: 20,
+        maxRowsPerMarket: 50000,
+        sourceFileDiscoveryLimit: 10,
+        sourceLineLimit: 2000,
+        sourceScanBytes: 4194304,
+        sourceHeadScanBytes: 2097152,
+      },
       warningCodes: expect.arrayContaining(["raw_market_tick_parquet_absent", "raw_market_tick_jsonl_sample"]),
     });
     expect(rawTickManifest.sourceHashPolicy.totalSourceBytes).toBeGreaterThan(0);

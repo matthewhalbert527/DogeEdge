@@ -3,8 +3,8 @@ import path from "node:path";
 import { gunzipSync } from "node:zlib";
 import { roundMoney, roundRatio } from "./utils.mjs";
 
-export async function loadSnapshotHistory({ snapshotsRoot, hours = 48 } = {}) {
-  const cutoffMs = Date.now() - hours * 60 * 60_000;
+export async function loadSnapshotHistory({ snapshotsRoot, hours = 48, now = Date.now() } = {}) {
+  const cutoffMs = toNowMs(now) - hours * 60 * 60_000;
   const snapshots = [];
   for (const dir of await readdir(snapshotsRoot).catch(() => [])) {
     const fullDir = path.join(snapshotsRoot, dir);
@@ -17,14 +17,15 @@ export async function loadSnapshotHistory({ snapshotsRoot, hours = 48 } = {}) {
   return snapshots.sort((left, right) => Date.parse(left.generatedAt) - Date.parse(right.generatedAt));
 }
 
-export async function writeSnapshotHistory({ snapshotsRoot, outRoot, hours = 48 } = {}) {
-  const snapshots = await loadSnapshotHistory({ snapshotsRoot, hours });
+export async function writeSnapshotHistory({ snapshotsRoot, outRoot, hours = 48, now = Date.now() } = {}) {
+  const snapshotNowMs = toNowMs(now);
+  const snapshots = await loadSnapshotHistory({ snapshotsRoot, hours, now: snapshotNowMs });
   const latest = snapshots.at(-1) ?? null;
   const previous = snapshots.at(-2) ?? null;
   const baseline = snapshots[0] ?? null;
   const history = {
     schemaVersion: "dogeedge.eval.snapshot-history.v1",
-    generatedAt: new Date().toISOString(),
+    generatedAt: new Date(snapshotNowMs).toISOString(),
     hours,
     snapshotCount: snapshots.length,
     latestSnapshotId: latest?.snapshotId ?? null,
@@ -158,4 +159,11 @@ async function readSnapshot(file) {
   } catch {
     return null;
   }
+}
+
+function toNowMs(value) {
+  if (value instanceof Date) return value.getTime();
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  const parsed = Date.parse(value ?? "");
+  return Number.isFinite(parsed) ? parsed : Date.now();
 }

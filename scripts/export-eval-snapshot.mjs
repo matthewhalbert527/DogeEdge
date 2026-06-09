@@ -522,7 +522,7 @@ export async function exportEvaluationSnapshot(options = {}) {
   const backtestsDir = path.resolve(options.backtestsDir ?? path.join(dataRoot, "backtests"));
   const outRoot = path.resolve(options.outDir ?? path.join(dataRoot, "gpt-review-packets"));
   const snapshotsRoot = path.join(outRoot, "snapshots");
-  const priorHistory = await loadSnapshotHistory({ snapshotsRoot, hours: 48 });
+  const priorHistory = await loadSnapshotHistory({ snapshotsRoot, hours: 48, now: generatedAt });
   const snapshotDir = path.join(outRoot, "snapshots", snapshotId);
   const includeRows = options.includeRows !== false;
   const fullRows = options.fullRows === true;
@@ -844,7 +844,7 @@ export async function exportEvaluationSnapshot(options = {}) {
   };
   const manifestPath = path.join(snapshotDir, "manifest.json");
   await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
-  const history = await writeSnapshotHistory({ snapshotsRoot, outRoot, hours: 48 });
+  const history = await writeSnapshotHistory({ snapshotsRoot, outRoot, hours: 48, now: generatedAt });
 
   return {
     snapshot,
@@ -1014,6 +1014,7 @@ function rawMarketTickBundleSummary(manifest, manifestPresent) {
   const parseOk = isRecord(manifest);
   const sourceSnapshotFiles = Array.isArray(manifest?.sourceSnapshotFiles) ? manifest.sourceSnapshotFiles : [];
   const targetMarkets = Array.isArray(manifest?.targetMarkets) ? manifest.targetMarkets : [];
+  const extractionPolicy = isRecord(manifest?.extractionPolicy) ? manifest.extractionPolicy : {};
   const coveredTargetMarkets = uniqueStrings(
     Array.isArray(manifest?.coveredTargetMarkets)
       ? manifest.coveredTargetMarkets
@@ -1089,6 +1090,14 @@ function rawMarketTickBundleSummary(manifest, manifestPresent) {
       hashSkippedByteRatio: sourceHashPolicy.hashSkippedByteRatio,
       skippedLargeFileSample,
       omittedSkippedLargeFileCount: Math.max(0, hashSkippedSourceSnapshotFileCount - skippedLargeFileSample.length),
+    },
+    extractionPolicy: {
+      maxTargetMarkets: numberOrNull(extractionPolicy.maxTargetMarkets),
+      maxRowsPerMarket: numberOrNull(extractionPolicy.maxRowsPerMarket),
+      sourceFileDiscoveryLimit: numberOrNull(extractionPolicy.sourceFileDiscoveryLimit),
+      sourceLineLimit: numberOrNull(extractionPolicy.sourceLineLimit),
+      sourceScanBytes: numberOrNull(extractionPolicy.sourceScanBytes),
+      sourceHeadScanBytes: numberOrNull(extractionPolicy.sourceHeadScanBytes),
     },
     warningCodes,
   };
@@ -2613,6 +2622,7 @@ async function writeRawMarketTicksManifest({
   const dir = path.join(snapshotDir, "raw_market_ticks");
   await mkdir(dir, { recursive: true });
   const requestedFormat = rawTickFormat === "jsonl" ? "jsonl" : "parquet";
+  const sourceFileDiscoveryLimit = 10;
   const schema = {
     schemaVersion: "dogeedge.raw-market-ticks.schema.v1",
     format: requestedFormat,
@@ -2639,11 +2649,18 @@ async function writeRawMarketTicksManifest({
       "git_commit",
     ],
   };
-  const rawSnapshotFiles = await latestFilesRecursive(path.join(dataRoot, "raw", "snapshots"), [".jsonl", ".ndjson", ".json", ".csv"], 10);
+  const rawSnapshotFiles = await latestFilesRecursive(
+    path.join(dataRoot, "raw", "snapshots"),
+    [".jsonl", ".ndjson", ".json", ".csv"],
+    sourceFileDiscoveryLimit,
+  );
   const targetMarkets = uniqueStrings([
     ...decisionRows.map((row) => row.marketTicker),
     ...tradeRows.map((row) => row.marketTicker),
-  ]).slice(0, Math.max(1, maxRawTickMarkets));
+  ]).sort().slice(0, Math.max(1, maxRawTickMarkets));
+  const sourceLineLimit = Math.max(2_000, Math.min(50_000, targetMarkets.length * 2_000));
+  const sourceScanBytes = Math.min(64 * 1024 * 1024, Math.max(4 * 1024 * 1024, targetMarkets.length * 4 * 1024 * 1024));
+  const sourceHeadScanBytes = Math.max(256 * 1024, Math.min(2 * 1024 * 1024, sourceScanBytes));
   const jsonlFiles = requestedFormat === "jsonl"
     ? await writeRawTickJsonlSamples({
       dir,
@@ -2652,8 +2669,11 @@ async function writeRawMarketTicksManifest({
       gitInfo,
       targetMarkets,
       maxRowsPerMarket: maxRawTickRowsPerMarket,
+      sourceLineLimit,
+      sourceScanBytes,
+      sourceHeadScanBytes,
     })
-    : [];
+    : { files: [], sourceLineLimit: null, sourceScanBytes: null, sourceHeadScanBytes: null };
   const sources = [];
   for (const file of rawSnapshotFiles) {
     const info = await stat(file).catch(() => null);
@@ -2664,10 +2684,11 @@ async function writeRawMarketTicksManifest({
       hashSkipped: info ? info.size > 50 * 1024 * 1024 : true,
     });
   }
-  const coveredTargetMarkets = uniqueStrings(jsonlFiles.map((file) => file.marketTicker));
+  const extractedJsonlFiles = jsonlFiles.files;
+  const coveredTargetMarkets = uniqueStrings(extractedJsonlFiles.map((file) => file.marketTicker));
   const coveredSet = new Set(coveredTargetMarkets);
   const uncoveredTargetMarkets = targetMarkets.filter((marketTicker) => !coveredSet.has(marketTicker));
-  const available = jsonlFiles.length > 0;
+  const available = extractedJsonlFiles.length > 0;
   const exportedFormat = available ? "jsonl" : null;
   const availabilityStatus = available
     ? uncoveredTargetMarkets.length > 0 ? "partial_sample_exported" : "sample_exported"
@@ -2698,7 +2719,7 @@ async function writeRawMarketTicksManifest({
     uncoveredTargetMarkets,
     coveredTargetMarketCount: coveredTargetMarkets.length,
     uncoveredTargetMarketCount: uncoveredTargetMarkets.length,
-    jsonlFiles: jsonlFiles.map((file) => ({
+    jsonlFiles: extractedJsonlFiles.map((file) => ({
       relativePath: slashPath(path.relative(snapshotDir, file.path)),
       marketTicker: file.marketTicker,
       rows: file.rows,
@@ -2716,10 +2737,18 @@ async function writeRawMarketTicksManifest({
       hashSkippedSourceBytes: sourceHashPolicy.hashSkippedSourceBytes,
       hashSkippedByteRatio: sourceHashPolicy.hashSkippedByteRatio,
     },
+    extractionPolicy: {
+      maxTargetMarkets: maxRawTickMarkets,
+      maxRowsPerMarket: maxRawTickRowsPerMarket,
+      sourceFileDiscoveryLimit,
+      sourceLineLimit: jsonlFiles.sourceLineLimit,
+      sourceScanBytes: jsonlFiles.sourceScanBytes,
+      sourceHeadScanBytes: jsonlFiles.sourceHeadScanBytes,
+    },
     warningCodes: [
       "raw_market_tick_parquet_absent",
       ...(requestedFormat === "jsonl" && !available ? ["raw_market_tick_jsonl_absent"] : []),
-      ...(jsonlFiles.length > 0 ? ["raw_market_tick_jsonl_sample"] : []),
+      ...(extractedJsonlFiles.length > 0 ? ["raw_market_tick_jsonl_sample"] : []),
       ...(uncoveredTargetMarkets.length > 0 ? ["raw_market_tick_target_coverage_gap"] : []),
       ...(sources.length === 0 ? ["raw_snapshot_source_absent"] : []),
       ...(sources.some((source) => source.hashSkipped) ? ["raw_snapshot_hash_skipped_large_file"] : []),
@@ -2732,7 +2761,7 @@ async function writeRawMarketTicksManifest({
   return [
     await fileInfo(schemaPath, "raw_market_ticks/schema.json", "raw_market_ticks/schema.json", null),
     await fileInfo(manifestPath, "raw_market_ticks/manifest.json", "raw_market_ticks/manifest.json", null),
-    ...await Promise.all(jsonlFiles.map((file) => fileInfo(file.path, `raw_market_ticks/jsonl/${file.marketTicker}.jsonl`, slashPath(path.relative(snapshotDir, file.path)), file.rows))),
+    ...await Promise.all(extractedJsonlFiles.map((file) => fileInfo(file.path, `raw_market_ticks/jsonl/${file.marketTicker}.jsonl`, slashPath(path.relative(snapshotDir, file.path)), file.rows))),
   ];
 }
 
@@ -2755,16 +2784,33 @@ function rawTickAvailabilityReason({ availabilityStatus, requestedFormat }) {
   return "Replayable per-market parquet tick export is not present in current local artifacts; schema and source manifest are exported so calibration gaps remain explicit.";
 }
 
-async function writeRawTickJsonlSamples({ dir, rawSnapshotFiles, snapshotId, gitInfo, targetMarkets, maxRowsPerMarket }) {
-  if (!rawSnapshotFiles.length) return [];
+async function writeRawTickJsonlSamples({
+  dir,
+  rawSnapshotFiles,
+  snapshotId,
+  gitInfo,
+  targetMarkets,
+  maxRowsPerMarket,
+  sourceLineLimit = Math.max(2_000, Math.min(50_000, targetMarkets.length * 2_000)),
+  sourceScanBytes = Math.min(64 * 1024 * 1024, Math.max(4 * 1024 * 1024, targetMarkets.length * 4 * 1024 * 1024)),
+  sourceHeadScanBytes = Math.max(256 * 1024, Math.min(2 * 1024 * 1024, sourceScanBytes)),
+}) {
+  const resolvedSourceLineLimit = Math.max(1, numberOption(sourceLineLimit, 2_000));
+  const resolvedSourceScanBytes = Math.max(1, numberOption(sourceScanBytes, 4 * 1024 * 1024));
+  const resolvedSourceHeadScanBytes = Math.max(1, numberOption(sourceHeadScanBytes, 2 * 1024 * 1024));
+  if (!rawSnapshotFiles.length) {
+    return {
+      files: [],
+      sourceLineLimit: resolvedSourceLineLimit,
+      sourceScanBytes: resolvedSourceScanBytes,
+      sourceHeadScanBytes: resolvedSourceHeadScanBytes,
+    };
+  }
   const jsonlDir = path.join(dir, "jsonl");
   await mkdir(jsonlDir, { recursive: true });
   const targets = new Set(targetMarkets);
   const rowsByMarket = new Map();
   const marketLineKeys = new Map();
-  const sourceLineLimit = Math.max(2_000, Math.min(50_000, targetMarkets.length * 2_000));
-  const sourceScanBytes = Math.min(64 * 1024 * 1024, Math.max(4 * 1024 * 1024, targetMarkets.length * 4 * 1024 * 1024));
-  const sourceHeadScanBytes = Math.max(256 * 1024, Math.min(2 * 1024 * 1024, sourceScanBytes));
   const seenLine = (marketTicker, line) => {
     const seen = marketLineKeys.get(marketTicker);
     const key = `${marketTicker}::${line}`;
@@ -2790,12 +2836,12 @@ async function writeRawTickJsonlSamples({ dir, rawSnapshotFiles, snapshotId, git
     ? [...targets].filter((marketTicker) => !rowsByMarket.has(marketTicker)).length
     : 0;
   for (const file of rawSnapshotFiles) {
-    const lines = await readTailLines(file, sourceLineLimit, sourceScanBytes);
+    const lines = await readTailLines(file, resolvedSourceLineLimit, resolvedSourceScanBytes);
     for (const line of lines) {
       addLineForMarket(line);
     }
     if (targets.size > 0 && missingMarketCount() > 0) {
-      const fallbackLines = await readHeadLines(file, sourceLineLimit, sourceHeadScanBytes);
+      const fallbackLines = await readHeadLines(file, resolvedSourceLineLimit, resolvedSourceHeadScanBytes);
       for (const line of fallbackLines) {
         addLineForMarket(line);
       }
@@ -2804,13 +2850,18 @@ async function writeRawTickJsonlSamples({ dir, rawSnapshotFiles, snapshotId, git
     if (targets.size > 0 && missingMarketCount() === 0) break;
   }
   const files = [];
-  for (const [marketTicker, rows] of rowsByMarket) {
+  for (const [marketTicker, rows] of [...rowsByMarket.entries()].sort((left, right) => left[0].localeCompare(right[0]))) {
     const safeTicker = marketTicker.replace(/[^A-Za-z0-9_.-]/g, "_");
     const filePath = path.join(jsonlDir, `${safeTicker}.jsonl`);
     await writeFile(filePath, `${rows.join("\n")}${rows.length ? "\n" : ""}`, "utf8");
     files.push({ marketTicker, rows: rows.length, path: filePath });
   }
-  return files;
+  return {
+    files,
+    sourceLineLimit: resolvedSourceLineLimit,
+    sourceScanBytes: resolvedSourceScanBytes,
+    sourceHeadScanBytes: resolvedSourceHeadScanBytes,
+  };
 }
 
 function compactRawTickRow(raw, sourceLine, context) {
