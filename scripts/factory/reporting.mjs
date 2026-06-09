@@ -41,6 +41,11 @@ export function metricsCsv(metrics) {
     "avgPartialFillRatio",
     "avgFillProbability",
     "avgFillDepthUtilization",
+    "brierScore",
+    "logLoss",
+    "expectedCalibrationError",
+    "probabilityCalibrationReady",
+    "probabilityLabelKnownCount",
     "staleQuoteRejections",
     "queueMisses",
     "depthRejections",
@@ -187,6 +192,7 @@ export function markdownReport({ runId, startedAt, finishedAt, dataRoot, framesD
     "- `familyAdjustedPValue` and `globalAdjustedPValue` use market-block strategy-menu bootstrap distributions inspired by White Reality Check and Hansen SPA.",
     "- `familyQValue` uses Benjamini-Hochberg within family; `globalQValue` uses the more conservative Benjamini-Yekutieli adjustment globally.",
     "- `effectiveFamilyTrials` and `effectiveTotalTrials` estimate correlated strategy-menu size from market-level P/L vectors.",
+    "- `brierScore`, `logLoss`, and `expectedCalibrationError` summarize binary forecast calibration on label-known closed trades; they are diagnostics, not promotion substitutes.",
     "",
     "Review-only. These results replay local paper market frames and do not place real orders.",
   ].flat().join("\n");
@@ -215,6 +221,11 @@ function csvMetricValue(metric, key) {
   if (key === "avgPartialFillRatio") return metric.executionTelemetry?.conservative?.averagePartialFillRatio ?? metric.averagePartialFillRatio ?? 0;
   if (key === "avgFillProbability") return metric.executionTelemetry?.conservative?.averageFillProbability ?? metric.averageFillProbability ?? 0;
   if (key === "avgFillDepthUtilization") return metric.executionTelemetry?.conservative?.averageFillDepthUtilization ?? metric.averageFillDepthUtilization ?? 0;
+  if (key === "brierScore") return metric.brierScore ?? metric.binaryForecastQuality?.brierScore ?? "";
+  if (key === "logLoss") return metric.logLoss ?? metric.binaryForecastQuality?.logLoss ?? "";
+  if (key === "expectedCalibrationError") return metric.expectedCalibrationError ?? metric.binaryForecastQuality?.expectedCalibrationError ?? "";
+  if (key === "probabilityCalibrationReady") return metric.probabilityCalibrationReady ?? metric.binaryForecastQuality?.calibrationReady ?? false;
+  if (key === "probabilityLabelKnownCount") return metric.probabilityLabelKnownCount ?? metric.binaryForecastQuality?.labelKnownCount ?? 0;
   if (key === "staleQuoteRejections") return metric.executionTelemetry?.conservative?.staleQuoteRejections ?? 0;
   if (key === "queueMisses") return metric.executionTelemetry?.conservative?.queueMisses ?? 0;
   if (key === "depthRejections") return metric.executionTelemetry?.conservative?.depthRejections ?? 0;

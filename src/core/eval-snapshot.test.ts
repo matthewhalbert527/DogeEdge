@@ -104,6 +104,7 @@ describe("continuous evaluation snapshot exporter", () => {
       "reject_stream_summary.json",
       "replay_parity_report.json",
       "executable_readiness_gate.json",
+      "readiness_kpis.json",
       "scheduler_budget_report.json",
       "provenance_completeness_report.json",
       "candidate_lineage_audit.tsv.gz",
@@ -159,6 +160,16 @@ describe("continuous evaluation snapshot exporter", () => {
       state: "hold_gather_evidence",
       reasonCodes: expect.arrayContaining(["official_settlement_coverage_below_threshold", "replay_grade_target_market_ticks_absent"]),
     });
+    const readinessKpis = JSON.parse(readFileSync(path.join(result.snapshotDir, "readiness_kpis.json"), "utf8"));
+    expect(readinessKpis).toMatchObject({
+      schemaVersion: "dogeedge.readiness-kpis.v1",
+      headlineState: "hold_gather_evidence",
+      allowedToLoadArenaBatch: false,
+      officialSettlementCoverage: 0,
+      exactLinkedSupportedLiveRows: 0,
+      replayGradeReady: false,
+      blockers: expect.arrayContaining(["replay_grade_target_market_ticks_absent"]),
+    });
     const schedulerBudget = JSON.parse(readFileSync(path.join(result.snapshotDir, "scheduler_budget_report.json"), "utf8"));
     expect(schedulerBudget).toMatchObject({
       unsupportedNormalBudgetRows: 0,
@@ -175,7 +186,8 @@ describe("continuous evaluation snapshot exporter", () => {
       exportedFormat: "jsonl",
       availabilityStatus: "sample_exported",
       jsonlAvailable: true,
-      executionSensitivePromotionAllowed: true,
+      replayGradeAvailable: false,
+      executionSensitivePromotionAllowed: false,
       targetMarketCount: 1,
       coveredTargetMarketCount: 1,
       uncoveredTargetMarketCount: 0,
@@ -187,7 +199,7 @@ describe("continuous evaluation snapshot exporter", () => {
         hashSkippedSourceBytes: 0,
         hashSkippedByteRatio: 0,
       },
-      warningCodes: expect.arrayContaining(["raw_market_tick_parquet_absent", "raw_market_tick_jsonl_sample"]),
+      warningCodes: expect.arrayContaining(["raw_market_tick_parquet_absent", "raw_market_tick_jsonl_sample", "sequence_gap_check_absent"]),
     });
     expect(rawTickManifest.sourceHashPolicy.totalSourceBytes).toBeGreaterThan(0);
     expect(rawTickManifest.sourceHashPolicy.hashedSourceBytes).toBe(rawTickManifest.sourceHashPolicy.totalSourceBytes);
@@ -271,6 +283,7 @@ describe("continuous evaluation snapshot exporter", () => {
       "snapshots/reject_stream_summary.json",
       "snapshots/replay_parity_report.json",
       "snapshots/executable_readiness_gate.json",
+      "snapshots/readiness_kpis.json",
       "snapshots/raw_market_ticks/manifest.json",
       "snapshots/raw_market_ticks/coverage.tsv.gz",
     ]));
@@ -305,14 +318,14 @@ describe("continuous evaluation snapshot exporter", () => {
       availabilityStatus: "sample_exported",
       parquetAvailable: false,
       jsonlAvailable: true,
-      executionSensitivePromotionAllowed: true,
+      executionSensitivePromotionAllowed: false,
       targetMarketCount: 1,
       jsonlFileCount: 1,
       targetMarketCoverage: {
         covered: 1,
         uncovered: 0,
         ratio: 1,
-        executionSensitivePromotionAllowed: true,
+        executionSensitivePromotionAllowed: false,
       },
       targetMarketSamples: {
         covered: ["KXDOGE15M-FIXTURE"],
@@ -335,6 +348,7 @@ describe("continuous evaluation snapshot exporter", () => {
     expect(manifest.rawMarketTickExport.warningCodes).toEqual(expect.arrayContaining([
       "raw_market_tick_parquet_absent",
       "raw_market_tick_jsonl_sample",
+      "sequence_gap_check_absent",
     ]));
     expect(manifest.limitations).toEqual(expect.arrayContaining([
       "rows_capped",
@@ -342,6 +356,7 @@ describe("continuous evaluation snapshot exporter", () => {
       "official_settlement_coverage_below_promotion_threshold",
       "raw_market_tick_parquet_absent",
       "raw_market_tick_jsonl_sample",
+      "sequence_gap_check_absent",
     ]));
     expect(manifest.officialSettlementCoverageSummary).toMatchObject({
       officialSettlementCoverage: 0,

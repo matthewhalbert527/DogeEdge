@@ -73,6 +73,7 @@ function robustScoreFor(metric, context) {
   const walkForward = metric.walkForwardSummary ?? {};
   const holdout = metric.holdoutSummary ?? {};
   const paperEvidence = metric.paperEvidence ?? {};
+  const calibration = metric.binaryForecastQuality ?? metric.probabilityCalibration ?? {};
   const ciLower = conservative.bootstrap?.meanPnl?.lower ?? -1;
   const drawdownPenalty = Math.abs(Math.min(0, metric.maxDrawdown ?? 0)) * 0.08;
   const sampleBonus = Math.log10((metric.independentClosedMarkets ?? 0) + 1) * 6;
@@ -87,7 +88,10 @@ function robustScoreFor(metric, context) {
   const concentrationPenalty = ((context.concentration.maxMarketShare ?? 0) + (context.concentration.maxDayShare ?? 0) + (context.concentration.maxRegimeShare ?? 0)) * 10;
   const ciPenalty = ciLower < 0 ? Math.abs(ciLower) * 8 : 0;
   const pValuePenalty = ((context.adjusted.familyAdjustedPValue ?? 1) + (context.adjusted.globalAdjustedPValue ?? 1) + (context.adjusted.falseDiscoveryRisk ?? 1)) * 10;
-  return roundRatio(pnl + sampleBonus + consistency + cpcvScore + walkForwardScore + holdoutScore + paperScore + confidence - risk - concentrationPenalty - ciPenalty - context.multipleTestingPenalty * 20 - pValuePenalty);
+  const calibrationPenalty = calibration.calibrationReady
+    ? (calibration.expectedCalibrationError ?? 0.5) * 20 + Math.max(0, (calibration.brierScore ?? 0.25) - 0.25) * 20
+    : 0;
+  return roundRatio(pnl + sampleBonus + consistency + cpcvScore + walkForwardScore + holdoutScore + paperScore + confidence - risk - concentrationPenalty - ciPenalty - calibrationPenalty - context.multipleTestingPenalty * 20 - pValuePenalty);
 }
 
 export function probabilisticSharpeRatio(metric, benchmarkSharpe = 0) {

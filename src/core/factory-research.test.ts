@@ -22,6 +22,11 @@ import { researchLiveAlignment } from "../../scripts/factory/family-registry.mjs
 import { researchCandidateIdentity } from "../../scripts/factory/candidate-identity.mjs";
 import { sampleSufficiency } from "../../scripts/factory/sample-gates.mjs";
 import { applyFamilySearchBudget, searchBudgetDecision } from "../../scripts/factory/search-budget.mjs";
+import { normalizeKalshiHistoricalMarket, officialOutcomeMap, officialSettlementCoverageForEvents } from "../../scripts/factory/official-settlement.mjs";
+import { compactReplayTickRow, rawTickReplayManifest } from "../../scripts/factory/raw-tick-extract.mjs";
+import { replayParityReportFromManifest } from "../../scripts/factory/replay-coverage.mjs";
+import { buildExecutableReadinessGate } from "../../scripts/factory/readiness-gate.mjs";
+import { probabilityCalibrationForTrades } from "../../scripts/factory/probability-calibration.mjs";
 import {
   hasResearchPromotionCandidate,
   researchEvidenceCanMature,
@@ -898,6 +903,8 @@ describe("factory research safeguards", () => {
     expect(csv).toContain("driftOk");
     expect(csv).toContain("paperEvidenceStatus");
     expect(csv).toContain("avgSlippageCents");
+    expect(csv).toContain("brierScore");
+    expect(csv).toContain("expectedCalibrationError");
     expect(csv).toContain("realityCheckApproxPValue");
     expect(csv).toContain("dsrApprox");
     expect(csv).toContain("pboApprox");
@@ -943,6 +950,147 @@ describe("factory research safeguards", () => {
     expect(report).toContain("No viable candidate");
     expect(report).toContain("not trusted ranked winners");
     expect(report).not.toContain("best-reject: reject with robust score");
+  });
+
+  it("normalizes Kalshi historical market settlements into official outcome labels", () => {
+    const settled = normalizeKalshiHistoricalMarket({
+      ticker: "KXDOGE15M-26JUN091200-50",
+      status: "finalized",
+      result: "yes",
+      close_time: "2026-06-09T12:00:00.000Z",
+      settlement_ts: "2026-06-09T12:01:02.000Z",
+      settlement_value_dollars: "0.5123",
+    }, {
+      sourceEndpoint: "/historical/markets/KXDOGE15M-26JUN091200-50",
+      fetchedAt: "2026-06-09T12:05:00.000Z",
+    });
+
+    expect(settled).toMatchObject({
+      schemaVersion: "dogeedge.official-settlement.v1",
+      marketTicker: "KXDOGE15M-26JUN091200-50",
+      officialResolutionAvailable: true,
+      outcomeSide: "YES",
+      labelSource: "official_resolution",
+      settlementSource: "official_resolution",
+      settlementValueDollars: 0.5123,
+    });
+    const outcomes = officialOutcomeMap([settled]);
+    const officialBase = {
+      ...baseFrame,
+      marketTicker: settled.marketTicker,
+      marketCloseTime: "2026-06-09T12:00:00.000Z",
+      capturedAt: "2026-06-09T11:59:30.000Z",
+      observedAt: "2026-06-09T11:59:30.000Z",
+    };
+    const events = buildMarketEvents(deduplicateDecisionFrames([
+      normalizeDecisionFrame({ ...officialBase, id: "official-open", secondsToClose: 30 }).frame,
+      normalizeDecisionFrame({ ...officialBase, id: "official-close", observedAt: "2026-06-09T11:59:59.000Z", capturedAt: "2026-06-09T11:59:59.000Z", secondsToClose: 1 }).frame,
+    ]).frames, { officialOutcomes: outcomes }).events;
+
+    expect(events[0]).toMatchObject({
+      marketTicker: settled.marketTicker,
+      labelSource: "official_resolution",
+      settlementSource: "official_resolution",
+      officialResolutionAvailable: true,
+      outcomeSide: "YES",
+    });
+    expect(officialSettlementCoverageForEvents(events, [settled])).toMatchObject({
+      officialEvents: 1,
+      officialSettlementCoverage: 1,
+    });
+  });
+
+  it("marks compact JSONL tick samples as diagnostic-only when replay sequencing is absent", () => {
+    const row = compactReplayTickRow({
+      marketTicker: "KXDOGE15M-FIXTURE",
+      capturedAt: "2026-06-09T12:00:00.100Z",
+      paperInput: {
+        ticker: "KXDOGE15M-FIXTURE",
+        observedAt: "2026-06-09T12:00:00.000Z",
+        action: "buy_yes",
+        yesBid: 0.49,
+        yesAsk: 0.5,
+        noBid: 0.5,
+        noAsk: 0.51,
+        sizeContracts: 1,
+        marketLive: true,
+      },
+    }, "{\"sample\":true}", { snapshotId: "snap", gitCommit: "abc" });
+    const manifest = rawTickReplayManifest({
+      snapshotId: "snap",
+      generatedAt: "2026-06-09T12:00:01.000Z",
+      requestedFormat: "jsonl",
+      targetMarkets: ["KXDOGE15M-FIXTURE"],
+      jsonlFiles: [{ marketTicker: "KXDOGE15M-FIXTURE", rows: 1, relativePath: "raw_market_ticks/jsonl/KXDOGE15M-FIXTURE.jsonl" }],
+      sourceSnapshotFiles: [{ relativePath: "raw/snapshots/source.jsonl", bytes: 100 }],
+    });
+    const parity = replayParityReportFromManifest({ snapshotId: "snap", generatedAt: manifest.generatedAt, rawTickManifest: manifest });
+
+    expect(row).toMatchObject({
+      market_ticker: "KXDOGE15M-FIXTURE",
+      event_type: "orderbook_snapshot",
+      side: "YES",
+      best_yes_ask: 0.5,
+    });
+    expect(manifest).toMatchObject({
+      jsonlAvailable: true,
+      replayGradeAvailable: false,
+      executionSensitivePromotionAllowed: false,
+      warningCodes: expect.arrayContaining(["sequence_gap_check_absent"]),
+    });
+    expect(parity).toMatchObject({
+      sampleParity: true,
+      replayGrade: false,
+      executionSensitivePromotionAllowed: false,
+      fallbackKind: "jsonl_or_candlestick_diagnostic_only",
+    });
+  });
+
+  it("surfaces run-level readiness blockers before strategy quality", () => {
+    const gate = buildExecutableReadinessGate({
+      snapshotId: "snap",
+      generatedAt: "2026-06-09T12:00:00.000Z",
+      exactLinkSummary: { supportedLiveExactLinkedCount: 0, exactLinkRate: 0 },
+      settlementCoverageReport: { summary: { officialSettlementCoverage: 0 } },
+      rawTickManifest: { targetMarketCount: 1, coveredTargetMarketCount: 1, uncoveredTargetMarketCount: 0, jsonlAvailable: true, parquetAvailable: false, sequenceGapCheckAvailable: false },
+      simulatorCalibrationReport: { attempts: 0 },
+      topRosterDefaultSortAudit: { researchRankedRosterCount: 0 },
+      dataQuality: { marketEvents: 20, sampleSufficiency: { counts: { daysRepresented: 2, independentMarkets: 20 } } },
+    });
+
+    expect(gate).toMatchObject({
+      allowedToLoadArenaBatch: false,
+      state: "hold_gather_evidence",
+      officialSettlementReady: false,
+      rawTickReplayReady: false,
+      exactLinkReady: false,
+      reasonCodes: expect.arrayContaining([
+        "exact_linked_supported_live_rows_zero",
+        "official_settlement_coverage_below_threshold",
+        "replay_grade_target_market_ticks_absent",
+        "represented_days_below_threshold",
+        "independent_markets_below_threshold",
+      ]),
+    });
+  });
+
+  it("computes proper scoring diagnostics only from label-known closed trades", () => {
+    const calibration = probabilityCalibrationForTrades([
+      { status: "closed", pnl: 1, entryContext: { fairProbability: 0.8 } },
+      { status: "closed", pnl: -1, entryContext: { fairProbability: 0.7 } },
+      { status: "open", pnl: null, entryContext: { fairProbability: 0.99 } },
+      { status: "closed", pnl: null, entryContext: { fairProbability: 0.1 } },
+    ], { bucketCount: 5 });
+
+    expect(calibration).toMatchObject({
+      schemaVersion: "dogeedge.probability-calibration.v1",
+      labelKnownCount: 2,
+      calibrationReady: false,
+      brierScore: expect.any(Number),
+      logLoss: expect.any(Number),
+      expectedCalibrationError: expect.any(Number),
+    });
+    expect(calibration.reliabilityBuckets.reduce((sum, bucket) => sum + bucket.count, 0)).toBe(2);
   });
 });
 

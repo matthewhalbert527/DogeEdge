@@ -1,4 +1,5 @@
 import { average, childSeed, dayKey, maxDrawdownFromEquity, median, roundMoney, roundRatio, seededRandom, stddev, unique } from "./utils.mjs";
+import { probabilityCalibrationForTrades } from "./probability-calibration.mjs";
 
 export function metricsForAlgo(algo, trades, options = {}) {
   const closed = trades
@@ -20,6 +21,7 @@ export function metricsForAlgo(algo, trades, options = {}) {
   const regimeBreakdown = regimeMetrics(closed);
   const telemetry = executionTelemetryForTrades(trades);
   const returnMoments = momentsFor(returns);
+  const probabilityCalibration = probabilityCalibrationForTrades(closed);
   const bootstrapSeed = childSeed(options.seed ?? "factory-bootstrap", algo.id, options.seedScope ?? "full-sample");
   const bootstrap = bootstrapConfidenceIntervals(closed, { ...options, seed: bootstrapSeed });
   return {
@@ -65,6 +67,13 @@ export function metricsForAlgo(algo, trades, options = {}) {
     averagePartialFillRatio: telemetry.averagePartialFillRatio,
     averageFillProbability: telemetry.averageFillProbability,
     averageFillDepthUtilization: telemetry.averageFillDepthUtilization,
+    probabilityCalibration,
+    binaryForecastQuality: probabilityCalibration,
+    brierScore: probabilityCalibration.brierScore,
+    logLoss: probabilityCalibration.logLoss,
+    expectedCalibrationError: probabilityCalibration.expectedCalibrationError,
+    probabilityCalibrationReady: probabilityCalibration.calibrationReady,
+    probabilityLabelKnownCount: probabilityCalibration.labelKnownCount,
     queueResults: telemetry.queueResults,
     latencyBuckets: telemetry.latencyBuckets,
     executionTelemetry: telemetry,

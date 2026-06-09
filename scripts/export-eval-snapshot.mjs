@@ -10,6 +10,9 @@ import { hashJson, isRecord, stableStringify } from "./factory/utils.mjs";
 import { loadSnapshotHistory, writeSnapshotHistory } from "./factory/snapshot-history.mjs";
 import { familyRegistryPublic, familyRegistryEntry, researchLiveAlignment } from "./factory/family-registry.mjs";
 import { researchCandidateIdentity, researchCandidateIdentityContext } from "./factory/candidate-identity.mjs";
+import { compactReplayTickRow } from "./factory/raw-tick-extract.mjs";
+import { replayParityReportFromManifest } from "./factory/replay-coverage.mjs";
+import { buildExecutableReadinessGate, readinessKpisFromGate } from "./factory/readiness-gate.mjs";
 
 const execFileAsync = promisify(execFile);
 const schemaVersion = "dogeedge.eval.snapshot.v1";
@@ -820,8 +823,15 @@ export async function exportEvaluationSnapshot(options = {}) {
     exactLinkSummary: identityArtifacts.exactLinkSummary,
     settlementCoverageReport: settlementArtifacts.coverageReport,
     rawTickManifest,
+    replayParityReport,
     simulatorCalibrationReport: simulatorCalibration.report,
     topRosterDefaultSortAudit: topRosterAudit,
+    dataQuality,
+  });
+  const readinessKpis = readinessKpisFromGate(executableReadinessGate, {
+    settlementCoverageReport: settlementArtifacts.coverageReport,
+    replayParityReport,
+    exactLinkSummary: identityArtifacts.exactLinkSummary,
   });
   const auditExportFiles = await writeAuditReviewFiles({
     snapshotDir,
@@ -835,6 +845,7 @@ export async function exportEvaluationSnapshot(options = {}) {
     replayParityReport,
     rejectStreamSummary,
     executableReadinessGate,
+    readinessKpis,
     simulatorCalibrationReport: simulatorCalibration.report,
     simulatorCalibrationMarkdown: simulatorCalibration.markdown,
     schedulerBudgetReport: identityArtifacts.schedulerBudgetReport,
@@ -893,6 +904,7 @@ export async function exportEvaluationSnapshot(options = {}) {
     replayParityReport,
     rejectStreamSummary,
     executableReadinessGate,
+    readinessKpis,
     schedulerBudgetReport: identityArtifacts.schedulerBudgetReport,
     provenanceCompletenessReport: identityArtifacts.provenanceCompletenessReport,
     familyRegistry: familyRegistryPublic(),
@@ -1060,6 +1072,7 @@ export async function buildReviewBundle(options = {}) {
     "reject_stream_summary.json",
     "replay_parity_report.json",
     "executable_readiness_gate.json",
+    "readiness_kpis.json",
     "family_allocation_report.json",
     "scheduler_budget_report.json",
     "provenance_completeness_report.json",
@@ -2112,6 +2125,7 @@ async function writeAuditReviewFiles({
   replayParityReport,
   rejectStreamSummary,
   executableReadinessGate,
+  readinessKpis,
   simulatorCalibrationReport,
   simulatorCalibrationMarkdown,
   schedulerBudgetReport,
@@ -2129,6 +2143,7 @@ async function writeAuditReviewFiles({
     ["replay_parity_report.json", replayParityReport],
     ["reject_stream_summary.json", rejectStreamSummary],
     ["executable_readiness_gate.json", executableReadinessGate],
+    ["readiness_kpis.json", readinessKpis],
     ["family_allocation_report.json", familyAllocationReport],
     ["scheduler_budget_report.json", schedulerBudgetReport],
     ["provenance_completeness_report.json", provenanceCompletenessReport],
@@ -3008,37 +3023,7 @@ function rejectStreamSummaryReport({ snapshotId, generatedAt, decisionRows, trad
 }
 
 function replayParityReportFromRawManifest({ snapshotId, generatedAt, rawTickManifest }) {
-  const manifest = isRecord(rawTickManifest) ? rawTickManifest : {};
-  const targetMarketCount = numberOrZero(manifest.targetMarketCount);
-  const coveredTargetMarketCount = numberOrZero(manifest.coveredTargetMarketCount);
-  const uncoveredTargetMarketCount = numberOrZero(manifest.uncoveredTargetMarketCount ?? Math.max(0, targetMarketCount - coveredTargetMarketCount));
-  const parquetAvailable = manifest.parquetAvailable === true;
-  const jsonlAvailable = manifest.jsonlAvailable === true;
-  const replayGrade = parquetAvailable && targetMarketCount > 0 && uncoveredTargetMarketCount === 0;
-  const sampleParity = (jsonlAvailable || parquetAvailable) && targetMarketCount > 0 && uncoveredTargetMarketCount === 0;
-  return {
-    schemaVersion: "dogeedge.replay-parity-report.v1",
-    snapshotId,
-    generatedAt,
-    targetMarketCount,
-    coveredTargetMarketCount,
-    uncoveredTargetMarketCount,
-    parquetAvailable,
-    jsonlAvailable,
-    replayGrade,
-    sampleParity,
-    executionSensitivePromotionAllowed: replayGrade,
-    sourceSnapshotFileCount: numberOrZero(manifest.sourceSnapshotFileCount),
-    hashedSourceSnapshotFileCount: numberOrZero(manifest.hashedSourceSnapshotFileCount),
-    sequenceGapCheckAvailable: manifest.sequenceGapCheckAvailable === true,
-    failClosed: !replayGrade,
-    reasonCodes: [
-      ...(!parquetAvailable ? ["raw_market_tick_parquet_absent"] : []),
-      ...(targetMarketCount === 0 ? ["target_market_set_absent"] : []),
-      ...(uncoveredTargetMarketCount > 0 ? ["raw_market_tick_target_coverage_gap"] : []),
-      ...(manifest.sequenceGapCheckAvailable !== true ? ["sequence_gap_check_absent"] : []),
-    ],
-  };
+  return replayParityReportFromManifest({ snapshotId, generatedAt, rawTickManifest });
 }
 
 function executableReadinessGateReport({
@@ -3047,36 +3032,22 @@ function executableReadinessGateReport({
   exactLinkSummary,
   settlementCoverageReport,
   rawTickManifest,
+  replayParityReport = null,
   simulatorCalibrationReport,
   topRosterDefaultSortAudit,
+  dataQuality = {},
 }) {
-  const replayParity = replayParityReportFromRawManifest({ snapshotId, generatedAt, rawTickManifest });
-  const exactLinked = numberOrZero(exactLinkSummary?.supportedLiveExactLinkedCount ?? exactLinkSummary?.exactLinkedRows);
-  const officialCoverage = numberOrZero(settlementCoverageReport?.summary?.officialSettlementCoverage);
-  const calibrationAttempts = numberOrZero(simulatorCalibrationReport?.attempts);
-  const rosterCount = numberOrZero(topRosterDefaultSortAudit?.researchRankedRosterCount);
-  const reasonCodes = [
-    ...(exactLinked <= 0 ? ["exact_linked_supported_live_rows_zero"] : []),
-    ...(officialCoverage < officialPromotionCoverageThreshold ? ["official_settlement_coverage_below_threshold"] : []),
-    ...(!replayParity.replayGrade ? ["replay_grade_target_market_ticks_absent"] : []),
-    ...(calibrationAttempts <= 0 ? ["simulator_calibration_evidence_absent"] : []),
-    ...(rosterCount <= 0 ? ["research_validated_roster_empty"] : []),
-  ];
-  return {
-    schemaVersion: "dogeedge.executable-readiness-gate.v1",
+  return buildExecutableReadinessGate({
     snapshotId,
     generatedAt,
-    allowedToLoadArenaBatch: reasonCodes.length === 0,
-    state: reasonCodes.length === 0 ? "executable_ready" : "hold_gather_evidence",
-    exactLinkedSupportedLiveRows: exactLinked,
-    officialSettlementCoverage: roundDisplayRatio(officialCoverage) ?? 0,
-    replayGradeTargetMarketCoverage: replayParity.targetMarketCount > 0
-      ? roundDisplayRatio(replayParity.coveredTargetMarketCount / replayParity.targetMarketCount)
-      : 0,
-    simulatorCalibrationAttempts: calibrationAttempts,
-    researchValidatedRosterCount: rosterCount,
-    reasonCodes,
-  };
+    exactLinkSummary,
+    settlementCoverageReport,
+    rawTickManifest,
+    replayParityReport,
+    simulatorCalibrationReport,
+    topRosterDefaultSortAudit,
+    dataQuality,
+  });
 }
 
 function incrementRejectMix(mix, code, count = 1) {
@@ -3504,7 +3475,9 @@ async function writeRawMarketTicksManifest({
   const coveredSet = new Set(coveredTargetMarkets);
   const uncoveredTargetMarkets = targetMarkets.filter((marketTicker) => !coveredSet.has(marketTicker));
   const available = jsonlFiles.length > 0;
-  const executionSensitivePromotionAllowed = available && targetMarkets.length > 0 && uncoveredTargetMarkets.length === 0;
+  const sequenceGapCheckAvailable = false;
+  const replayGradeAvailable = false;
+  const executionSensitivePromotionAllowed = false;
   const exportedFormat = available ? "jsonl" : null;
   const availabilityStatus = available
     ? uncoveredTargetMarkets.length > 0 ? "partial_sample_exported" : "sample_exported"
@@ -3523,6 +3496,9 @@ async function writeRawMarketTicksManifest({
     requestedFormat,
     exportedFormat,
     availabilityStatus,
+    replayGradeFormat: requestedFormat === "parquet" ? "parquet" : "jsonl_indexed",
+    replayGradeAvailable,
+    promotionGradeReplayAvailable: replayGradeAvailable,
     parquetAvailable: false,
     jsonlAvailable: available,
     executionSensitivePromotionAllowed,
@@ -3546,6 +3522,7 @@ async function writeRawMarketTicksManifest({
     sourceSnapshotFileCount: sources.length,
     hashedSourceSnapshotFileCount,
     hashSkippedSourceSnapshotFileCount,
+    sequenceGapCheckAvailable,
     sourceHashPolicy: {
       sha256MaxBytes: sourceHashPolicy.sha256MaxBytes,
       hashedFileCount: hashedSourceSnapshotFileCount,
@@ -3557,9 +3534,11 @@ async function writeRawMarketTicksManifest({
     },
     warningCodes: [
       "raw_market_tick_parquet_absent",
+      "replay_grade_target_market_ticks_absent",
       ...(requestedFormat === "jsonl" && !available ? ["raw_market_tick_jsonl_absent"] : []),
       ...(jsonlFiles.length > 0 ? ["raw_market_tick_jsonl_sample"] : []),
       ...(uncoveredTargetMarkets.length > 0 ? ["raw_market_tick_target_coverage_gap"] : []),
+      "sequence_gap_check_absent",
       ...(sources.length === 0 ? ["raw_snapshot_source_absent"] : []),
       ...(sources.some((source) => source.hashSkipped) ? ["raw_snapshot_hash_skipped_large_file"] : []),
     ],
@@ -3651,33 +3630,7 @@ async function writeRawTickJsonlSamples({ dir, rawSnapshotFiles, snapshotId, git
 }
 
 function compactRawTickRow(raw, sourceLine, context) {
-  const input = raw?.paperInput ?? {};
-  const feed = raw?.runtimeSnapshot?.feed ?? {};
-  return {
-    ts_event: input.observedAt ?? raw?.capturedAt ?? null,
-    ts_receive: raw?.capturedAt ?? raw?.runtimeSnapshot?.generatedAt ?? null,
-    market_ticker: raw?.marketTicker ?? input.ticker ?? null,
-    channel: "local_raw_snapshot",
-    event_type: "orderbook_snapshot",
-    side: input.action?.includes("no") ? "NO" : input.action?.includes("yes") ? "YES" : "",
-    book_side: "top",
-    price: numberOrNull(input.selectedAsk ?? input.yesAsk ?? input.noAsk),
-    size: numberOrNull(input.sizeContracts),
-    level: 0,
-    sequence_number: null,
-    best_yes_bid: numberOrNull(input.yesBid),
-    best_yes_ask: numberOrNull(input.yesAsk),
-    best_no_bid: numberOrNull(input.noBid),
-    best_no_ask: numberOrNull(input.noAsk),
-    market_status: input.marketLive === true ? "open" : "unknown",
-    source: "local_raw_snapshot",
-    source_message_hash: sha256(sourceLine),
-    snapshot_id: context.snapshotId,
-    git_commit: context.gitCommit,
-    spot_price: numberOrNull(input.spotPrice ?? feed.price),
-    target_price: numberOrNull(input.targetPrice),
-    seconds_to_close: numberOrNull(input.secondsToClose),
-  };
+  return compactReplayTickRow(raw, sourceLine, context);
 }
 
 function warningRows({ snapshotId, generatedAt, safety, localStoredAt, dataQuality, gitInfo, registry, topStats, includeRows, rowExportMode }) {

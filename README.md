@@ -24,9 +24,9 @@ DogeEdge is a Windows PC-first, standalone Tauri-ready desktop workstation for D
 
 The UI must not display settlement as official until a CF Benchmarks RTI adapter is configured. Exchange feeds are only an estimate.
 
-Promotion and roster surfaces fail closed when official settlement coverage, exact research identity, target-market replay coverage, or review-bundle completeness is missing. Scheduled arena loading records `hold_gather_evidence` instead of rotating new research batches under those conditions. Telemetry-only rows remain visible for diagnosis, but they are separated from the Research Validated Roster.
+Promotion and roster surfaces fail closed when official settlement coverage, exact research identity, replay-grade target-market coverage, or review-bundle completeness is missing. Scheduled arena loading records `hold_gather_evidence` instead of rotating new research batches under those conditions. Telemetry-only rows remain visible for diagnosis, but they are separated from the Research Validated Roster.
 
-Generator v2 keeps low-evidence unattended executable minting at zero. Weak-evidence sweeps may still run a tiny lab-only research lane, but lab output cannot populate the Research Validated Roster or executable arena.
+Generator v3 keeps low-evidence unattended executable minting at zero. Weak-evidence sweeps may still run a tiny lab-only research lane, but lab output cannot populate the Research Validated Roster or executable arena. Backtests can read official contract outcomes from `official_settlements.jsonl`; compact JSONL raw-tick exports are diagnostic-only until replay-grade sequencing is available.
 
 ## Development
 
@@ -82,7 +82,7 @@ On Windows, `Build DogeEdge Windows Desktop.bat` is the intended installer build
 
 ## Next Implementation Steps
 
-1. Add durable official-settlement backfill from exchange/historical settlement sources.
+1. Run durable official-settlement backfill from exchange/historical settlement sources into `official_settlements.jsonl`.
 2. Add replay-grade Kalshi target-market orderbook/trade recording with sequence-gap checks.
 3. Add Kalshi WebSocket user fills/order updates and cancel/reduce-only sell handling.
 4. Add SQLite journaling from the Rust core instead of in-memory UI snapshots.

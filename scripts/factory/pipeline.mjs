@@ -250,6 +250,11 @@ function compactCostModels(costModels = {}) {
     averagePartialFillRatio: metric.averagePartialFillRatio,
     averageFillProbability: metric.averageFillProbability,
     averageFillDepthUtilization: metric.averageFillDepthUtilization,
+    brierScore: metric.brierScore,
+    logLoss: metric.logLoss,
+    expectedCalibrationError: metric.expectedCalibrationError,
+    probabilityCalibrationReady: metric.probabilityCalibrationReady,
+    probabilityLabelKnownCount: metric.probabilityLabelKnownCount,
   }]));
 }
 
@@ -270,6 +275,9 @@ function compactFoldMetrics(folds = []) {
     totalCost: fold.totalCost,
     roi: fold.roi,
     maxDrawdown: fold.maxDrawdown,
+    brierScore: fold.brierScore,
+    logLoss: fold.logLoss,
+    expectedCalibrationError: fold.expectedCalibrationError,
   }));
 }
 

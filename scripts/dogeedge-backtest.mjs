@@ -9,6 +9,7 @@ import { assertReplayInputManifest } from "./factory/repro.mjs";
 import { readPaperEvidence } from "./factory/paper-evidence.mjs";
 import { applyFamilySearchBudget, searchBudgetDecision } from "./factory/search-budget.mjs";
 import { researchCandidateIdentity, researchCandidateIdentityContext } from "./factory/candidate-identity.mjs";
+import { officialOutcomeMap, readOfficialSettlementStore } from "./factory/official-settlement.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const args = parseArgs(process.argv.slice(2));
@@ -21,6 +22,7 @@ const framesDir = path.resolve(args.frames ?? replayConfig?.framesDir ?? path.jo
 const backtestsDir = path.resolve(args.out ?? path.join(dataRoot, "backtests"));
 const algosDir = path.resolve(process.env.DOGEEDGE_ALGOS_DIR ?? path.join(path.dirname(dataRoot), "algos"));
 const paperDataDir = path.resolve(args["paper-data"] ?? process.env.DOGEEDGE_DATA_DIR ?? path.join(dataRoot, "local-worker"));
+const officialSettlementsPath = path.resolve(args["official-settlements"] ?? process.env.DOGEEDGE_OFFICIAL_SETTLEMENTS ?? path.join(dataRoot, "official_settlements.jsonl"));
 const runId = args["run-id"] ?? new Date().toISOString().replaceAll(":", "-").replace(/\.\d{3}Z$/, "Z");
 const sweepMode = Boolean(args.sweep);
 const requestedDeepSweepMode = sweepMode && Boolean(args.deep);
@@ -75,7 +77,9 @@ const paperEvidence = await readPaperEvidence({
   since,
   until,
 });
-const loadResult = await readFactoryDecisionFrames(framesDir, { permissiveDebug });
+const officialSettlementRows = await readOfficialSettlementStore(officialSettlementsPath);
+const officialOutcomes = officialOutcomeMap(officialSettlementRows);
+const loadResult = await readFactoryDecisionFrames(framesDir, { permissiveDebug, officialOutcomes });
 const defaultAlgos = algoDefinitions();
 const requestedSweepAlgos = sweepMode ? sweepAlgoDefinitions() : [];
 const officialSettlementCoverage = loadResult.events.length
@@ -128,6 +132,7 @@ const pipeline = runFactoryResearchPipeline({
     minWalkForwardClosed,
     thresholds,
     paperEvidence,
+    officialOutcomes,
     searchBudget,
   },
 });
@@ -155,6 +160,8 @@ const registry = await experimentRegistryEntry({
     minWalkForwardClosed,
     thresholds,
     paperDataDir,
+    officialSettlementsPath,
+    officialSettlementRows: officialSettlementRows.length,
     paperEvidence: paperEvidence.summary,
     replayManifestCheck,
     replayConfigHash: replayConfig?.registry?.configHash ?? null,
@@ -183,6 +190,8 @@ await writeFile(path.join(runDir, "config.json"), `${JSON.stringify({
   dataRoot,
   framesDir,
   paperDataDir,
+  officialSettlementsPath,
+  officialSettlementRows: officialSettlementRows.length,
   dataQuality: pipeline.dataQuality,
   paperEvidence: paperEvidence.summary,
   eventCount: pipeline.events.length,
@@ -252,6 +261,8 @@ await writeFile(path.join(backtestsDir, "latest.json"), `${JSON.stringify({
   finishedAt,
   dataRoot,
   paperDataDir,
+  officialSettlementsPath,
+  officialSettlementRows: officialSettlementRows.length,
   dataQuality: pipeline.dataQuality,
   paperEvidence: paperEvidence.summary,
   eventCount: pipeline.events.length,
@@ -280,6 +291,8 @@ if (sweepMode) {
     finishedAt,
     dataRoot,
     paperDataDir,
+    officialSettlementsPath,
+    officialSettlementRows: officialSettlementRows.length,
     dataQuality: pipeline.dataQuality,
     paperEvidence: paperEvidence.summary,
     eventCount: pipeline.events.length,
