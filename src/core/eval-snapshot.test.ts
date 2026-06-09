@@ -189,6 +189,38 @@ describe("continuous evaluation snapshot exporter", () => {
     expect(readFileSync(extractedFile, "utf8")).toContain("KXDOGE15M-FIXTURE");
   });
 
+  it("matches raw tick records using alternate market identifier keys", async () => {
+    const fixture = writeEvalFixture({ rawSnapshotMarketTicker: null });
+    const rawSnapshotsDir = path.join(fixture.dataRoot, "raw", "snapshots");
+    const legacyRawFile = path.join(rawSnapshotsDir, "legacy-market-id.jsonl");
+    writeFileSync(legacyRawFile, `${JSON.stringify({
+      capturedAt: "2026-06-07T20:10:00.500Z",
+      paperInput: { selectedAsk: 0.41, sizeContracts: 1, yesBid: 0.4, yesAsk: 0.41, noBid: 0.58, noAsk: 0.59, marketStatus: "open", market_id: "KXDOGE15M-FIXTURE", action: "buy_yes" },
+      market: { market_ticker: "KXDOGE15M-FIXTURE-ALT" },
+      action: "buy_yes",
+      targetPrice: 0.25,
+      runtimeSnapshot: { generatedAt: "2026-06-07T20:10:00.500Z", feed: { status: "ok" } },
+    })}\n`);
+
+    const result = await exportEvaluationSnapshot({
+      dataRoot: fixture.dataRoot,
+      storageDir: fixture.storageDir,
+      backtestsDir: fixture.backtestsDir,
+      outDir: fixture.outDir,
+      now: "2026-06-07T20:30:00.000Z",
+      maxRowLines: 5,
+      maxMetrics: 10,
+      maxRawTickMarkets: 10,
+    });
+
+    const rawTickManifest = JSON.parse(readFileSync(path.join(result.snapshotDir, "raw_market_ticks", "manifest.json"), "utf8"));
+    expect(rawTickManifest.available).toBe(true);
+    expect(rawTickManifest.coveredTargetMarkets).toEqual(["KXDOGE15M-FIXTURE"]);
+    expect(rawTickManifest.uncoveredTargetMarkets).toEqual([]);
+    expect(rawTickManifest.warningCodes).toContain("raw_market_tick_jsonl_sample");
+    expect(rawTickManifest.warningCodes).not.toContain("raw_market_tick_target_coverage_gap");
+  });
+
   it("emits a critical alert if exported safety flags are not paper-only", async () => {
     const fixture = writeEvalFixture({ liveSwitch: { enabled: true, dryRun: false, updatedAt: "2026-06-07T20:00:00.000Z" } });
     const result = await exportEvaluationSnapshot({

@@ -2767,7 +2767,7 @@ async function writeRawTickJsonlSamples({ dir, rawSnapshotFiles, snapshotId, git
     const lines = await readTailLines(file, sourceLineLimit, sourceScanBytes);
     for (const line of lines) {
       const raw = parseJsonLine(line);
-      const marketTicker = stringOrNull(raw?.marketTicker ?? raw?.paperInput?.ticker);
+      const marketTicker = rawSnapshotMarketTicker(raw);
       if (!marketTicker) continue;
       if (targets.size > 0 && !targets.has(marketTicker)) continue;
       const current = rowsByMarket.get(marketTicker) ?? [];
@@ -2791,13 +2791,15 @@ async function writeRawTickJsonlSamples({ dir, rawSnapshotFiles, snapshotId, git
 function compactRawTickRow(raw, sourceLine, context) {
   const input = raw?.paperInput ?? {};
   const feed = raw?.runtimeSnapshot?.feed ?? {};
+  const marketTicker = rawSnapshotMarketTicker(raw);
+  const action = rawSnapshotAction(raw);
   return {
     ts_event: input.observedAt ?? raw?.capturedAt ?? null,
     ts_receive: raw?.capturedAt ?? raw?.runtimeSnapshot?.generatedAt ?? null,
-    market_ticker: raw?.marketTicker ?? input.ticker ?? null,
+    market_ticker: marketTicker,
     channel: "local_raw_snapshot",
     event_type: "orderbook_snapshot",
-    side: input.action?.includes("no") ? "NO" : input.action?.includes("yes") ? "YES" : "",
+    side: action,
     book_side: "top",
     price: numberOrNull(input.selectedAsk ?? input.yesAsk ?? input.noAsk),
     size: numberOrNull(input.sizeContracts),
@@ -2816,6 +2818,34 @@ function compactRawTickRow(raw, sourceLine, context) {
     target_price: numberOrNull(input.targetPrice),
     seconds_to_close: numberOrNull(input.secondsToClose),
   };
+}
+
+function rawSnapshotMarketTicker(raw) {
+  return stringOrNull([
+    raw?.paperInput?.ticker,
+    raw?.paperInput?.marketTicker,
+    raw?.paperInput?.market_ticker,
+    raw?.paperInput?.market_id,
+    raw?.paperInput?.marketId,
+    raw?.marketTicker,
+    raw?.market_ticker,
+    raw?.market?.ticker,
+    raw?.market?.marketTicker,
+    raw?.market?.market_ticker,
+    raw?.market?.market_id,
+    raw?.market?.marketId,
+    raw?.runtimeSnapshot?.marketTicker,
+    raw?.runtimeSnapshot?.market_ticker,
+    raw?.runtimeSnapshot?.market_id,
+    raw?.runtimeSnapshot?.marketId,
+  ].find((value) => typeof value === "string" && value.length > 0));
+}
+
+function rawSnapshotAction(raw) {
+  const action = stringOrNull(raw?.paperInput?.action) ?? stringOrNull(raw?.action);
+  if (action) return sideFromAction(action);
+  const side = stringOrNull(raw?.paperInput?.side) ?? stringOrNull(raw?.side) ?? stringOrNull(raw?.input?.side);
+  return sideFromAction(side);
 }
 
 function warningRows({ snapshotId, generatedAt, safety, localStoredAt, dataQuality, gitInfo, registry, topStats, includeRows, rowExportMode }) {
