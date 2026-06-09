@@ -189,6 +189,64 @@ describe("continuous evaluation snapshot exporter", () => {
     expect(readFileSync(extractedFile, "utf8")).toContain("KXDOGE15M-FIXTURE");
   });
 
+  it("recovers target markets that are only present before the default tail sample window", async () => {
+    const fixture = writeEvalFixture({ rawSnapshotMarketTicker: null });
+    const rawSnapshotsDir = path.join(fixture.dataRoot, "raw", "snapshots");
+    const formatRawSnapshot = (marketTicker: string, ts: string) => JSON.stringify({
+      capturedAt: ts,
+      runtimeSnapshot: { generatedAt: ts, feed: { status: "ok" } },
+      paperInput: {
+        ticker: marketTicker,
+        observedAt: ts,
+        action: "buy_yes",
+        selectedAsk: 0.41,
+        sizeContracts: 1,
+        yesBid: 0.4,
+        yesAsk: 0.41,
+        noBid: 0.58,
+        noAsk: 0.59,
+        marketStatus: "open",
+      },
+    });
+    const noisyRawLines = [
+      formatRawSnapshot("KXDOGE15M-FIXTURE", "2026-06-07T20:00:00.000Z"),
+      ...Array.from({ length: 3000 }, (_, index) => {
+        const minute = String(index % 60).padStart(2, "0");
+        const second = String(index % 60).padStart(2, "0");
+        return formatRawSnapshot(`KXDOGE15M-NOISE-${index}`, `2026-06-07T20:${minute}:${second}.000Z`);
+      }),
+    ];
+    writeFileSync(path.join(rawSnapshotsDir, "tail-biased.jsonl"), `${noisyRawLines.join("\n")}\n`);
+
+    const result = await exportEvaluationSnapshot({
+      dataRoot: fixture.dataRoot,
+      storageDir: fixture.storageDir,
+      backtestsDir: fixture.backtestsDir,
+      outDir: fixture.outDir,
+      now: "2026-06-07T20:30:00.000Z",
+      maxRowLines: 5,
+      maxMetrics: 10,
+      maxRawTickMarkets: 10,
+    });
+
+    const rawTickManifest = JSON.parse(readFileSync(path.join(result.snapshotDir, "raw_market_ticks", "manifest.json"), "utf8"));
+    const extractedFile = path.join(result.snapshotDir, "raw_market_ticks", "jsonl", "KXDOGE15M-FIXTURE.jsonl");
+
+    expect(rawTickManifest).toMatchObject({
+      available: true,
+      format: "jsonl",
+      requestedFormat: "jsonl",
+      exportedFormat: "jsonl",
+      availabilityStatus: "sample_exported",
+      targetMarketCount: 1,
+      coveredTargetMarketCount: 1,
+      uncoveredTargetMarketCount: 0,
+    });
+    expect(rawTickManifest.warningCodes).toContain("raw_market_tick_jsonl_sample");
+    expect(rawTickManifest.warningCodes).not.toContain("raw_market_tick_target_coverage_gap");
+    expect(readFileSync(extractedFile, "utf8")).toContain("KXDOGE15M-FIXTURE");
+  });
+
   it("matches raw tick records using alternate market identifier keys", async () => {
     const fixture = writeEvalFixture({ rawSnapshotMarketTicker: null });
     const rawSnapshotsDir = path.join(fixture.dataRoot, "raw", "snapshots");

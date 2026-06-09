@@ -2761,22 +2761,47 @@ async function writeRawTickJsonlSamples({ dir, rawSnapshotFiles, snapshotId, git
   await mkdir(jsonlDir, { recursive: true });
   const targets = new Set(targetMarkets);
   const rowsByMarket = new Map();
+  const marketLineKeys = new Map();
   const sourceLineLimit = Math.max(2_000, Math.min(50_000, targetMarkets.length * 2_000));
   const sourceScanBytes = Math.min(64 * 1024 * 1024, Math.max(4 * 1024 * 1024, targetMarkets.length * 4 * 1024 * 1024));
+  const sourceHeadScanBytes = Math.max(256 * 1024, Math.min(2 * 1024 * 1024, sourceScanBytes));
+  const seenLine = (marketTicker, line) => {
+    const seen = marketLineKeys.get(marketTicker);
+    const key = `${marketTicker}::${line}`;
+    if (seen?.has(key)) return true;
+    if (!seen) {
+      marketLineKeys.set(marketTicker, new Set([key]));
+      return false;
+    }
+    seen.add(key);
+    return false;
+  };
+  const addLineForMarket = (line) => {
+    const raw = parseJsonLine(line);
+    const marketTicker = rawSnapshotMarketTicker(raw);
+    if (!marketTicker) return;
+    if (targets.size > 0 && !targets.has(marketTicker)) return;
+    const current = rowsByMarket.get(marketTicker) ?? [];
+    if (current.length >= maxRowsPerMarket || seenLine(marketTicker, line)) return;
+    current.push(JSON.stringify(compactRawTickRow(raw, line, { snapshotId, gitCommit: gitInfo.commitHash ?? "UNAVAILABLE" })));
+    rowsByMarket.set(marketTicker, current);
+  };
+  const missingMarketCount = () => targets.size > 0
+    ? [...targets].filter((marketTicker) => !rowsByMarket.has(marketTicker)).length
+    : 0;
   for (const file of rawSnapshotFiles) {
     const lines = await readTailLines(file, sourceLineLimit, sourceScanBytes);
     for (const line of lines) {
-      const raw = parseJsonLine(line);
-      const marketTicker = rawSnapshotMarketTicker(raw);
-      if (!marketTicker) continue;
-      if (targets.size > 0 && !targets.has(marketTicker)) continue;
-      const current = rowsByMarket.get(marketTicker) ?? [];
-      if (current.length >= maxRowsPerMarket) continue;
-      current.push(JSON.stringify(compactRawTickRow(raw, line, { snapshotId, gitCommit: gitInfo.commitHash ?? "UNAVAILABLE" })));
-      rowsByMarket.set(marketTicker, current);
-      if (targets.size === 0 && rowsByMarket.size >= 20) break;
+      addLineForMarket(line);
     }
-    if (targets.size > 0 && rowsByMarket.size >= targets.size) break;
+    if (targets.size > 0 && missingMarketCount() > 0) {
+      const fallbackLines = await readHeadLines(file, sourceLineLimit, sourceHeadScanBytes);
+      for (const line of fallbackLines) {
+        addLineForMarket(line);
+      }
+    }
+    if (targets.size === 0 && rowsByMarket.size >= 20) break;
+    if (targets.size > 0 && missingMarketCount() === 0) break;
   }
   const files = [];
   for (const [marketTicker, rows] of rowsByMarket) {
@@ -3128,6 +3153,21 @@ async function readTailLines(filePath, maxLines, maxBytes = 8 * 1024 * 1024) {
     text = Buffer.concat(chunks).toString("utf8");
   }
   return text.split(/\r?\n/).filter(Boolean).slice(-maxLines);
+}
+
+async function readHeadLines(filePath, maxLines, maxBytes = 8 * 1024 * 1024) {
+  if (!filePath || maxLines <= 0 || maxBytes <= 0 || !(await exists(filePath))) return [];
+  const info = await stat(filePath);
+  const readSize = Math.min(maxBytes, info.size);
+  if (!Number.isFinite(readSize) || readSize <= 0) return [];
+  const buffer = Buffer.alloc(readSize);
+  const handle = await import("node:fs/promises").then((mod) => mod.open(filePath, "r"));
+  try {
+    await handle.read(buffer, 0, readSize, 0);
+  } finally {
+    await handle.close();
+  }
+  return buffer.toString("utf8").split(/\r?\n/).filter(Boolean).slice(0, maxLines);
 }
 
 function countLines(text) {
