@@ -137,6 +137,11 @@ type GeneratedPaperAlgoArchive = {
   activationId: string;
   displayId: string;
   sourceAlgoId: string;
+  researchCandidateId?: string | null;
+  candidateConfigHash?: string | null;
+  sourceResearchAlgoId?: string | null;
+  sourceSnapshotHash?: string | null;
+  promotionVerdictAtInstall?: string | null;
   name: string;
   family: string;
   params: Record<string, unknown>;
@@ -227,6 +232,27 @@ type FactoryAutomationDecision = {
   title: string;
   detail: string;
   tone: "positive" | "negative" | "warning" | "neutral";
+};
+
+type FactoryPathwayGateStatus =
+  | "hold_gather_evidence"
+  | "missing_exact_linkage"
+  | "missing_official_settlement"
+  | "missing_replay_grade_ticks"
+  | "incomplete_review_bundle"
+  | "no_gate_passing_candidates";
+
+type FactoryPathwayGateSummary = {
+  blocked: boolean;
+  statuses: FactoryPathwayGateStatus[];
+  reasonCodes: string[];
+  officialSettlementCoverage: number;
+  supportedExecutableRows: number;
+  supportedLiveExactLinkedCount: number;
+  supportedLiveMissingLinkCount: number;
+  gatePassingExactLinkedResearchRows: number;
+  replayGradeTicksAvailable: boolean;
+  reviewBundleComplete: boolean;
 };
 
 type FactoryAutomationState = {
@@ -416,6 +442,12 @@ type TopTraderExecutableStats = {
   algoId: string;
   displayId: string;
   family: string;
+  researchCandidateId: string | null;
+  candidateConfigHash: string | null;
+  sourceResearchAlgoId: string | null;
+  sourceRunId: string | null;
+  sourceSnapshotHash: string | null;
+  promotionVerdictAtInstall: string | null;
   startedAt: string | null;
   lastSignalAt: string | null;
   lastAttemptAt: string | null;
@@ -461,6 +493,7 @@ const topTradersProspectSlots = 300;
 const topTradersWildcardSlots = 200;
 const topTradersRosterSize = topTradersChampionSlots + topTradersProspectSlots + topTradersWildcardSlots;
 const topTradersTelemetryOnlyRosterSize = 50;
+const factoryPathwayOfficialSettlementThreshold = 0.95;
 const topTradersMinClosedTrades = 3;
 const topTradersChampionMinClosedTrades = 25;
 const topTradersChampionMinPnlPerCycle = 0.10;
@@ -1626,7 +1659,13 @@ function App() {
       .map((id) => factoryAlgoBatchesRef.current.find((item) => item.id === id) ?? null)
       .filter((batch): batch is FactoryAlgoBatch => batch !== null);
     const researchGate = factoryResearchGateSummary(latestSweepRef.current);
-    const telemetryOnly = startTesting && !researchGate.hasValidCandidate;
+    const pathwayGate = factoryPathwayGateSummary(
+      latestSweepRef.current,
+      topTraderCandidateAlgosForFactory(generatedPaperAlgosRef.current, factoryAlgoBatchesRef.current),
+      topTradersExecutableRef.current,
+      { requireExactLiveCoverage: true, requireReplayGradeTicks: true, requireReviewBundleCompleteness: true },
+    );
+    const telemetryOnly = startTesting && (!researchGate.hasValidCandidate || pathwayGate.blocked);
     if (batches.length === 0) {
       const defaultAlgos = factoryBatchUserAlgos(generatedPaperAlgosRef.current);
       commitPaperArena((current) => ({
@@ -1640,6 +1679,26 @@ function App() {
         stoppedAt: null,
         paperState: emptyPaperState,
       }));
+      return;
+    }
+    if (startTesting && pathwayGate.blocked) {
+      commitPaperArena((current) => {
+        const archiveRows = archiveRealisticArenaAlgos(current, arenaAlgosForArena(current, generatedPaperAlgosRef.current, latestSweepRef.current, factoryAlgoBatchesRef.current), loadedAt);
+        if (archiveRows.length > 0) {
+          setRealisticArenaAlgoArchives((archives) => normalizeGeneratedPaperAlgoArchives([...archiveRows, ...archives]));
+        }
+        return {
+          ...current,
+          status: "idle",
+          selectedAlgoId: null,
+          selectedAlgoIds: [],
+          activeBatchId: null,
+          activeBatchIds: [],
+          startedAt: null,
+          stoppedAt: loadedAt,
+          paperState: emptyPaperState,
+        };
+      });
       return;
     }
     commitPaperArena((current) => {
@@ -1677,20 +1736,20 @@ function App() {
       const slot = latestFactoryBatchScheduleSlot(new Date());
       if (automation.lastScheduledBatchSlot === slot.id) return;
       const researchGate = factoryResearchGateSummary(latestSweepRef.current);
-      if (!researchGate.hasValidCandidate) {
+      const pathwayGate = factoryPathwayGateSummary(
+        latestSweepRef.current,
+        topTraderCandidateAlgosForFactory(generatedPaperAlgosRef.current, factoryAlgoBatchesRef.current),
+        topTradersExecutableRef.current,
+        { requireExactLiveCoverage: true, requireReplayGradeTicks: true, requireReviewBundleCompleteness: true },
+      );
+      if (pathwayGate.blocked) {
         const runAt = new Date().toISOString();
-        playTopTraders({
-          startingBalance: scheduledTopTradersStartingBalance,
-          maxBet: scheduledTopTradersMaxBet,
-          reset: false,
-          rosterLimit: topTradersTelemetryOnlyRosterSize,
-        });
         const decision = automationDecision(
           runAt,
           "hold",
           "warning",
           `Factory ${slot.label} held`,
-          `No research-valid candidate is available (${researchGate.reasonCodes.join(", ") || "research gates empty"}). Large arena batch creation is paused; Top Traders is gathering capped telemetry-only evidence with up to ${topTradersTelemetryOnlyRosterSize} algos.`,
+          factoryPathwayDecisionDetail(pathwayGate, researchGate),
         );
         setFactoryAutomation((current) => {
           const next = {
@@ -1771,6 +1830,7 @@ function App() {
         id: generatedActivationId(archive.sourceAlgoId, promotedAt),
         displayId: nextGeneratedPaperDisplayId(archive.family, archive.name, archive.sourceAlgoId, current, generatedPaperAlgoArchives),
         sourceAlgoId: archive.sourceAlgoId,
+        ...lineageFieldsFromArchive(archive),
         name: archive.name,
         family: archive.family,
         params: archive.params,
@@ -1820,11 +1880,13 @@ function App() {
         ))));
       }
 
-      if (plan.promotions.length > 0 && latestSweep) {
+  if (plan.promotions.length > 0 && latestSweep) {
         setGeneratedPaperAlgos((current) => {
+          const sourceSnapshotHash = sourceSnapshotHashFromSweep(latestSweep);
           const promoted = plan.promotions.map((candidate) => generatedPaperAlgoFromCandidate(
             candidate,
             latestSweep.runId,
+            sourceSnapshotHash,
             now,
             nextGeneratedPaperDisplayId(candidate.family, candidate.algoName, candidate.algoId, current, generatedPaperAlgoArchives),
           ));
@@ -6289,6 +6351,7 @@ function ActivatedAlgosView({
         activationId: algo.id,
         displayId: algo.displayId,
         sourceAlgoId: algo.sourceAlgoId,
+        ...lineageFieldsFromAlgo(algo),
         name: algo.name,
         family: algo.family,
         params: algo.params,
@@ -6841,12 +6904,26 @@ function factoryResearchEvidenceBySource(latestSweep: LocalFactorySweep | null) 
   const map = new Map<string, LocalFactorySweepCandidate>();
   if (!latestSweep) return map;
   for (const candidate of [...latestSweep.topMetrics, ...latestSweep.candidates]) {
-    for (const key of [candidate.algoId, displayIdFromFactorySource(candidate.algoId), candidate.displayId].filter((item): item is string => typeof item === "string" && item.length > 0)) {
+    for (const key of [
+      candidate.researchCandidateId,
+      candidate.candidateConfigHash,
+      candidate.sourceResearchAlgoId,
+      candidate.algoId,
+      displayIdFromFactorySource(candidate.algoId),
+      candidate.displayId,
+    ].filter((item): item is string => typeof item === "string" && item.length > 0)) {
       const current = map.get(key);
       map.set(key, current ? betterSweepCandidate(candidate, current) : candidate);
     }
   }
   return map;
+}
+
+function sourceSnapshotHashFromSweep(latestSweep: LocalFactorySweep | null) {
+  return latestSweep?.registry?.inputManifestHash
+    ?? latestSweep?.registry?.dataHash
+    ?? latestSweep?.registry?.configHash
+    ?? null;
 }
 
 function factoryResearchGateSummary(latestSweep: LocalFactorySweep | null) {
@@ -6865,8 +6942,180 @@ function factoryResearchGateSummary(latestSweep: LocalFactorySweep | null) {
   };
 }
 
+function factoryPathwayGateSummary(
+  latestSweep: LocalFactorySweep | null,
+  executableAlgos: GeneratedPaperAlgo[],
+  executableState: TopTraderExecutableState,
+  options: {
+    requireExactLiveCoverage?: boolean;
+    requireReplayGradeTicks?: boolean;
+    requireReviewBundleCompleteness?: boolean;
+  } = {},
+): FactoryPathwayGateSummary {
+  const researchGate = factoryResearchGateSummary(latestSweep);
+  const rows = latestSweep ? [...latestSweep.candidates, ...latestSweep.topMetrics] : [];
+  const exactLinkage = factoryExecutableExactLinkSummary(latestSweep, executableAlgos, executableState);
+  const officialSettlementCoverage = factorySweepOfficialSettlementCoverage(latestSweep, rows);
+  const gatePassingExactLinkedResearchRows = rows
+    .filter(factoryResearchCandidateHasExactIdentity)
+    .filter((row) => researchPromotionGate(row).ok)
+    .length;
+  const replayGradeTicksAvailable = factorySweepReplayGradeTicksAvailable(latestSweep);
+  const reviewBundleComplete = factorySweepReviewBundleComplete(latestSweep);
+  const statuses = new Set<FactoryPathwayGateStatus>();
+  const reasonCodes = new Set<string>();
+
+  if (!latestSweep) {
+    statuses.add("hold_gather_evidence");
+    reasonCodes.add("no_factory_research_evidence");
+  }
+  if (options.requireExactLiveCoverage !== false && exactLinkage.exactLinkedRows <= 0) {
+    statuses.add("missing_exact_linkage");
+    reasonCodes.add("exact_linked_supported_live_coverage_zero");
+  }
+  if (officialSettlementCoverage < factoryPathwayOfficialSettlementThreshold) {
+    statuses.add("missing_official_settlement");
+    reasonCodes.add("official_settlement_coverage_low");
+  }
+  if (options.requireReplayGradeTicks !== false && !replayGradeTicksAvailable) {
+    statuses.add("missing_replay_grade_ticks");
+    reasonCodes.add("replay_grade_target_ticks_missing");
+  }
+  if (options.requireReviewBundleCompleteness !== false && !reviewBundleComplete) {
+    statuses.add("incomplete_review_bundle");
+    reasonCodes.add("review_bundle_not_promotion_grade");
+  }
+  if (!researchGate.hasValidCandidate || gatePassingExactLinkedResearchRows <= 0) {
+    statuses.add("no_gate_passing_candidates");
+    for (const reason of researchGate.reasonCodes) reasonCodes.add(reason);
+    if (gatePassingExactLinkedResearchRows <= 0) reasonCodes.add("no_gate_passing_exact_linked_research_candidate");
+  }
+  if (statuses.size > 0) statuses.add("hold_gather_evidence");
+
+  return {
+    blocked: statuses.size > 0,
+    statuses: factoryOrderedPathwayStatuses([...statuses]),
+    reasonCodes: [...reasonCodes].slice(0, 10),
+    officialSettlementCoverage,
+    supportedExecutableRows: exactLinkage.supportedRows,
+    supportedLiveExactLinkedCount: exactLinkage.exactLinkedRows,
+    supportedLiveMissingLinkCount: exactLinkage.missingLinkRows,
+    gatePassingExactLinkedResearchRows,
+    replayGradeTicksAvailable,
+    reviewBundleComplete,
+  };
+}
+
+function factoryPathwayDecisionDetail(pathwayGate: FactoryPathwayGateSummary, researchGate: ReturnType<typeof factoryResearchGateSummary>) {
+  return [
+    `Pathway gate status: ${pathwayGate.statuses.join(", ")}.`,
+    `Research arena auto-load is held until exact linkage, official settlement, replay-grade ticks, complete bundle evidence, and gate-passing research candidates are all present.`,
+    `Exact-linked supported executable rows: ${pathwayGate.supportedLiveExactLinkedCount}/${pathwayGate.supportedExecutableRows}; missing links: ${pathwayGate.supportedLiveMissingLinkCount}.`,
+    `Official settlement coverage: ${percent(pathwayGate.officialSettlementCoverage)}; replay-grade ticks: ${pathwayGate.replayGradeTicksAvailable ? "available" : "missing"}; review bundle: ${pathwayGate.reviewBundleComplete ? "complete" : "incomplete"}.`,
+    `Research gate: ${researchGate.validCount}/${researchGate.checkedCount} valid; reasons: ${pathwayGate.reasonCodes.join(", ") || "none"}.`,
+  ].join(" ");
+}
+
+function factoryOrderedPathwayStatuses(statuses: FactoryPathwayGateStatus[]) {
+  const order: FactoryPathwayGateStatus[] = [
+    "hold_gather_evidence",
+    "missing_exact_linkage",
+    "missing_official_settlement",
+    "missing_replay_grade_ticks",
+    "incomplete_review_bundle",
+    "no_gate_passing_candidates",
+  ];
+  const set = new Set(statuses);
+  return order.filter((status) => set.has(status));
+}
+
+function factoryExecutableExactLinkSummary(
+  latestSweep: LocalFactorySweep | null,
+  executableAlgos: GeneratedPaperAlgo[],
+  executableState: TopTraderExecutableState,
+) {
+  void executableState;
+  const evidence = factoryResearchEvidenceBySource(latestSweep);
+  let supportedRows = 0;
+  let exactLinkedRows = 0;
+  for (const algo of executableAlgos) {
+    if (!familyResearchSupported(algo.family)) continue;
+    supportedRows += 1;
+    if (factoryEvidenceForGeneratedAlgo(algo, evidence)) exactLinkedRows += 1;
+  }
+  return {
+    supportedRows,
+    exactLinkedRows,
+    missingLinkRows: Math.max(0, supportedRows - exactLinkedRows),
+  };
+}
+
+function factoryEvidenceForGeneratedAlgo(algo: GeneratedPaperAlgo, evidence: Map<string, LocalFactorySweepCandidate>) {
+  if (!algo.researchCandidateId || !algo.candidateConfigHash) return null;
+  const candidate = evidence.get(algo.researchCandidateId)
+    ?? evidence.get(algo.candidateConfigHash)
+    ?? evidence.get(algo.sourceResearchAlgoId ?? "")
+    ?? evidence.get(algo.sourceAlgoId)
+    ?? null;
+  if (!candidate) return null;
+  if (candidate.researchCandidateId !== algo.researchCandidateId) return null;
+  if (candidate.candidateConfigHash !== algo.candidateConfigHash) return null;
+  return candidate;
+}
+
+function factoryResearchCandidateHasExactIdentity(candidate: LocalFactorySweepCandidate) {
+  return Boolean(candidate.researchCandidateId && candidate.candidateConfigHash && (candidate.sourceResearchAlgoId || candidate.algoId));
+}
+
+function factorySweepOfficialSettlementCoverage(latestSweep: LocalFactorySweep | null, rows: LocalFactorySweepCandidate[]) {
+  const values: number[] = [];
+  if (latestSweep?.searchBudget) values.push(numberOrDefault(latestSweep.searchBudget.officialSettlementCoverage, 0));
+  for (const row of rows) values.push(numberOrDefault(row.officialSettlementCoverage, 0));
+  const dataQuality = latestSweep?.dataQuality;
+  if (isRecord(dataQuality) && isRecord(dataQuality.settlementEvidence)) {
+    values.push(numberOrDefault(dataQuality.settlementEvidence.officialSettlementCoverage, 0));
+  }
+  return values.reduce((best, value) => Math.max(best, value), 0);
+}
+
+function factorySweepReplayGradeTicksAvailable(latestSweep: LocalFactorySweep | null) {
+  const record = latestSweep as unknown as Record<string, unknown> | null;
+  const rawObjects = [
+    record?.rawMarketTickExport,
+    record?.rawTickCoverageSummary,
+    isRecord(record?.rawMarketTickExport) ? record.rawMarketTickExport.targetMarketCoverage : null,
+    isRecord(record?.rawTickCoverageSummary) ? record.rawTickCoverageSummary.targetMarketCoverage : null,
+  ].filter(isRecord);
+  return rawObjects.some((raw) => (
+    raw.executionSensitivePromotionAllowed === true
+    || (raw.replayGrade === true && raw.available === true)
+    || (raw.available === true && numberOrDefault(raw.coverageRatio, 0) >= 0.95)
+  ));
+}
+
+function factorySweepReviewBundleComplete(latestSweep: LocalFactorySweep | null) {
+  const rowExport = latestSweep?.rowExport;
+  const bundleCompleteness = latestSweep?.bundleCompleteness;
+  const rowExportComplete = isRecord(rowExport)
+    && rowExport.promotionReviewComplete === true
+    && rowExport.rowsCapped !== true;
+  const qualityComplete = latestSweep?.reviewBundleQuality === "full_row_promotion_grade";
+  return (rowExportComplete || qualityComplete)
+    && isRecord(bundleCompleteness)
+    && bundleCompleteness.ok === true;
+}
+
 function factoryEvidenceForTopTraderRow(row: TopTraderRow, evidence: Map<string, LocalFactorySweepCandidate>) {
-  return evidence.get(row.sourceAlgoId) ?? evidence.get(row.displayId) ?? null;
+  if (!row.researchCandidateId || !row.candidateConfigHash) return null;
+  const candidate = evidence.get(row.researchCandidateId)
+    ?? evidence.get(row.candidateConfigHash)
+    ?? evidence.get(row.sourceResearchAlgoId ?? "")
+    ?? evidence.get(row.sourceAlgoId)
+    ?? null;
+  if (!candidate) return null;
+  if (candidate.researchCandidateId !== row.researchCandidateId) return null;
+  if (candidate.candidateConfigHash !== row.candidateConfigHash) return null;
+  return candidate;
 }
 
 function topTraderResearchTone(candidate: LocalFactorySweepCandidate | null): "info" | "warn" | "good" | "bad" | "neutral" {
@@ -7293,6 +7542,7 @@ function generatedActivationId(sourceAlgoId: string, activatedAt: string) {
 function generatedPaperAlgoFromCandidate(
   candidate: LocalFactorySweepCandidate,
   runId: string,
+  sourceSnapshotHash: string | null,
   promotedAt: string,
   displayId: string,
 ): GeneratedPaperAlgo {
@@ -7300,6 +7550,11 @@ function generatedPaperAlgoFromCandidate(
     id: generatedActivationId(candidate.algoId, promotedAt),
     displayId,
     sourceAlgoId: candidate.algoId,
+    researchCandidateId: candidate.researchCandidateId ?? null,
+    candidateConfigHash: candidate.candidateConfigHash ?? null,
+    sourceResearchAlgoId: candidate.sourceResearchAlgoId ?? candidate.algoId,
+    sourceSnapshotHash: candidate.sourceSnapshotHash ?? sourceSnapshotHash,
+    promotionVerdictAtInstall: candidate.promotionVerdict ?? null,
     name: candidate.algoName,
     family: candidate.family,
     params: candidate.params,
@@ -7514,6 +7769,7 @@ function topTraderExecutableArchivesForFactory(
         activationId: `top-traders-dry-run:${stats.sourceAlgoId}:${activatedAt}`,
         displayId: algo.displayId,
         sourceAlgoId: algo.sourceAlgoId,
+        ...lineageFieldsFromAlgo(algo),
         name: algo.name,
         family: algo.family,
         params: algo.params,
@@ -8322,11 +8578,32 @@ function escapeRegExp(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function lineageFieldsFromAlgo(algo: GeneratedPaperAlgo) {
+  return {
+    researchCandidateId: algo.researchCandidateId ?? null,
+    candidateConfigHash: algo.candidateConfigHash ?? null,
+    sourceResearchAlgoId: algo.sourceResearchAlgoId ?? null,
+    sourceSnapshotHash: algo.sourceSnapshotHash ?? null,
+    promotionVerdictAtInstall: algo.promotionVerdictAtInstall ?? null,
+  };
+}
+
+function lineageFieldsFromArchive(archive: GeneratedPaperAlgoArchive) {
+  return {
+    researchCandidateId: archive.researchCandidateId ?? null,
+    candidateConfigHash: archive.candidateConfigHash ?? null,
+    sourceResearchAlgoId: archive.sourceResearchAlgoId ?? null,
+    sourceSnapshotHash: archive.sourceSnapshotHash ?? null,
+    promotionVerdictAtInstall: archive.promotionVerdictAtInstall ?? null,
+  };
+}
+
 function archiveGeneratedPaperAlgo(algo: GeneratedPaperAlgo, paperState: PaperState, deactivatedAt: string): GeneratedPaperAlgoArchive {
   return {
     activationId: algo.id,
     displayId: algo.displayId,
     sourceAlgoId: algo.sourceAlgoId,
+    ...lineageFieldsFromAlgo(algo),
     name: algo.name,
     family: algo.family,
     params: algo.params,
@@ -8346,7 +8623,7 @@ function archiveRealisticArenaAlgos(arena: PaperArenaState, arenaAlgos: Generate
     ? arena.selectedAlgoIds
     : arena.selectedAlgoId ? [arena.selectedAlgoId] : []);
   return selectedIds
-    .map((id) => {
+    .map((id): GeneratedPaperAlgoArchive | null => {
       const algo = arenaAlgoById.get(id) ?? fallbackArenaAlgoFromPaperActivity(arena, id);
       if (!algo) return null;
       const liveStats = paperSummarySnapshot(arena.paperState, algo.id);
@@ -8356,11 +8633,12 @@ function archiveRealisticArenaAlgos(arena: PaperArenaState, arenaAlgos: Generate
         activationId: `${algo.id}:${arena.startedAt}`,
         displayId: algo.displayId,
         sourceAlgoId: algo.sourceAlgoId,
+        ...lineageFieldsFromAlgo(algo),
         name: algo.name,
         family: algo.family,
         params: algo.params,
         sourceRunId: algo.sourceRunId,
-        activatedAt: arena.startedAt,
+        activatedAt: arena.startedAt ?? deactivatedAt,
         deactivatedAt,
         arenaEntryPolicy: arena.allowRepeatBuys ? "repeat-entry" : "single-entry",
         sourceMetrics: algo.sourceMetrics,
@@ -8871,6 +9149,7 @@ function buildTopTraderRows(
       activationId: `saved:${summary.strategyId}`,
       displayId: algo.displayId,
       sourceAlgoId: algo.sourceAlgoId,
+      ...lineageFieldsFromAlgo(algo),
       name: algo.name,
       family: algo.family,
       params: algo.params,
@@ -8911,6 +9190,7 @@ function buildTopTraderRows(
       activationId: `top-candidate:${algo.sourceAlgoId}`,
       displayId: algo.displayId,
       sourceAlgoId: algo.sourceAlgoId,
+      ...lineageFieldsFromAlgo(algo),
       name: algo.name,
       family: algo.family,
       params: algo.params,
@@ -9178,6 +9458,7 @@ function activeArenaRowsForTopTraderEvidence(arena: PaperArenaState, arenaAlgos:
         activationId: `${algo.id}:${startedAt}`,
         displayId: algo.displayId,
         sourceAlgoId: algo.sourceAlgoId,
+        ...lineageFieldsFromAlgo(algo),
         name: algo.name,
         family: algo.family,
         params: algo.params,
@@ -9899,6 +10180,12 @@ function defaultTopTraderExecutableStats(algo: GeneratedPaperAlgo, now: string):
     algoId: algo.id,
     displayId: algo.displayId,
     family: algo.family,
+    researchCandidateId: algo.researchCandidateId ?? null,
+    candidateConfigHash: algo.candidateConfigHash ?? null,
+    sourceResearchAlgoId: algo.sourceResearchAlgoId ?? null,
+    sourceRunId: algo.sourceRunId,
+    sourceSnapshotHash: algo.sourceSnapshotHash ?? null,
+    promotionVerdictAtInstall: algo.promotionVerdictAtInstall ?? null,
     startedAt: now,
     lastSignalAt: null,
     lastAttemptAt: null,
@@ -9991,6 +10278,12 @@ function updateTopTraderExecutableStats(
     displayId: algo.displayId,
     family: algo.family,
     sourceAlgoId: algo.sourceAlgoId,
+    researchCandidateId: algo.researchCandidateId ?? current.researchCandidateId ?? null,
+    candidateConfigHash: algo.candidateConfigHash ?? current.candidateConfigHash ?? null,
+    sourceResearchAlgoId: algo.sourceResearchAlgoId ?? current.sourceResearchAlgoId ?? null,
+    sourceRunId: algo.sourceRunId ?? current.sourceRunId ?? null,
+    sourceSnapshotHash: algo.sourceSnapshotHash ?? current.sourceSnapshotHash ?? null,
+    promotionVerdictAtInstall: algo.promotionVerdictAtInstall ?? current.promotionVerdictAtInstall ?? null,
     startedAt: current.startedAt ?? now,
   });
   return {
@@ -10540,6 +10833,11 @@ function normalizeGeneratedPaperAlgoArchive(value: unknown): GeneratedPaperAlgoA
     activationId,
     displayId: displayId ?? fallbackArchiveDisplayId(activationId, family, `${name} ${sourceAlgoId}`),
     sourceAlgoId,
+    researchCandidateId: stringOrNull(value.researchCandidateId),
+    candidateConfigHash: stringOrNull(value.candidateConfigHash),
+    sourceResearchAlgoId: stringOrNull(value.sourceResearchAlgoId),
+    sourceSnapshotHash: stringOrNull(value.sourceSnapshotHash),
+    promotionVerdictAtInstall: stringOrNull(value.promotionVerdictAtInstall),
     name,
     family,
     params: isRecord(value.params) ? { ...value.params } : {},
@@ -10847,6 +11145,12 @@ function normalizeTopTraderExecutableStats(value: unknown): TopTraderExecutableS
     algoId,
     displayId,
     family,
+    researchCandidateId: stringOrNull(value.researchCandidateId),
+    candidateConfigHash: stringOrNull(value.candidateConfigHash),
+    sourceResearchAlgoId: stringOrNull(value.sourceResearchAlgoId),
+    sourceRunId: stringOrNull(value.sourceRunId),
+    sourceSnapshotHash: stringOrNull(value.sourceSnapshotHash),
+    promotionVerdictAtInstall: stringOrNull(value.promotionVerdictAtInstall),
     startedAt: stringOrNull(value.startedAt),
     lastSignalAt: stringOrNull(value.lastSignalAt),
     lastAttemptAt: stringOrNull(value.lastAttemptAt),

@@ -54,6 +54,11 @@ export interface GeneratedPaperAlgo {
   id: GeneratedPaperStrategyId;
   displayId: string;
   sourceAlgoId: string;
+  researchCandidateId?: string | null;
+  candidateConfigHash?: string | null;
+  sourceResearchAlgoId?: string | null;
+  sourceSnapshotHash?: string | null;
+  promotionVerdictAtInstall?: string | null;
   name: string;
   family: string;
   params: Record<string, unknown>;
@@ -2123,6 +2128,10 @@ function strategyNameForId(id: PaperStrategyId) {
   return paperStrategyDefinitions.find((strategy) => strategy.id === id)?.name ?? "Final-60 Lock";
 }
 
+function stringOrNullable(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
 function normalizeGeneratedPaperAlgo(value: unknown): GeneratedPaperAlgo | null {
   if (!isRecord(value)) return null;
   const sourceAlgoId = stringOrDefault(value.sourceAlgoId, "");
@@ -2141,6 +2150,11 @@ function normalizeGeneratedPaperAlgo(value: unknown): GeneratedPaperAlgo | null 
       fallbackGeneratedPaperDisplayId(id, family, `${name} ${sourceAlgoId}`),
     ),
     sourceAlgoId,
+    researchCandidateId: stringOrNullable(value.researchCandidateId),
+    candidateConfigHash: stringOrNullable(value.candidateConfigHash),
+    sourceResearchAlgoId: stringOrNullable(value.sourceResearchAlgoId),
+    sourceSnapshotHash: stringOrNullable(value.sourceSnapshotHash),
+    promotionVerdictAtInstall: stringOrNullable(value.promotionVerdictAtInstall),
     name,
     family,
     params: isRecord(value.params) ? { ...value.params } : {},

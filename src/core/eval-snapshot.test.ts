@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildReviewBundle, exportEvaluationSnapshot, validateEvaluationSnapshot } from "../../scripts/export-eval-snapshot.mjs";
+import { researchCandidateIdentity, researchCandidateIdentityContext } from "../../scripts/factory/candidate-identity.mjs";
 import { nextEvalAction } from "../../scripts/run-eval-loop.mjs";
 
 describe("continuous evaluation snapshot exporter", () => {
@@ -86,12 +87,28 @@ describe("continuous evaluation snapshot exporter", () => {
       "decision_frames.jsonl",
       "trades.csv",
       "paper_decision_ledger.csv",
+      "official_settlements.tsv.gz",
+      "official_settlements.jsonl",
       "raw_market_ticks/manifest.json",
+      "raw_market_ticks/coverage.tsv.gz",
       "research_live_identity_alignment.json",
+      "exact_link_summary.json",
+      "settlement_coverage_report.json",
+      "official_settlement_coverage_by_family.tsv.gz",
+      "official_settlement_coverage_by_candidate.tsv.gz",
+      "simulator_calibration_by_regime.tsv.gz",
+      "calibration_by_bucket.tsv.gz",
+      "simulator_calibration_report.json",
+      "calibration_report.json",
+      "simulator_calibration_report.md",
+      "reject_stream_summary.json",
+      "replay_parity_report.json",
+      "executable_readiness_gate.json",
       "scheduler_budget_report.json",
       "provenance_completeness_report.json",
       "candidate_lineage_audit.tsv.gz",
       "unlinked_live_rows.tsv.gz",
+      "supported_live_exact_links.tsv.gz",
       "evidence_allocation_by_family.tsv.gz",
       "evidence_allocation_by_candidate.tsv.gz",
       "missing_provenance_rows.tsv.gz",
@@ -103,8 +120,51 @@ describe("continuous evaluation snapshot exporter", () => {
     expect(ledger).toContain("researchCandidateId");
     const identityAlignment = JSON.parse(readFileSync(path.join(result.snapshotDir, "research_live_identity_alignment.json"), "utf8"));
     expect(identityAlignment).toMatchObject({ exactLinkedLiveRows: 1, failClosed: true });
+    const settlementCoverage = JSON.parse(readFileSync(path.join(result.snapshotDir, "settlement_coverage_report.json"), "utf8"));
+    expect(settlementCoverage).toMatchObject({
+      schemaVersion: "dogeedge.settlement-coverage-report.v1",
+      summary: {
+        officialSettlementCoverage: 0,
+        promotionGradeScoringAllowed: false,
+        beyondPaperAllowed: false,
+        failClosed: true,
+      },
+      reasonCodes: expect.arrayContaining([
+        "official_coverage_below_scoring_threshold",
+        "official_coverage_below_promotion_threshold",
+      ]),
+    });
+    const simulatorCalibration = JSON.parse(readFileSync(path.join(result.snapshotDir, "simulator_calibration_report.json"), "utf8"));
+    expect(simulatorCalibration).toMatchObject({
+      schemaVersion: "dogeedge.simulator-calibration-report.v1",
+      tighteningOnly: true,
+      attempts: expect.any(Number),
+    });
+    const rejectStream = JSON.parse(readFileSync(path.join(result.snapshotDir, "reject_stream_summary.json"), "utf8"));
+    expect(rejectStream).toMatchObject({
+      schemaVersion: "dogeedge.reject-stream-summary.v1",
+      fullRejectStreamPresent: true,
+    });
+    const replayParity = JSON.parse(readFileSync(path.join(result.snapshotDir, "replay_parity_report.json"), "utf8"));
+    expect(replayParity).toMatchObject({
+      schemaVersion: "dogeedge.replay-parity-report.v1",
+      replayGrade: false,
+      failClosed: true,
+      reasonCodes: expect.arrayContaining(["raw_market_tick_parquet_absent"]),
+    });
+    const readiness = JSON.parse(readFileSync(path.join(result.snapshotDir, "executable_readiness_gate.json"), "utf8"));
+    expect(readiness).toMatchObject({
+      schemaVersion: "dogeedge.executable-readiness-gate.v1",
+      allowedToLoadArenaBatch: false,
+      state: "hold_gather_evidence",
+      reasonCodes: expect.arrayContaining(["official_settlement_coverage_below_threshold", "replay_grade_target_market_ticks_absent"]),
+    });
     const schedulerBudget = JSON.parse(readFileSync(path.join(result.snapshotDir, "scheduler_budget_report.json"), "utf8"));
-    expect(schedulerBudget).toMatchObject({ unsupportedNormalBudgetRows: 0 });
+    expect(schedulerBudget).toMatchObject({
+      unsupportedNormalBudgetRows: 0,
+      exploitationRows: 0,
+      reasonCodes: expect.arrayContaining(["no_gate_passing_exact_candidates"]),
+    });
     const rawTickManifest = JSON.parse(readFileSync(path.join(result.snapshotDir, "raw_market_ticks", "manifest.json"), "utf8"));
     expect(rawTickManifest).toMatchObject({
       schemaVersion: "dogeedge.raw-market-ticks.manifest.v1",
@@ -115,6 +175,7 @@ describe("continuous evaluation snapshot exporter", () => {
       exportedFormat: "jsonl",
       availabilityStatus: "sample_exported",
       jsonlAvailable: true,
+      executionSensitivePromotionAllowed: true,
       targetMarketCount: 1,
       coveredTargetMarketCount: 1,
       uncoveredTargetMarketCount: 0,
@@ -130,6 +191,7 @@ describe("continuous evaluation snapshot exporter", () => {
     });
     expect(rawTickManifest.sourceHashPolicy.totalSourceBytes).toBeGreaterThan(0);
     expect(rawTickManifest.sourceHashPolicy.hashedSourceBytes).toBe(rawTickManifest.sourceHashPolicy.totalSourceBytes);
+    expect(gunzipSync(readFileSync(path.join(result.snapshotDir, "raw_market_ticks", "coverage.tsv.gz"))).toString("utf8")).toContain("KXDOGE15M-FIXTURE");
     expect(readFileSync(path.join(result.snapshotDir, "raw_market_ticks", "jsonl", "KXDOGE15M-FIXTURE.jsonl"), "utf8")).toContain("orderbook_snapshot");
     const history = JSON.parse(readFileSync(path.join(fixture.outDir, "snapshot-history-48h.json"), "utf8"));
     expect(history.schemaVersion).toBe("dogeedge.eval.snapshot-history.v1");
@@ -174,6 +236,7 @@ describe("continuous evaluation snapshot exporter", () => {
     expect(manifest.files.map((file: { relativePath: string }) => file.relativePath)).toEqual(expect.arrayContaining([
       "repo/COMMIT_HASH.txt",
       "repo/package.json",
+      "bundle_completeness_report.json",
       "registry/experiment-registry.tar.gz",
       "snapshots/snapshot-history-48h.json",
       "snapshots/leakage_audit.json",
@@ -188,13 +251,28 @@ describe("continuous evaluation snapshot exporter", () => {
       "snapshots/top_roster_default_sort_audit.json",
       "snapshots/candidate_lineage_audit.tsv.gz",
       "snapshots/unlinked_live_rows.tsv.gz",
+      "snapshots/supported_live_exact_links.tsv.gz",
       "snapshots/evidence_allocation_by_family.tsv.gz",
       "snapshots/evidence_allocation_by_candidate.tsv.gz",
       "snapshots/missing_provenance_rows.tsv.gz",
       "snapshots/decision_frames.jsonl",
       "snapshots/trades.csv",
       "snapshots/paper_decision_ledger.csv",
+      "snapshots/official_settlements.tsv.gz",
+      "snapshots/official_settlements.jsonl",
+      "snapshots/settlement_coverage_report.json",
+      "snapshots/official_settlement_coverage_by_family.tsv.gz",
+      "snapshots/official_settlement_coverage_by_candidate.tsv.gz",
+      "snapshots/simulator_calibration_by_regime.tsv.gz",
+      "snapshots/calibration_by_bucket.tsv.gz",
+      "snapshots/simulator_calibration_report.json",
+      "snapshots/calibration_report.json",
+      "snapshots/simulator_calibration_report.md",
+      "snapshots/reject_stream_summary.json",
+      "snapshots/replay_parity_report.json",
+      "snapshots/executable_readiness_gate.json",
       "snapshots/raw_market_ticks/manifest.json",
+      "snapshots/raw_market_ticks/coverage.tsv.gz",
     ]));
     const rowsByPath = Object.fromEntries(manifest.files.map((file: { relativePath: string; rows: number | null }) => [file.relativePath, file.rows]));
     expect(rowsByPath["snapshots/algoMetrics.tsv.gz"]).toBe(1);
@@ -202,6 +280,21 @@ describe("continuous evaluation snapshot exporter", () => {
     expect(rowsByPath["snapshots/tradeRows.tsv.gz"]).toBe(1);
     expect(rowsByPath["snapshots/paper_decision_ledger.csv"]).toBeGreaterThan(1);
     expect(manifest.rowExport.rowsCapped).toBe(true);
+    expect(manifest.bundleCompleteness).toMatchObject({
+      schemaVersion: "dogeedge.eval.review.bundle-completeness.v1",
+      ok: true,
+      missingManifestFiles: [],
+      listedMissingFiles: [],
+    });
+    expect(manifest.repoDirty).toBe(manifest.bundleCompleteness.repoDirty);
+    expect(manifest.dirtyDiffIncluded).toBe(manifest.bundleCompleteness.dirtyDiffIncluded);
+    if (manifest.repoDirty) {
+      expect(manifest.dirtyDiffIncluded).toBe(true);
+      expect(manifest.files.map((file: { relativePath: string }) => file.relativePath)).toContain("repo/UNCOMMITTED_DIFF.patch");
+    }
+    expect(JSON.parse(readFileSync(path.join(result.bundleRoot, "bundle_completeness_report.json"), "utf8"))).toMatchObject({
+      ok: true,
+    });
     expect(manifest.rawMarketTickExport).toMatchObject({
       manifestPresent: true,
       parseOk: true,
@@ -212,12 +305,14 @@ describe("continuous evaluation snapshot exporter", () => {
       availabilityStatus: "sample_exported",
       parquetAvailable: false,
       jsonlAvailable: true,
+      executionSensitivePromotionAllowed: true,
       targetMarketCount: 1,
       jsonlFileCount: 1,
       targetMarketCoverage: {
         covered: 1,
         uncovered: 0,
         ratio: 1,
+        executionSensitivePromotionAllowed: true,
       },
       targetMarketSamples: {
         covered: ["KXDOGE15M-FIXTURE"],
@@ -243,9 +338,20 @@ describe("continuous evaluation snapshot exporter", () => {
     ]));
     expect(manifest.limitations).toEqual(expect.arrayContaining([
       "rows_capped",
+      "official_settlement_coverage_below_scoring_threshold",
+      "official_settlement_coverage_below_promotion_threshold",
       "raw_market_tick_parquet_absent",
       "raw_market_tick_jsonl_sample",
     ]));
+    expect(manifest.officialSettlementCoverageSummary).toMatchObject({
+      officialSettlementCoverage: 0,
+      promotionGradeScoringAllowed: false,
+      beyondPaperAllowed: false,
+    });
+    expect(manifest.executableReadinessGate).toMatchObject({
+      allowedToLoadArenaBatch: false,
+      state: "hold_gather_evidence",
+    });
     expect(manifest.files.map((file: { relativePath: string }) => file.relativePath)).toContain("snapshots/raw_market_ticks/jsonl/KXDOGE15M-FIXTURE.jsonl");
     expect(manifest.safetyStatus.liveTradingEnabled).toBe(false);
   });
@@ -274,6 +380,7 @@ describe("continuous evaluation snapshot exporter", () => {
       availabilityStatus: "target_samples_absent",
       parquetAvailable: false,
       jsonlAvailable: false,
+      executionSensitivePromotionAllowed: false,
       targetMarketCount: 1,
       coveredTargetMarketCount: 0,
       uncoveredTargetMarketCount: 1,
@@ -297,6 +404,7 @@ describe("continuous evaluation snapshot exporter", () => {
         covered: 0,
         uncovered: 1,
         ratio: 0,
+        executionSensitivePromotionAllowed: false,
       },
       targetMarketSamples: {
         covered: [],
@@ -431,6 +539,20 @@ function writeEvalFixture(options: { liveSwitch?: unknown; rawSnapshotMarketTick
     costModel: [{ id: "base", label: "Base" }, { id: "conservative", label: "Conservative", slippageCents: 1 }],
     seedPlan: { rootSeed: "fixture-seed", deterministic: true },
   };
+  const identityContext = researchCandidateIdentityContext({
+    primaryRun: { runId: "fixture-run", randomSeed: "fixture-seed", configHash: "config-hash" },
+    registry,
+    costModels: registry.costModel,
+    riskModel: {},
+  });
+  const identity = researchCandidateIdentity(metric, identityContext);
+  Object.assign(metric, {
+    researchCandidateId: identity.researchCandidateId,
+    candidateConfigHash: identity.candidateConfigHash,
+    sourceResearchAlgoId: identity.sourceResearchAlgoId,
+    sourceRunId: "fixture-run",
+    sourceSnapshotHash: "input-hash",
+  });
   const latestSweep = {
     runId: "fixture-run",
     mode: "sweep",
@@ -463,6 +585,12 @@ function writeEvalFixture(options: { liveSwitch?: unknown; rawSnapshotMarketTick
           algoId: `generated:${algoId}`,
           displayId: "Z-0001",
           family: "fixture",
+          researchCandidateId: identity.researchCandidateId,
+          candidateConfigHash: identity.candidateConfigHash,
+          sourceResearchAlgoId: identity.sourceResearchAlgoId,
+          sourceRunId: "fixture-run",
+          sourceSnapshotHash: "input-hash",
+          promotionVerdictAtInstall: "paper_only",
           startedAt: "2026-06-07T19:30:00.000Z",
           lastSignalAt: "2026-06-07T20:20:00.000Z",
           lastAttemptAt: "2026-06-07T20:20:00.000Z",

@@ -74,7 +74,12 @@ export function metricsCsv(metrics) {
 }
 
 export function markdownReport({ runId, startedAt, finishedAt, dataRoot, framesDir, frameCount, eventCount, algoCount, sweepMode, dataQuality, metrics, candidates, searchBudget = null }) {
-  const top = candidates[0] ?? metrics[0] ?? null;
+  const viableCandidates = candidates.filter(promotionCandidateIsViable);
+  const top = viableCandidates[0] ?? null;
+  const exploratoryTop = candidates[0] ?? metrics[0] ?? null;
+  const noViableSummary = exploratoryTop
+    ? `No viable candidate. The top exploratory row is ${exploratoryTop.algoName}, but it is ${exploratoryTop.promotionVerdict ?? "not validated"} and cannot be treated as a trusted ranked winner. ${trustExplanation(exploratoryTop)}`
+    : "No viable candidate. No strategies produced usable closed trades.";
   return [
     "# DogeEdge Algo Factory Report",
     "",
@@ -82,7 +87,7 @@ export function markdownReport({ runId, startedAt, finishedAt, dataRoot, framesD
     "",
     top
       ? `${top.algoName}: ${top.promotionVerdict ?? "unknown"} with robust score ${formatNumber(top.robustScore)}. ${trustExplanation(top)}`
-      : "No strategies produced usable closed trades.",
+      : noViableSummary,
     "",
     `- Run: ${runId}`,
     `- Mode: ${sweepMode ? "sweep" : "backtest"}`,
@@ -111,14 +116,20 @@ export function markdownReport({ runId, startedAt, finishedAt, dataRoot, framesD
     "",
     top
       ? `${top.algoName}: ${top.promotionVerdict ?? "unknown"} with robust score ${formatNumber(top.robustScore)}. ${trustExplanation(top)}`
-      : "No strategies produced usable closed trades.",
+      : noViableSummary,
     "",
     "## Promotion Candidates",
     "",
-    candidates.length
+    viableCandidates.length
       ? "| Algo | Family | Verdict | Closed Markets | Conservative P/L | WF | CPCV + | Holdout | Drift | DSR Approx | PBO Approx | FDR | q | Robust | Reasons |\n|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|\n"
-        + candidates.slice(0, 50).map((metric) => `| ${metric.algoName} | ${metric.family} | ${metric.promotionVerdict} | ${metric.independentClosedMarkets} | ${money(metric.costModels?.conservative?.totalPnl ?? 0)} | ${metric.walkForwardPass ? "pass" : "fail"} | ${percent(metric.cpcvSummary?.positiveFoldRate ?? 0)} | ${metric.holdoutPass ? "pass" : "fail"} ${money(metric.holdoutConservativeTotalPnl ?? 0)} | ${paperEvidenceLabel(metric)} | ${percent(metric.dsrApprox ?? 0)} | ${percent(metric.pboApprox ?? 0)} | ${percent(metric.falseDiscoveryRisk ?? 1)} | ${percent(metric.globalQValue ?? 1)} | ${formatNumber(metric.robustScore)} | ${(metric.reasonCodes ?? []).join(" ")} |`).join("\n")
-      : "No candidates passed robust promotion gates.",
+        + viableCandidates.slice(0, 50).map((metric) => `| ${metric.algoName} | ${metric.family} | ${metric.promotionVerdict} | ${metric.independentClosedMarkets} | ${money(metric.costModels?.conservative?.totalPnl ?? 0)} | ${metric.walkForwardPass ? "pass" : "fail"} | ${percent(metric.cpcvSummary?.positiveFoldRate ?? 0)} | ${metric.holdoutPass ? "pass" : "fail"} ${money(metric.holdoutConservativeTotalPnl ?? 0)} | ${paperEvidenceLabel(metric)} | ${percent(metric.dsrApprox ?? 0)} | ${percent(metric.pboApprox ?? 0)} | ${percent(metric.falseDiscoveryRisk ?? 1)} | ${percent(metric.globalQValue ?? 1)} | ${formatNumber(metric.robustScore)} | ${(metric.reasonCodes ?? []).join(" ")} |`).join("\n")
+      : "No viable candidate passed official-settlement, exact validation, holdout, CPCV, conservative-cost, stress-cost, and adjusted-confidence gates.",
+    "",
+    "## Exploratory Rows",
+    "",
+    exploratoryTop
+      ? "Raw exploratory rows remain available below for diagnosis only; they are not trusted ranked winners."
+      : "No exploratory rows were emitted.",
     "",
     "## Settlement Evidence Gate",
     "",
@@ -219,6 +230,21 @@ function csvMetricValue(metric, key) {
   if (key === "sampleReasonCodes") return (metric.sampleSufficiency?.reasonCodes ?? []).join(" ");
   if (key === "reasonCodes") return (metric.reasonCodes ?? []).join(" ");
   return metric[key];
+}
+
+function promotionCandidateIsViable(metric) {
+  if (!metric || metric.nonPromotable) return false;
+  if (metric.promotionVerdict !== "paper_only" && metric.promotionVerdict !== "tiny_live_eligible") return false;
+  if ((metric.labelSource ?? metric.settlementEvidence?.labelSource) !== "official_resolution") return false;
+  if ((metric.settlementSource ?? metric.settlementEvidence?.settlementSource) !== "official_resolution") return false;
+  if ((metric.officialSettlementCoverage ?? metric.settlementEvidence?.officialSettlementCoverage ?? 0) < 0.95) return false;
+  if (metric.holdoutPass !== true || metric.holdoutStrictlyLater === false) return false;
+  if (metric.walkForwardPass !== true) return false;
+  if ((metric.cpcvSummary?.positiveFoldRate ?? 0) < 0.7) return false;
+  if ((metric.costModels?.conservative?.totalPnl ?? metric.conservativeTotalPnl ?? 0) <= 0) return false;
+  if ((metric.costModels?.stress?.totalPnl ?? metric.stressTotalPnl ?? 0) <= 0) return false;
+  if ((metric.adjustedConfidence ?? 0) <= 0) return false;
+  return true;
 }
 
 function trustExplanation(metric) {

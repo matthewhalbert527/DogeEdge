@@ -8,6 +8,7 @@ import { experimentRegistryEntry, compareRuns } from "./factory/registry.mjs";
 import { assertReplayInputManifest } from "./factory/repro.mjs";
 import { readPaperEvidence } from "./factory/paper-evidence.mjs";
 import { applyFamilySearchBudget, searchBudgetDecision } from "./factory/search-budget.mjs";
+import { researchCandidateIdentity, researchCandidateIdentityContext } from "./factory/candidate-identity.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const args = parseArgs(process.argv.slice(2));
@@ -131,8 +132,8 @@ const pipeline = runFactoryResearchPipeline({
   },
 });
 const filteredFrames = pipeline.frames;
-const metrics = pipeline.metrics;
-const candidates = pipeline.candidates;
+let metrics = pipeline.metrics;
+let candidates = pipeline.candidates;
 const trades = pipeline.trades;
 const finishedAt = new Date().toISOString();
 const registry = await experimentRegistryEntry({
@@ -165,6 +166,14 @@ const registry = await experimentRegistryEntry({
   costModels: pipeline.costModels,
   seed: randomSeed,
 });
+const identityContext = researchCandidateIdentityContext({
+  primaryRun: { runId, randomSeed, configHash: registry.configHash },
+  registry,
+  costModels: pipeline.costModels,
+  riskModel: registry.riskModel ?? {},
+});
+metrics = withResearchCandidateIdentity(metrics, identityContext, { sourceRunId: runId, sourceSnapshotHash: registry.inputManifestHash ?? registry.dataHash ?? null });
+candidates = withResearchCandidateIdentity(candidates, identityContext, { sourceRunId: runId, sourceSnapshotHash: registry.inputManifestHash ?? registry.dataHash ?? null });
 
 await writeFile(path.join(runDir, "config.json"), `${JSON.stringify({
   runId,
@@ -307,7 +316,12 @@ console.log(`Market events: ${pipeline.events.length}`);
 console.log(`Algos: ${algos.length}`);
 if (searchBudget?.limited) console.log(`Search budget limited: ${searchBudget.reasonCodes.join(", ")}; generated ${cappedSweepAlgos.length}/${searchBudget.requestedSweepAlgos} sweep algos.`);
 console.log(`Run: ${runDir}`);
-console.log((candidates.length ? candidates : metrics).slice(0, 8).map((metric) => `${metric.algoName}: ${money(metric.totalPnl)} P/L, ${percent(metric.roi)} ROI, ${metric.independentClosedMarkets ?? metric.closed} markets, ${metric.promotionVerdict ?? "review"} verdict, robust ${metric.robustScore?.toFixed(2) ?? "-"}`).join("\n"));
+const viableConsoleCandidates = candidates.filter(consolePromotionCandidateIsViable);
+if (viableConsoleCandidates.length === 0) {
+  const exploratory = candidates[0] ?? metrics[0] ?? null;
+  console.log(`No viable candidate${exploratory ? `; top exploratory row is ${exploratory.algoName} (${exploratory.promotionVerdict ?? "review"}) for diagnosis only` : ""}.`);
+}
+console.log((viableConsoleCandidates.length ? viableConsoleCandidates : metrics).slice(0, 8).map((metric) => `${metric.algoName}: ${money(metric.totalPnl)} P/L, ${percent(metric.roi)} ROI, ${metric.independentClosedMarkets ?? metric.closed} markets, ${metric.promotionVerdict ?? "review"} verdict, robust ${metric.robustScore?.toFixed(2) ?? "-"}`).join("\n"));
 
 async function defaultDataRoot() {
   if (process.platform === "win32") {
@@ -376,6 +390,20 @@ function promoteCheckSummary(metrics, candidates) {
         reasonCodes: metric.reasonCodes ?? [],
       })),
   };
+}
+
+function consolePromotionCandidateIsViable(metric) {
+  if (!metric || metric.nonPromotable) return false;
+  if (metric.promotionVerdict !== "paper_only" && metric.promotionVerdict !== "tiny_live_eligible") return false;
+  if ((metric.labelSource ?? metric.settlementEvidence?.labelSource) !== "official_resolution") return false;
+  if ((metric.settlementSource ?? metric.settlementEvidence?.settlementSource) !== "official_resolution") return false;
+  if ((metric.officialSettlementCoverage ?? metric.settlementEvidence?.officialSettlementCoverage ?? 0) < 0.95) return false;
+  if (metric.holdoutPass !== true || metric.holdoutStrictlyLater === false) return false;
+  if (metric.walkForwardPass !== true) return false;
+  if ((metric.cpcvSummary?.positiveFoldRate ?? 0) < 0.7) return false;
+  if ((metric.costModels?.conservative?.totalPnl ?? metric.conservativeTotalPnl ?? 0) <= 0) return false;
+  if ((metric.costModels?.stress?.totalPnl ?? metric.stressTotalPnl ?? 0) <= 0) return false;
+  return (metric.adjustedConfidence ?? 0) > 0;
 }
 
 function algoDefinitions() {
@@ -1187,6 +1215,20 @@ function clamp(value, min, max) {
 function depthValues(baseValues, deepOnlyValues) {
   if (!activeDeepSweepMode) return baseValues;
   return [...new Set([...baseValues, ...deepOnlyValues])].sort((left, right) => left - right);
+}
+
+function withResearchCandidateIdentity(rows, context, extra = {}) {
+  return rows.map((row) => {
+    const identity = researchCandidateIdentity(row, context);
+    return {
+      ...row,
+      researchCandidateId: identity.researchCandidateId,
+      candidateConfigHash: identity.candidateConfigHash,
+      sourceResearchAlgoId: identity.sourceResearchAlgoId,
+      sourceRunId: extra.sourceRunId ?? context.sourceRunId ?? null,
+      sourceSnapshotHash: extra.sourceSnapshotHash ?? null,
+    };
+  });
 }
 
 function assertUniqueAlgoIds(algos) {

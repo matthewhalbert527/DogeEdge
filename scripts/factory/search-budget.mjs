@@ -7,7 +7,12 @@ export const defaultSearchBudgetPolicy = {
   lowEvidenceSweepCap: 250,
   lowEvidenceDeepSweepAllowed: false,
   lowEvidenceFamilyPilotCount: 50,
-  priorityResearchFamilies: ["sweep-model", "sweep-scalp", "sweep-liquidity-imbalance"],
+  lowEvidenceExecutableMintingAllowed: false,
+  lowEvidenceLabFamilyPilotCount: 25,
+  allowLowEvidenceLabResearch: true,
+  priorityResearchFamilies: ["sweep-scalp", "sweep-liquidity-imbalance"],
+  labOnlyFamilies: ["sweep-model"],
+  allowLabOnlyFamilyMinting: false,
   allowUnsupportedFamilyMinting: false,
   unsupportedFamilyShadowCap: 0,
 };
@@ -31,6 +36,8 @@ export function searchBudgetDecision({
   const maxGeneratedAlgos = limited
     ? Math.max(0, Math.min(requestedSweepAlgos, config.lowEvidenceSweepCap))
     : requestedSweepAlgos;
+  const executableMintingAllowed = !limited || config.lowEvidenceExecutableMintingAllowed === true;
+  const labResearchAllowed = !limited || config.allowLowEvidenceLabResearch === true;
   return {
     schemaVersion: "dogeedge.factory.search-budget.v1",
     sweepMode,
@@ -42,6 +49,8 @@ export function searchBudgetDecision({
     officialSettlementCoverage: roundRatio(officialSettlementCoverage),
     requestedSweepAlgos,
     maxGeneratedAlgos,
+    executableMintingAllowed,
+    labResearchAllowed,
     policy: config,
   };
 }
@@ -57,15 +66,23 @@ export function applyFamilySearchBudget(algos = [], decision = {}, { selectedAlg
   const selectedIds = new Set();
   const selectedCounts = new Map();
   const familyOrder = [...groups.keys()];
+  const labOnlyFamilies = new Set(Array.isArray(config.labOnlyFamilies) ? config.labOnlyFamilies : []);
+  const allowLabOnlyFamilyMinting = config.allowLabOnlyFamilyMinting === true;
+  const executableMintingAllowed = decision.executableMintingAllowed !== false;
+  const labResearchAllowed = decision.labResearchAllowed !== false;
   const priorityFamilies = Array.isArray(config.priorityResearchFamilies)
-    ? config.priorityResearchFamilies.filter((family) => groups.has(family))
+    ? config.priorityResearchFamilies.filter((family) => groups.has(family) && executableMintingAllowed && (allowLabOnlyFamilyMinting || !labOnlyFamilies.has(family)))
     : [];
-  const supportedFamilies = familyOrder.filter((family) => familyResearchSupported(family));
+  const supportedFamilies = familyOrder.filter((family) => familyResearchSupported(family) && executableMintingAllowed && (allowLabOnlyFamilyMinting || !labOnlyFamilies.has(family)));
+  const labFamilies = familyOrder.filter((family) => labOnlyFamilies.has(family) && labResearchAllowed);
   const nonPrioritySupportedFamilies = supportedFamilies.filter((family) => !priorityFamilies.includes(family));
 
   if (selectedAlgoIds) {
     for (const algo of requested) addAlgo(algo);
   } else if (decision.limited) {
+    for (const family of labFamilies) {
+      addFamily(family, config.lowEvidenceLabFamilyPilotCount);
+    }
     for (const family of priorityFamilies) {
       addFamily(family, config.lowEvidenceFamilyPilotCount);
     }
@@ -93,14 +110,25 @@ export function applyFamilySearchBudget(algos = [], decision = {}, { selectedAlg
     const requestedCount = groups.get(family)?.length ?? 0;
     const selectedCount = selectedCounts.get(family) ?? 0;
     const researchSupported = entry.researchSupported === true;
+    const labOnly = labOnlyFamilies.has(family) && !allowLabOnlyFamilyMinting;
+    const budgetLane = labOnly
+      ? "research_only_family"
+      : researchSupported ? "executable_linked_family" : "unsupported_telemetry_only_family";
     return {
       family,
       requested: requestedCount,
       selected: selectedCount,
       researchSupported,
+      labOnly,
+      budgetLane,
+      budgetBucket: selectedCount > 0
+        ? labOnly ? "lab_only_research" : budgetLane
+        : labOnly ? "lab_only_zero_budget" : researchSupported ? "supported_zero_budget" : "unsupported_zero_budget",
       telemetryClassification: entry.telemetryClassification ?? (researchSupported ? "supported_for_research" : "telemetry_only"),
-      action: familyBudgetAction({ researchSupported, selectedCount, requestedCount, entry }),
-      reason: entry.reason ?? (researchSupported ? "research_adapter_available" : "unsupported_for_research"),
+      action: familyBudgetAction({ researchSupported, selectedCount, requestedCount, entry, labOnly }),
+      reason: labOnly
+        ? "lab_only_until_executable_exact_linkage"
+        : entry.reason ?? (researchSupported ? "research_adapter_available" : "unsupported_for_research"),
     };
   });
   const unsupportedMintingCount = families
@@ -113,6 +141,8 @@ export function applyFamilySearchBudget(algos = [], decision = {}, { selectedAlg
       schemaVersion: "dogeedge.factory.family-budget.v1",
       limited: Boolean(decision.limited),
       maxGeneratedAlgos,
+      executableMintingAllowed,
+      labResearchAllowed,
       selectedAlgos: selected.length,
       selectedSupportedFamilyCount,
       unsupportedMintingCount,
@@ -160,7 +190,9 @@ function groupByFamily(algos) {
   return groups;
 }
 
-function familyBudgetAction({ researchSupported, selectedCount, requestedCount, entry }) {
+function familyBudgetAction({ researchSupported, selectedCount, requestedCount, entry, labOnly }) {
+  if (labOnly && selectedCount > 0) return "tiny_lab_research";
+  if (labOnly) return "lab_only_zero_budget";
   if (researchSupported && selectedCount > 0) return "pilot_supported_family";
   if (researchSupported && requestedCount > 0) return "supported_budget_waiting";
   if (!researchSupported && selectedCount > 0) return "shadow_telemetry_budget";

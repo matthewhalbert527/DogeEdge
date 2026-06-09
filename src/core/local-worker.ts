@@ -53,6 +53,11 @@ export interface LocalPaperTradeStrategySummary {
   strategyId: string;
   sourceAlgoId: string;
   sourceRunId: string;
+  researchCandidateId?: string | null;
+  candidateConfigHash?: string | null;
+  sourceResearchAlgoId?: string | null;
+  sourceSnapshotHash?: string | null;
+  promotionVerdictAtInstall?: string | null;
   strategyName: string | null;
   firstOpenedAt: string | null;
   lastTransactionAt: string | null;
@@ -80,6 +85,11 @@ export interface LocalPaperTradeSummaryResponse {
 export interface LocalFactorySweepCandidate {
   algoId: string;
   displayId: string | null;
+  researchCandidateId?: string;
+  candidateConfigHash?: string;
+  sourceResearchAlgoId?: string;
+  sourceRunId?: string;
+  sourceSnapshotHash?: string;
   algoName: string;
   family: string;
   params: Record<string, unknown>;
@@ -175,6 +185,17 @@ export interface LocalFactorySweep {
   runDir: string;
   finishedAt: string;
   dataRoot: string;
+  dataQuality?: Record<string, unknown>;
+  rowExport?: Record<string, unknown> | null;
+  reviewBundleQuality?: string | null;
+  bundleCompleteness?: Record<string, unknown> | null;
+  rawMarketTickExport?: Record<string, unknown> | null;
+  rawTickCoverageSummary?: Record<string, unknown> | null;
+  registry?: {
+    inputManifestHash?: string;
+    dataHash?: string;
+    configHash?: string;
+  };
   frameCount: number;
   walkForwardFrameCount: number;
   walkForwardRatio: number;
@@ -352,6 +373,19 @@ function normalizeFactorySweep(value: unknown): LocalFactorySweep | null {
     runDir: stringOrDefault(value.runDir, ""),
     finishedAt: stringOrDefault(value.finishedAt, ""),
     dataRoot: stringOrDefault(value.dataRoot, ""),
+    dataQuality: isRecord(value.dataQuality) ? { ...value.dataQuality } : undefined,
+    rowExport: isRecord(value.rowExport) ? { ...value.rowExport } : null,
+    reviewBundleQuality: typeof value.reviewBundleQuality === "string" ? value.reviewBundleQuality : null,
+    bundleCompleteness: isRecord(value.bundleCompleteness) ? { ...value.bundleCompleteness } : null,
+    rawMarketTickExport: isRecord(value.rawMarketTickExport) ? { ...value.rawMarketTickExport } : null,
+    rawTickCoverageSummary: isRecord(value.rawTickCoverageSummary) ? { ...value.rawTickCoverageSummary } : null,
+    registry: isRecord(value.registry)
+      ? {
+        inputManifestHash: typeof value.registry.inputManifestHash === "string" ? value.registry.inputManifestHash : undefined,
+        dataHash: typeof value.registry.dataHash === "string" ? value.registry.dataHash : undefined,
+        configHash: typeof value.registry.configHash === "string" ? value.registry.configHash : undefined,
+      }
+      : undefined,
     frameCount: numberOrDefault(value.frameCount, 0),
     walkForwardFrameCount: numberOrDefault(value.walkForwardFrameCount, 0),
     walkForwardRatio: numberOrDefault(value.walkForwardRatio, 0.3),

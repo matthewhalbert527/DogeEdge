@@ -335,6 +335,9 @@ const rosterAlignmentColumns = [
   "researchSupported",
   "supportReason",
   "sourceResearchAlgoId",
+  "sourceRunId",
+  "sourceSnapshotHash",
+  "promotionVerdictAtInstall",
   "researchSnapshotId",
   "researchVerdict",
   "researchAgeHours",
@@ -479,6 +482,7 @@ const evidenceAllocationByFamilyColumns = [
   "liveRows",
   "exactLinkedRows",
   "familyOnlyRows",
+  "missingLinkRows",
   "unsupportedRows",
   "normalBudgetRows",
   "explorationBudgetRows",
@@ -509,6 +513,103 @@ const missingProvenanceRowsColumns = [
   "missingFieldsJson",
   "promotableEvidenceAllowed",
 ];
+
+const supportedLiveLinkageColumns = [
+  "snapshotId",
+  "algoId",
+  "displayId",
+  "family",
+  "researchCandidateId",
+  "candidateConfigHash",
+  "sourceResearchAlgoId",
+  "sourceRunId",
+  "sourceSnapshotHash",
+  "promotionVerdictAtInstall",
+  "researchVerdict",
+  "linkageStatus",
+  "budgetBucket",
+  "dryRunTotalPnl",
+  "dryRunClosedExits",
+  "dryRunAcceptedBuys",
+];
+
+const officialSettlementColumns = [
+  "snapshotId",
+  "marketTicker",
+  "closeTime",
+  "resolutionTime",
+  "settlementTime",
+  "settledOutcome",
+  "labelSource",
+  "settlementSource",
+  "officialResolutionAvailable",
+  "source",
+  "sourceRowCount",
+];
+
+const officialSettlementCoverageByFamilyColumns = [
+  "snapshotId",
+  "family",
+  "candidateCount",
+  "officialCandidateCount",
+  "averageOfficialSettlementCoverage",
+  "minOfficialSettlementCoverage",
+  "maxOfficialSettlementCoverage",
+  "promotionGradeCandidateCount",
+  "failClosed",
+  "reasonCodes",
+];
+
+const officialSettlementCoverageByCandidateColumns = [
+  "snapshotId",
+  "algoId",
+  "displayId",
+  "family",
+  "researchCandidateId",
+  "candidateConfigHash",
+  "labelSource",
+  "settlementSource",
+  "officialResolutionAvailable",
+  "officialSettlementCoverage",
+  "promotionGradeScoringAllowed",
+  "beyondPaperAllowed",
+  "reasonCodes",
+];
+
+const rawMarketTickCoverageColumns = [
+  "snapshotId",
+  "marketTicker",
+  "available",
+  "format",
+  "jsonlRows",
+  "relativePath",
+  "uncoveredReason",
+];
+
+const simulatorCalibrationColumns = [
+  "snapshotId",
+  "family",
+  "regimeTimeToClose",
+  "regimeSpread",
+  "regimeLiquidity",
+  "regimeVolatility",
+  "predictedFillRate",
+  "realizedFillRate",
+  "predictedPartialFillRatio",
+  "realizedPartialFillRatio",
+  "predictedSlippage",
+  "realizedSlippage",
+  "predictedRejectRate",
+  "realizedRejectRate",
+  "attempts",
+  "accepted",
+  "rejected",
+  "rejectMixJson",
+  "calibrationAction",
+];
+
+const officialScoringCoverageThreshold = 0.8;
+const officialPromotionCoverageThreshold = 0.95;
 
 export async function exportEvaluationSnapshot(options = {}) {
   const now = options.now ? new Date(options.now) : new Date();
@@ -650,12 +751,34 @@ export async function exportEvaluationSnapshot(options = {}) {
     metricByAlgoId,
     alignmentArtifacts,
   });
+  const settlementArtifacts = officialSettlementArtifacts({
+    snapshotId,
+    generatedAt,
+    metrics,
+    decisionRows,
+    tradeRows,
+    dataQuality,
+  });
+  const simulatorCalibration = simulatorCalibrationArtifacts({
+    snapshotId,
+    generatedAt,
+    decisionRows,
+    tradeRows,
+    topStats,
+  });
   filesToWrite.push(
     { logicalName: "candidate_lineage_audit.tsv.gz", relativePath: "candidate_lineage_audit.tsv.gz", content: tsv(candidateLineageAuditColumns, identityArtifacts.candidateLineageAudit) },
     { logicalName: "unlinked_live_rows.tsv.gz", relativePath: "unlinked_live_rows.tsv.gz", content: tsv(unlinkedLiveRowsColumns, identityArtifacts.unlinkedLiveRows) },
     { logicalName: "evidence_allocation_by_family.tsv.gz", relativePath: "evidence_allocation_by_family.tsv.gz", content: tsv(evidenceAllocationByFamilyColumns, identityArtifacts.evidenceAllocationByFamily) },
     { logicalName: "evidence_allocation_by_candidate.tsv.gz", relativePath: "evidence_allocation_by_candidate.tsv.gz", content: tsv(evidenceAllocationByCandidateColumns, identityArtifacts.evidenceAllocationByCandidate) },
     { logicalName: "missing_provenance_rows.tsv.gz", relativePath: "missing_provenance_rows.tsv.gz", content: tsv(missingProvenanceRowsColumns, identityArtifacts.missingProvenanceRows) },
+    { logicalName: "supported_live_linkage.tsv.gz", relativePath: "supported_live_linkage.tsv.gz", content: tsv(supportedLiveLinkageColumns, identityArtifacts.supportedLiveLinkage) },
+    { logicalName: "supported_live_exact_links.tsv.gz", relativePath: "supported_live_exact_links.tsv.gz", content: tsv(supportedLiveLinkageColumns, identityArtifacts.supportedLiveExactLinks) },
+    { logicalName: "official_settlements.tsv.gz", relativePath: "official_settlements.tsv.gz", content: tsv(officialSettlementColumns, settlementArtifacts.settlements) },
+    { logicalName: "official_settlement_coverage_by_family.tsv.gz", relativePath: "official_settlement_coverage_by_family.tsv.gz", content: tsv(officialSettlementCoverageByFamilyColumns, settlementArtifacts.coverageByFamily) },
+    { logicalName: "official_settlement_coverage_by_candidate.tsv.gz", relativePath: "official_settlement_coverage_by_candidate.tsv.gz", content: tsv(officialSettlementCoverageByCandidateColumns, settlementArtifacts.coverageByCandidate) },
+    { logicalName: "simulator_calibration_by_regime.tsv.gz", relativePath: "simulator_calibration_by_regime.tsv.gz", content: tsv(simulatorCalibrationColumns, simulatorCalibration.rows) },
+    { logicalName: "calibration_by_bucket.tsv.gz", relativePath: "calibration_by_bucket.tsv.gz", content: tsv(simulatorCalibrationColumns, simulatorCalibration.rows) },
   );
 
   const fileManifest = [];
@@ -684,15 +807,36 @@ export async function exportEvaluationSnapshot(options = {}) {
     maxRawTickRowsPerMarket: numberOption(options.maxRawTickRowsPerMarket, 50_000),
     sourceRunId: primaryRun?.runId ?? null,
     sourceSnapshotHash,
+    officialSettlements: settlementArtifacts.settlements,
   });
   fileManifest.push(...exactExportFiles);
+  const rawTickManifest = await readJsonMaybe(path.join(snapshotDir, "raw_market_ticks", "manifest.json"));
+  const replayParityReport = replayParityReportFromRawManifest({ snapshotId, generatedAt, rawTickManifest });
+  const rejectStreamSummary = rejectStreamSummaryReport({ snapshotId, generatedAt, decisionRows, tradeRows, topStats });
+  const topRosterAudit = topRosterDefaultSortAudit({ snapshotId, alignmentArtifacts });
+  const executableReadinessGate = executableReadinessGateReport({
+    snapshotId,
+    generatedAt,
+    exactLinkSummary: identityArtifacts.exactLinkSummary,
+    settlementCoverageReport: settlementArtifacts.coverageReport,
+    rawTickManifest,
+    simulatorCalibrationReport: simulatorCalibration.report,
+    topRosterDefaultSortAudit: topRosterAudit,
+  });
   const auditExportFiles = await writeAuditReviewFiles({
     snapshotDir,
     alignment,
     leakageAudit,
     familyAllocationReport: familyAllocationReport({ snapshotId, alignment, metrics, topStats }),
-    topRosterDefaultSortAudit: topRosterDefaultSortAudit({ snapshotId, alignmentArtifacts }),
+    topRosterDefaultSortAudit: topRosterAudit,
     researchLiveIdentityAlignment: identityArtifacts.researchLiveIdentityAlignment,
+    exactLinkSummary: identityArtifacts.exactLinkSummary,
+    settlementCoverageReport: settlementArtifacts.coverageReport,
+    replayParityReport,
+    rejectStreamSummary,
+    executableReadinessGate,
+    simulatorCalibrationReport: simulatorCalibration.report,
+    simulatorCalibrationMarkdown: simulatorCalibration.markdown,
     schedulerBudgetReport: identityArtifacts.schedulerBudgetReport,
     provenanceCompletenessReport: identityArtifacts.provenanceCompletenessReport,
   });
@@ -743,6 +887,12 @@ export async function exportEvaluationSnapshot(options = {}) {
     leakageAudit,
     researchLiveAlignment: alignment,
     researchLiveIdentityAlignment: identityArtifacts.researchLiveIdentityAlignment,
+    exactLinkSummary: identityArtifacts.exactLinkSummary,
+    officialSettlementCoverageSummary: settlementArtifacts.coverageReport.summary,
+    simulatorCalibrationReport: simulatorCalibration.report,
+    replayParityReport,
+    rejectStreamSummary,
+    executableReadinessGate,
     schedulerBudgetReport: identityArtifacts.schedulerBudgetReport,
     provenanceCompletenessReport: identityArtifacts.provenanceCompletenessReport,
     familyRegistry: familyRegistryPublic(),
@@ -893,9 +1043,23 @@ export async function buildReviewBundle(options = {}) {
     "decision_frames.jsonl",
     "trades.csv",
     "paper_decision_ledger.csv",
+    "official_settlements.tsv.gz",
+    "official_settlements.jsonl",
     "leakage_audit.json",
     "research_live_alignment.json",
     "research_live_identity_alignment.json",
+    "exact_link_summary.json",
+    "settlement_coverage_report.json",
+    "official_settlement_coverage_by_family.tsv.gz",
+    "official_settlement_coverage_by_candidate.tsv.gz",
+    "simulator_calibration_by_regime.tsv.gz",
+    "calibration_by_bucket.tsv.gz",
+    "simulator_calibration_report.json",
+    "calibration_report.json",
+    "simulator_calibration_report.md",
+    "reject_stream_summary.json",
+    "replay_parity_report.json",
+    "executable_readiness_gate.json",
     "family_allocation_report.json",
     "scheduler_budget_report.json",
     "provenance_completeness_report.json",
@@ -909,6 +1073,8 @@ export async function buildReviewBundle(options = {}) {
     "unlinked_live_rows.tsv.gz",
     "evidence_allocation_by_family.tsv.gz",
     "evidence_allocation_by_candidate.tsv.gz",
+    "supported_live_linkage.tsv.gz",
+    "supported_live_exact_links.tsv.gz",
     "missing_provenance_rows.tsv.gz",
     "post_close_frame_audit.tsv.gz",
   ]) {
@@ -937,6 +1103,13 @@ export async function buildReviewBundle(options = {}) {
     await copyFile(rawTicksSchema, target);
     bundleFiles.push(await fileInfo(target, "raw_market_ticks/schema.json", path.relative(bundleRoot, target), snapshotExportRows.get("raw_market_ticks/schema.json") ?? null));
   }
+  const rawTicksCoverage = path.join(snapshotResult.snapshotDir, "raw_market_ticks", "coverage.tsv.gz");
+  if (await exists(rawTicksCoverage)) {
+    const target = path.join(bundleRoot, "snapshots", "raw_market_ticks", "coverage.tsv.gz");
+    await mkdir(path.dirname(target), { recursive: true });
+    await copyFile(rawTicksCoverage, target);
+    bundleFiles.push(await fileInfo(target, "raw_market_ticks/coverage.tsv.gz", path.relative(bundleRoot, target), snapshotExportRows.get("raw_market_ticks/coverage.tsv.gz") ?? null));
+  }
   const rawTicksJsonlFiles = await latestFilesRecursive(path.join(snapshotResult.snapshotDir, "raw_market_ticks", "jsonl"), [".jsonl"], 200);
   for (const source of rawTicksJsonlFiles.filter((file) => file.endsWith(".jsonl"))) {
     const relative = slashPath(path.relative(snapshotResult.snapshotDir, source));
@@ -958,7 +1131,19 @@ export async function buildReviewBundle(options = {}) {
   bundleFiles.push(...repoFiles);
   const registryFile = await writeRegistryTarball({ bundleRoot, options, snapshot: snapshotResult.snapshot });
   if (registryFile) bundleFiles.push(registryFile);
+  let bundleCompleteness = await reviewBundleCompletenessReport({ bundleRoot, bundleFiles, snapshotResult });
+  const bundleCompletenessPath = path.join(bundleRoot, "bundle_completeness_report.json");
+  await writeFile(bundleCompletenessPath, `${JSON.stringify(bundleCompleteness, null, 2)}\n`, "utf8");
+  bundleFiles.push(await fileInfo(bundleCompletenessPath, "bundle_completeness_report.json", "bundle_completeness_report.json", null));
+  bundleCompleteness = await reviewBundleCompletenessReport({ bundleRoot, bundleFiles, snapshotResult });
   const rawMarketTickExport = rawMarketTickBundleSummary(rawTicksManifestJson, rawTicksManifestPresent);
+  const rowExport = snapshotResult.snapshot.rowExport;
+  const exactLinkSummary = snapshotResult.snapshot.exactLinkSummary ?? snapshotResult.snapshot.researchLiveIdentityAlignment ?? {};
+  const reviewBundleQuality = rowExport?.promotionReviewComplete === true && rowExport?.rowsCapped !== true && bundleCompleteness.ok
+    ? "full_row_promotion_grade"
+    : rowExport?.promotionReviewComplete === true && rowExport?.rowsCapped !== true
+      ? "incomplete_review_bundle"
+      : "capped_debug_bundle";
 
   const manifest = {
     schemaVersion: "dogeedge.eval.review.bundle.v1",
@@ -970,13 +1155,24 @@ export async function buildReviewBundle(options = {}) {
     snapshotCount: latestSnapshotDirs.length,
     bundleHours,
     safetyStatus: snapshotResult.snapshot.appState.liveSafety,
-    rowExport: snapshotResult.snapshot.rowExport,
+    rowExport,
+    reviewBundleQuality,
+    bundleCompleteness,
+    repoDirty: bundleCompleteness.repoDirty,
+    dirtyDiffIncluded: bundleCompleteness.dirtyDiffIncluded,
+    exactLinkRate: numberOrNull(exactLinkSummary.exactLinkRate ?? exactLinkSummary.exactLinkCoverage),
+    exactLinkSummary,
+    officialSettlementCoverageSummary: officialSettlementCoverageSummary(snapshotResult.snapshot),
     rawMarketTickExport,
+    rawTickCoverageSummary: rawMarketTickExport.targetMarketCoverage,
+    executableReadinessGate: snapshotResult.snapshot.executableReadinessGate,
     alerts: snapshotResult.snapshot.alerts,
     files: bundleFiles,
     limitations: bundleLimitations({
-      rowExport: snapshotResult.snapshot.rowExport,
+      rowExport,
       rawMarketTickExport,
+      officialSettlementCoverageSummary: snapshotResult.snapshot.officialSettlementCoverageSummary,
+      bundleCompleteness,
     }),
     notes: [
       "Local-only review bundle. No external uploads were performed by DogeEdge.",
@@ -1008,6 +1204,47 @@ function snapshotExportRowsByName(snapshotResult) {
     }
   }
   return rowsByName;
+}
+
+async function reviewBundleCompletenessReport({ bundleRoot, bundleFiles, snapshotResult }) {
+  const present = new Set((Array.isArray(bundleFiles) ? bundleFiles : [])
+    .map((file) => slashPath(file?.relativePath ?? ""))
+    .filter(Boolean));
+  const snapshotFiles = Array.isArray(snapshotResult?.snapshot?.filesManifest)
+    ? snapshotResult.snapshot.filesManifest
+    : [];
+  const expectedSnapshotFiles = uniqueStrings(snapshotFiles
+    .map((file) => slashPath(file?.relativePath ?? ""))
+    .filter(Boolean)
+    .map((relativePath) => `snapshots/${relativePath}`));
+  const missingManifestFiles = [];
+  for (const relativePath of expectedSnapshotFiles) {
+    if (present.has(relativePath)) continue;
+    if (await exists(path.join(bundleRoot, relativePath))) continue;
+    missingManifestFiles.push(relativePath);
+  }
+  const listedMissingFiles = [];
+  for (const relativePath of present) {
+    if (!(await exists(path.join(bundleRoot, relativePath)))) listedMissingFiles.push(relativePath);
+  }
+  const repoDirty = snapshotResult?.snapshot?.repo?.dirty === true;
+  const dirtyDiffIncluded = present.has("repo/UNCOMMITTED_DIFF.patch") && await exists(path.join(bundleRoot, "repo", "UNCOMMITTED_DIFF.patch"));
+  const failureCodes = uniqueStrings([
+    ...(missingManifestFiles.length > 0 ? ["manifest_listed_files_missing"] : []),
+    ...(listedMissingFiles.length > 0 ? ["bundle_file_index_has_missing_physical_files"] : []),
+    ...(repoDirty && !dirtyDiffIncluded ? ["dirty_repo_without_patch"] : []),
+  ]);
+  return {
+    schemaVersion: "dogeedge.eval.review.bundle-completeness.v1",
+    ok: failureCodes.length === 0,
+    advertisedSnapshotFilesChecked: expectedSnapshotFiles.length,
+    presentFileCount: present.size,
+    missingManifestFiles,
+    listedMissingFiles,
+    repoDirty,
+    dirtyDiffIncluded,
+    failureCodes,
+  };
 }
 
 function rawMarketTickBundleSummary(manifest, manifestPresent) {
@@ -1065,6 +1302,7 @@ function rawMarketTickBundleSummary(manifest, manifestPresent) {
     reason: typeof manifest?.reason === "string" ? manifest.reason : null,
     parquetAvailable: manifest?.parquetAvailable === true,
     jsonlAvailable: manifest?.jsonlAvailable === true,
+    executionSensitivePromotionAllowed: manifest?.executionSensitivePromotionAllowed === true,
     targetMarketCount,
     jsonlFileCount: jsonlFiles.length,
     sourceSnapshotFileCount,
@@ -1072,6 +1310,7 @@ function rawMarketTickBundleSummary(manifest, manifestPresent) {
       covered: coveredTargetMarketCount,
       uncovered: uncoveredTargetMarketCount,
       ratio: targetMarketCount > 0 ? roundDisplayRatio(coveredTargetMarketCount / targetMarketCount) : null,
+      executionSensitivePromotionAllowed: manifest?.executionSensitivePromotionAllowed === true,
     },
     targetMarketSamples: {
       covered: coveredTargetSample,
@@ -1121,10 +1360,14 @@ function sourceByteValue(source) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
 }
 
-function bundleLimitations({ rowExport, rawMarketTickExport }) {
+function bundleLimitations({ rowExport, rawMarketTickExport, officialSettlementCoverageSummary, bundleCompleteness }) {
   return uniqueStrings([
     ...(rowExport?.rowsCapped ? ["rows_capped"] : []),
+    ...(officialSettlementCoverageSummary?.promotionGradeScoringAllowed === false ? ["official_settlement_coverage_below_scoring_threshold"] : []),
+    ...(officialSettlementCoverageSummary?.beyondPaperAllowed === false ? ["official_settlement_coverage_below_promotion_threshold"] : []),
     ...(Array.isArray(rawMarketTickExport?.warningCodes) ? rawMarketTickExport.warningCodes : []),
+    ...(bundleCompleteness?.ok === false ? ["review_bundle_contract_incomplete"] : []),
+    ...(bundleCompleteness?.repoDirty === true && bundleCompleteness?.dirtyDiffIncluded !== true ? ["dirty_repo_without_patch"] : []),
   ]);
 }
 
@@ -1799,11 +2042,13 @@ async function writeExactReviewFiles({
   maxRawTickRowsPerMarket = 50_000,
   sourceRunId,
   sourceSnapshotHash,
+  officialSettlements = [],
 }) {
   const files = [];
   const decisionFramesPath = path.join(snapshotDir, "decision_frames.jsonl");
   const tradeCsvPath = path.join(snapshotDir, "trades.csv");
   const ledgerCsvPath = path.join(snapshotDir, "paper_decision_ledger.csv");
+  const officialSettlementsJsonlPath = path.join(snapshotDir, "official_settlements.jsonl");
 
   await writeFile(
     decisionFramesPath,
@@ -1831,6 +2076,15 @@ async function writeExactReviewFiles({
   await writeFile(ledgerCsvPath, csv(paperDecisionLedgerColumns, ledgerRows), "utf8");
   files.push(await fileInfo(ledgerCsvPath, "paper_decision_ledger.csv", "paper_decision_ledger.csv", ledgerRows.length));
 
+  await writeFile(
+    officialSettlementsJsonlPath,
+    officialSettlements.length
+      ? officialSettlements.map((row) => JSON.stringify(officialSettlementJsonLine(row))).join("\n") + "\n"
+      : "\n",
+    "utf8",
+  );
+  files.push(await fileInfo(officialSettlementsJsonlPath, "official_settlements.jsonl", "official_settlements.jsonl", officialSettlements.length));
+
   files.push(...await writeRawMarketTicksManifest({
     snapshotDir,
     dataRoot,
@@ -1853,6 +2107,13 @@ async function writeAuditReviewFiles({
   familyAllocationReport,
   topRosterDefaultSortAudit,
   researchLiveIdentityAlignment,
+  exactLinkSummary,
+  settlementCoverageReport,
+  replayParityReport,
+  rejectStreamSummary,
+  executableReadinessGate,
+  simulatorCalibrationReport,
+  simulatorCalibrationMarkdown,
   schedulerBudgetReport,
   provenanceCompletenessReport,
 }) {
@@ -1861,6 +2122,13 @@ async function writeAuditReviewFiles({
     ["leakage_audit.json", leakageAudit],
     ["research_live_alignment.json", alignment],
     ["research_live_identity_alignment.json", researchLiveIdentityAlignment],
+    ["exact_link_summary.json", exactLinkSummary],
+    ["settlement_coverage_report.json", settlementCoverageReport],
+    ["simulator_calibration_report.json", simulatorCalibrationReport],
+    ["calibration_report.json", simulatorCalibrationReport],
+    ["replay_parity_report.json", replayParityReport],
+    ["reject_stream_summary.json", rejectStreamSummary],
+    ["executable_readiness_gate.json", executableReadinessGate],
     ["family_allocation_report.json", familyAllocationReport],
     ["scheduler_budget_report.json", schedulerBudgetReport],
     ["provenance_completeness_report.json", provenanceCompletenessReport],
@@ -1871,18 +2139,31 @@ async function writeAuditReviewFiles({
     await writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
     files.push(await fileInfo(filePath, name, name, null));
   }
+  if (typeof simulatorCalibrationMarkdown === "string") {
+    const markdownPath = path.join(snapshotDir, "simulator_calibration_report.md");
+    await writeFile(markdownPath, simulatorCalibrationMarkdown, "utf8");
+    files.push(await fileInfo(markdownPath, "simulator_calibration_report.md", "simulator_calibration_report.md", null));
+  }
   return files;
 }
 
 function alignmentRows({ snapshotId, metrics, topStats, primaryRun, alignment, leakageAudit, identityByAlgoId }) {
-  const metricById = new Map(metrics.map((metric) => [metric.algoId, metric]));
+  const metricByExactIdentity = new Map(metrics.map((metric) => {
+    const identity = identityForAlgo(identityByAlgoId, metric.algoId);
+    const researchCandidateId = stringOrNull(metric.researchCandidateId) ?? identity?.researchCandidateId ?? "";
+    const candidateConfigHash = stringOrNull(metric.candidateConfigHash) ?? identity?.candidateConfigHash ?? "";
+    return [exactIdentityKey(researchCandidateId, candidateConfigHash), metric];
+  }).filter(([key]) => key !== null));
   const researchSnapshotId = primaryRun?.runId ?? null;
   const researchFinishedMs = parseTime(primaryRun?.finishedAt);
   const nowMs = Date.now();
   const researchAgeHours = Number.isFinite(researchFinishedMs) ? roundDisplayRatio((nowMs - researchFinishedMs) / 3_600_000) : null;
   const rosterAlignment = Object.values(topStats).map((stat) => {
-    const sourceResearchAlgoId = stat.sourceResearchAlgoId ?? stat.sourceAlgoId ?? stat.algoId ?? "";
-    const metric = metricById.get(sourceResearchAlgoId) ?? metricById.get(stat.algoId) ?? null;
+    const statResearchCandidateId = stringOrNull(stat.researchCandidateId);
+    const statCandidateConfigHash = stringOrNull(stat.candidateConfigHash);
+    const exactKey = exactIdentityKey(statResearchCandidateId, statCandidateConfigHash);
+    const metric = exactKey ? metricByExactIdentity.get(exactKey) ?? null : null;
+    const sourceResearchAlgoId = stringOrNull(stat.sourceResearchAlgoId) ?? metric?.algoId ?? stat.sourceAlgoId ?? stat.algoId ?? "";
     const family = stat.family ?? metric?.family ?? "unknown";
     const familyEntry = familyRegistryEntry(family);
     const researchSupported = familyEntry.researchSupported === true;
@@ -1890,7 +2171,7 @@ function alignmentRows({ snapshotId, metrics, topStats, primaryRun, alignment, l
     const identity = metric ? identityForAlgo(identityByAlgoId, metric.algoId) : null;
     const linkageStatus = metric
       ? "exact_candidate_linked"
-      : researchSupported ? "family_only_unlinked" : "unsupported_unlinked";
+      : researchSupported ? "missing_exact_link" : "unsupported_unlinked";
     const dryRunTotalPnl = numberOrZero(stat.totalPnl);
     const gate = metricGate(metric, researchSupported);
     return {
@@ -1898,12 +2179,15 @@ function alignmentRows({ snapshotId, metrics, topStats, primaryRun, alignment, l
       algoId: stat.sourceAlgoId ?? stat.algoId ?? "",
       displayId: stat.displayId ?? displayIdFromAlgo(stat.sourceAlgoId ?? stat.algoId ?? ""),
       family,
-      researchCandidateId: identity?.researchCandidateId ?? "",
-      candidateConfigHash: identity?.candidateConfigHash ?? "",
+      researchCandidateId: statResearchCandidateId ?? identity?.researchCandidateId ?? "",
+      candidateConfigHash: statCandidateConfigHash ?? identity?.candidateConfigHash ?? "",
       linkageStatus,
       researchSupported,
       supportReason: familyEntry.reason ?? "research_adapter_available",
-      sourceResearchAlgoId: metric ? metric.algoId : "",
+      sourceResearchAlgoId: metric ? metric.algoId : sourceResearchAlgoId,
+      sourceRunId: stringOrNull(stat.sourceRunId) ?? stringOrNull(primaryRun?.runId) ?? "",
+      sourceSnapshotHash: stringOrNull(stat.sourceSnapshotHash) ?? "",
+      promotionVerdictAtInstall: stringOrNull(stat.promotionVerdictAtInstall) ?? "",
       researchSnapshotId: metric ? researchSnapshotId : "",
       researchVerdict,
       researchAgeHours: metric ? researchAgeHours : "",
@@ -1963,12 +2247,16 @@ function familyCoverageRow(snapshotId, family, count, source) {
 
 function exactCandidateArtifacts({ snapshotId, metrics, topStats, decisionRows, tradeRows, identityByAlgoId, metricByAlgoId, alignmentArtifacts }) {
   const liveRows = Object.values(topStats);
-  const liveBySource = new Map(liveRows.map((row) => [String(row.sourceAlgoId ?? row.algoId ?? ""), row]));
   const rosterRows = alignmentArtifacts.rosterAlignment;
+  const liveBySource = new Map(liveRows.map((row) => [String(row.sourceAlgoId ?? row.algoId ?? ""), row]));
+  const liveByExactIdentity = new Map(liveRows.map((row) => [exactIdentityKey(row.researchCandidateId, row.candidateConfigHash), row]).filter(([key]) => key !== null));
   const candidateLineageAudit = metrics.map((metric) => {
     const identity = identityForAlgo(identityByAlgoId, metric.algoId);
     const gate = metricGate(metric, familyRegistryEntry(metric.family).researchSupported === true);
-    const linkedLiveRows = liveBySource.has(metric.algoId) ? 1 : 0;
+    const linkedLiveRows = liveByExactIdentity.has(exactIdentityKey(
+      stringOrNull(metric.researchCandidateId) ?? identity?.researchCandidateId,
+      stringOrNull(metric.candidateConfigHash) ?? identity?.candidateConfigHash,
+    )) ? 1 : 0;
     return {
       snapshotId,
       researchCandidateId: identity?.researchCandidateId ?? "",
@@ -2032,22 +2320,62 @@ function exactCandidateArtifacts({ snapshotId, metrics, topStats, decisionRows, 
     });
   const evidenceAllocationByFamily = evidenceAllocationFamilies({ snapshotId, evidenceAllocationByCandidate });
   const missingProvenanceRows = missingProvenance({ snapshotId, rosterRows, decisionRows, tradeRows });
+  const supportedLiveLinkage = evidenceAllocationByCandidate
+    .filter((row) => familyRegistryEntry(row.family).researchSupported === true)
+    .map((row) => {
+      const roster = rosterRows.find((item) => item.algoId === row.algoId) ?? {};
+      return {
+        snapshotId,
+        algoId: row.algoId,
+        displayId: row.displayId,
+        family: row.family,
+        researchCandidateId: row.researchCandidateId,
+        candidateConfigHash: row.candidateConfigHash,
+        sourceResearchAlgoId: roster.sourceResearchAlgoId ?? "",
+        sourceRunId: roster.sourceRunId ?? "",
+        sourceSnapshotHash: roster.sourceSnapshotHash ?? "",
+        promotionVerdictAtInstall: roster.promotionVerdictAtInstall ?? "",
+        researchVerdict: roster.researchVerdict ?? "missing",
+        linkageStatus: row.linkageStatus,
+        budgetBucket: row.budgetBucket,
+        dryRunTotalPnl: row.dryRunTotalPnl,
+        dryRunClosedExits: roster.dryRunClosedExits ?? 0,
+        dryRunAcceptedBuys: roster.dryRunAcceptedBuys ?? 0,
+      };
+    });
+  const supportedLiveExactLinks = supportedLiveLinkage.filter((row) => row.linkageStatus === "exact_candidate_linked");
   const exactLinkedLiveRows = evidenceAllocationByCandidate.filter((row) => row.linkageStatus === "exact_candidate_linked").length;
   const exactLinkedNormalBudgetRows = evidenceAllocationByCandidate.filter((row) => row.normalBudgetEligible).length;
   const familyOnlyLiveRows = evidenceAllocationByCandidate.filter((row) => row.linkageStatus === "family_only_unlinked").length;
+  const missingExactLinkRows = evidenceAllocationByCandidate.filter((row) => row.linkageStatus === "missing_exact_link").length;
   const unsupportedLiveRows = evidenceAllocationByCandidate.filter((row) => row.linkageStatus === "unsupported_unlinked").length;
+  const exactLinkRate = evidenceAllocationByCandidate.length ? roundDisplayRatio(exactLinkedLiveRows / evidenceAllocationByCandidate.length) : 0;
   const researchLiveIdentityAlignment = {
     schemaVersion: "dogeedge.research-live-identity-alignment.v1",
     snapshotId,
     researchCandidateCount: candidateLineageAudit.length,
     liveRowCount: evidenceAllocationByCandidate.length,
     exactLinkedLiveRows,
-    exactLinkCoverage: evidenceAllocationByCandidate.length ? roundDisplayRatio(exactLinkedLiveRows / evidenceAllocationByCandidate.length) : 0,
+    exactLinkCoverage: exactLinkRate,
+    exactLinkRate,
     exactLinkedNormalBudgetRows,
     familyOnlyLiveRows,
+    missingExactLinkRows,
     unsupportedLiveRows,
-    unlinkedLiveRows: familyOnlyLiveRows + unsupportedLiveRows,
+    unlinkedLiveRows: familyOnlyLiveRows + missingExactLinkRows + unsupportedLiveRows,
     status: exactLinkedLiveRows > 0 ? "exact_linkage_present" : "exact_linkage_absent",
+    failClosed: exactLinkedNormalBudgetRows === 0,
+  };
+  const exactLinkSummary = {
+    schemaVersion: "dogeedge.exact-link-summary.v1",
+    snapshotId,
+    exactLinkedRows: exactLinkedLiveRows,
+    familyOnlyRows: familyOnlyLiveRows,
+    missingLinkRows: missingExactLinkRows,
+    unsupportedRows: unsupportedLiveRows,
+    exactLinkRate,
+    supportedLiveExactLinkedCount: supportedLiveLinkage.filter((row) => row.linkageStatus === "exact_candidate_linked").length,
+    supportedLiveMissingLinkCount: supportedLiveLinkage.filter((row) => row.linkageStatus !== "exact_candidate_linked").length,
     failClosed: exactLinkedNormalBudgetRows === 0,
   };
   const provenanceCompletenessReport = {
@@ -2064,23 +2392,26 @@ function exactCandidateArtifacts({ snapshotId, metrics, topStats, decisionRows, 
     snapshotId,
     state: exactLinkedNormalBudgetRows > 0 ? "evidence_allocation_ready" : "evidence_starved",
     exploitationRows: exactLinkedNormalBudgetRows,
-    controlledExplorationRows: familyOnlyLiveRows,
+    controlledExplorationRows: familyOnlyLiveRows + missingExactLinkRows,
     unsupportedRows: unsupportedLiveRows,
     unsupportedNormalBudgetRows: 0,
     allocationTarget: {
       exploitation: exactLinkedNormalBudgetRows > 0 ? "80-95%" : "0%",
-      controlledExploration: familyOnlyLiveRows > 0 ? "5-20%" : "0%",
+      controlledExploration: familyOnlyLiveRows + missingExactLinkRows > 0 ? "5-20%" : "0%",
       unsupported: "0%",
     },
-    reasonCodes: schedulerReasonCodes({ exactLinkedLiveRows, exactLinkedNormalBudgetRows, familyOnlyLiveRows, unsupportedLiveRows }),
+    reasonCodes: schedulerReasonCodes({ exactLinkedLiveRows, exactLinkedNormalBudgetRows, familyOnlyLiveRows, missingExactLinkRows, unsupportedLiveRows }),
   };
   return {
     candidateLineageAudit,
     unlinkedLiveRows,
     evidenceAllocationByFamily,
     evidenceAllocationByCandidate,
+    supportedLiveLinkage,
+    supportedLiveExactLinks,
     missingProvenanceRows,
     researchLiveIdentityAlignment,
+    exactLinkSummary,
     schedulerBudgetReport,
     provenanceCompletenessReport,
   };
@@ -2096,6 +2427,7 @@ function evidenceAllocationFamilies({ snapshotId, evidenceAllocationByCandidate 
       liveRows: 0,
       exactLinkedRows: 0,
       familyOnlyRows: 0,
+      missingLinkRows: 0,
       unsupportedRows: 0,
       normalBudgetRows: 0,
       explorationBudgetRows: 0,
@@ -2105,6 +2437,7 @@ function evidenceAllocationFamilies({ snapshotId, evidenceAllocationByCandidate 
     current.liveRows += 1;
     if (row.linkageStatus === "exact_candidate_linked") current.exactLinkedRows += 1;
     if (row.linkageStatus === "family_only_unlinked") current.familyOnlyRows += 1;
+    if (row.linkageStatus === "missing_exact_link") current.missingLinkRows += 1;
     if (row.linkageStatus === "unsupported_unlinked") current.unsupportedRows += 1;
     if (row.normalBudgetEligible) current.normalBudgetRows += 1;
     if (row.budgetBucket === "controlled_exploration") current.explorationBudgetRows += 1;
@@ -2162,11 +2495,12 @@ function allocationReason({ row, exactLinked, gate }) {
   return "research_gate_passed";
 }
 
-function schedulerReasonCodes({ exactLinkedLiveRows, exactLinkedNormalBudgetRows, familyOnlyLiveRows, unsupportedLiveRows }) {
+function schedulerReasonCodes({ exactLinkedLiveRows, exactLinkedNormalBudgetRows, familyOnlyLiveRows, missingExactLinkRows, unsupportedLiveRows }) {
   const codes = [];
   if (exactLinkedLiveRows === 0) codes.push("exact_candidate_linkage_absent");
   if (exactLinkedNormalBudgetRows === 0) codes.push("no_gate_passing_exact_candidates");
   if (familyOnlyLiveRows > 0) codes.push("family_only_live_rows_need_lineage");
+  if (missingExactLinkRows > 0) codes.push("missing_exact_link_rows_zero_normal_budget");
   if (unsupportedLiveRows > 0) codes.push("unsupported_live_rows_zero_budget");
   return codes;
 }
@@ -2290,12 +2624,496 @@ function topRosterDefaultSortAudit({ snapshotId, alignmentArtifacts }) {
   };
 }
 
+function officialSettlementArtifacts({ snapshotId, generatedAt, metrics, decisionRows, tradeRows, dataQuality }) {
+  const officialByMarket = new Map();
+  const ingest = (row, source) => {
+    const marketTicker = stringOrNull(row.marketTicker);
+    if (!marketTicker) return;
+    if (row.labelSource !== "official_resolution" || row.settlementSource !== "official_resolution") return;
+    const current = officialByMarket.get(marketTicker) ?? {
+      snapshotId,
+      marketTicker,
+      closeTime: row.marketCloseTimestamp ?? "",
+      resolutionTime: row.labelTimestamp ?? row.settlementTimestamp ?? "",
+      settlementTime: row.settlementTimestamp ?? row.labelTimestamp ?? "",
+      settledOutcome: settledOutcomeFromRow(row),
+      labelSource: row.labelSource,
+      settlementSource: row.settlementSource,
+      officialResolutionAvailable: row.officialResolutionAvailable === true,
+      source,
+      sourceRowCount: 0,
+    };
+    current.closeTime = current.closeTime || row.marketCloseTimestamp || "";
+    current.resolutionTime = current.resolutionTime || row.labelTimestamp || row.settlementTimestamp || "";
+    current.settlementTime = current.settlementTime || row.settlementTimestamp || row.labelTimestamp || "";
+    current.settledOutcome = current.settledOutcome || settledOutcomeFromRow(row);
+    current.officialResolutionAvailable = current.officialResolutionAvailable || row.officialResolutionAvailable === true;
+    current.source = uniqueStrings([current.source, source]).join(",");
+    current.sourceRowCount += 1;
+    officialByMarket.set(marketTicker, current);
+  };
+  for (const row of decisionRows) ingest(row, "decision_frame");
+  for (const row of tradeRows) ingest(row, "paper_trade");
+
+  const settlements = [...officialByMarket.values()].sort((left, right) => left.marketTicker.localeCompare(right.marketTicker));
+  const metricRows = Array.isArray(metrics) ? metrics : [];
+  const metricCoverageValues = metricRows
+    .map((row) => numberOrNull(row.officialSettlementCoverage ?? row.settlementEvidence?.officialSettlementCoverage))
+    .filter((value) => value !== null);
+  const dataQualityEvidence = dataQuality?.settlementEvidence ?? {};
+  const averageMetricCoverage = metricCoverageValues.length
+    ? metricCoverageValues.reduce((total, value) => total + value, 0) / metricCoverageValues.length
+    : 0;
+  const officialCoverage = numberOrNull(dataQualityEvidence.officialSettlementCoverage) ?? averageMetricCoverage;
+  const officialMetricRows = metricRows.filter((row) => (
+    (row.labelSource ?? row.settlementEvidence?.labelSource) === "official_resolution"
+    && (row.settlementSource ?? row.settlementEvidence?.settlementSource) === "official_resolution"
+  )).length;
+  const targetMarketCount = uniqueStrings([
+    ...decisionRows.map((row) => row.marketTicker),
+    ...tradeRows.map((row) => row.marketTicker),
+  ]).length;
+  const reasonCodes = [
+    ...(officialCoverage < officialScoringCoverageThreshold ? ["official_coverage_below_scoring_threshold"] : []),
+    ...(officialCoverage < officialPromotionCoverageThreshold ? ["official_coverage_below_promotion_threshold"] : []),
+    ...(settlements.length === 0 ? ["official_settlement_rows_absent"] : []),
+  ];
+  const summary = {
+    metricRows: metricRows.length,
+    officialMetricRows,
+    targetMarketCount,
+    officialSettlementRows: settlements.length,
+    officialSettlementCoverage: roundDisplayRatio(officialCoverage) ?? 0,
+    minMetricCoverage: metricCoverageValues.length ? Math.min(...metricCoverageValues) : 0,
+    maxMetricCoverage: metricCoverageValues.length ? Math.max(...metricCoverageValues) : 0,
+    averageMetricCoverage: roundDisplayRatio(averageMetricCoverage) ?? 0,
+    scoringThreshold: officialScoringCoverageThreshold,
+    promotionThreshold: officialPromotionCoverageThreshold,
+    promotionGradeScoringAllowed: officialCoverage >= officialScoringCoverageThreshold,
+    beyondPaperAllowed: officialCoverage >= officialPromotionCoverageThreshold,
+    failClosed: officialCoverage < officialScoringCoverageThreshold || officialCoverage < officialPromotionCoverageThreshold,
+    labelSource: dataQualityEvidence.labelSource ?? snapshotSettlementSource(metricRows),
+    settlementSource: dataQualityEvidence.settlementSource ?? snapshotSettlementSource(metricRows),
+  };
+  const coverageByCandidate = metricRows.map((metric) => {
+    const coverage = numberOrZero(metric.officialSettlementCoverage ?? metric.settlementEvidence?.officialSettlementCoverage);
+    const labelSource = metric.labelSource ?? metric.settlementEvidence?.labelSource ?? "unknown";
+    const settlementSource = metric.settlementSource ?? metric.settlementEvidence?.settlementSource ?? "unknown";
+    const candidateReasons = [
+      ...(labelSource !== "official_resolution" ? ["official_label_required"] : []),
+      ...(settlementSource !== "official_resolution" ? ["official_settlement_required"] : []),
+      ...(coverage < officialScoringCoverageThreshold ? ["official_coverage_below_scoring_threshold"] : []),
+      ...(coverage < officialPromotionCoverageThreshold ? ["official_coverage_below_promotion_threshold"] : []),
+    ];
+    return {
+      snapshotId,
+      algoId: metric.algoId ?? "",
+      displayId: metric.displayId ?? displayIdFromAlgo(metric.algoId),
+      family: metric.family ?? "unknown",
+      researchCandidateId: metric.researchCandidateId ?? "",
+      candidateConfigHash: metric.candidateConfigHash ?? "",
+      labelSource,
+      settlementSource,
+      officialResolutionAvailable: metric.officialResolutionAvailable === true || metric.settlementEvidence?.officialResolutionAvailable === true,
+      officialSettlementCoverage: roundDisplayRatio(coverage) ?? 0,
+      promotionGradeScoringAllowed: coverage >= officialScoringCoverageThreshold,
+      beyondPaperAllowed: coverage >= officialPromotionCoverageThreshold,
+      reasonCodes: candidateReasons.join(","),
+    };
+  });
+  const coverageByFamily = officialSettlementCoverageByFamily({ snapshotId, coverageByCandidate });
+  return {
+    settlements,
+    coverageByFamily,
+    coverageByCandidate,
+    coverageReport: {
+      schemaVersion: "dogeedge.settlement-coverage-report.v1",
+      snapshotId,
+      generatedAt,
+      summary,
+      reasonCodes,
+      thresholds: {
+        officialScoringCoverageThreshold,
+        officialPromotionCoverageThreshold,
+      },
+    },
+  };
+}
+
+function officialSettlementJsonLine(row) {
+  return {
+    snapshot_id: row.snapshotId,
+    market_ticker: row.marketTicker,
+    close_time: row.closeTime,
+    resolution_time: row.resolutionTime,
+    settlement_time: row.settlementTime,
+    settled_outcome: row.settledOutcome,
+    label_source: row.labelSource,
+    settlement_source: row.settlementSource,
+    official_resolution_available: row.officialResolutionAvailable,
+    source: row.source,
+    source_row_count: row.sourceRowCount,
+  };
+}
+
+function officialSettlementCoverageByFamily({ snapshotId, coverageByCandidate }) {
+  const byFamily = new Map();
+  for (const row of coverageByCandidate) {
+    const family = row.family || "unknown";
+    const current = byFamily.get(family) ?? {
+      snapshotId,
+      family,
+      candidateCount: 0,
+      officialCandidateCount: 0,
+      coverages: [],
+      promotionGradeCandidateCount: 0,
+      reasons: new Set(),
+    };
+    current.candidateCount += 1;
+    const coverage = numberOrZero(row.officialSettlementCoverage);
+    current.coverages.push(coverage);
+    if (row.labelSource === "official_resolution" && row.settlementSource === "official_resolution") current.officialCandidateCount += 1;
+    if (row.beyondPaperAllowed === true) current.promotionGradeCandidateCount += 1;
+    for (const reason of String(row.reasonCodes || "").split(",").filter(Boolean)) current.reasons.add(reason);
+    byFamily.set(family, current);
+  }
+  return [...byFamily.values()].map((row) => {
+    const average = row.coverages.length
+      ? row.coverages.reduce((total, value) => total + value, 0) / row.coverages.length
+      : 0;
+    return {
+      snapshotId: row.snapshotId,
+      family: row.family,
+      candidateCount: row.candidateCount,
+      officialCandidateCount: row.officialCandidateCount,
+      averageOfficialSettlementCoverage: roundDisplayRatio(average) ?? 0,
+      minOfficialSettlementCoverage: row.coverages.length ? Math.min(...row.coverages) : 0,
+      maxOfficialSettlementCoverage: row.coverages.length ? Math.max(...row.coverages) : 0,
+      promotionGradeCandidateCount: row.promotionGradeCandidateCount,
+      failClosed: row.promotionGradeCandidateCount === 0 || average < officialPromotionCoverageThreshold,
+      reasonCodes: [...row.reasons].join(","),
+    };
+  }).sort((left, right) => right.candidateCount - left.candidateCount || left.family.localeCompare(right.family));
+}
+
+function settledOutcomeFromRow(row) {
+  const explicit = stringOrNull(row.settledOutcome ?? row.outcome ?? row.resolution);
+  if (explicit) return explicit;
+  if (row.accepted === true && (row.decisionAction === "buy_yes" || row.side === "YES")) return "YES";
+  if (row.accepted === true && (row.decisionAction === "buy_no" || row.side === "NO")) return "NO";
+  return "";
+}
+
+function simulatorCalibrationArtifacts({ snapshotId, generatedAt, decisionRows, tradeRows, topStats }) {
+  const groups = new Map();
+  const ensure = (keyParts) => {
+    const key = keyParts.join("|");
+    const existing = groups.get(key);
+    if (existing) return existing;
+    const created = {
+      snapshotId,
+      family: keyParts[0],
+      regimeTimeToClose: keyParts[1],
+      regimeSpread: keyParts[2],
+      regimeLiquidity: keyParts[3],
+      regimeVolatility: keyParts[4],
+      predictedFillValues: [],
+      realizedFillValues: [],
+      predictedPartialValues: [],
+      realizedPartialValues: [],
+      predictedSlippageValues: [],
+      realizedSlippageValues: [],
+      attempts: 0,
+      accepted: 0,
+      rejected: 0,
+      rejectMix: {},
+    };
+    groups.set(key, created);
+    return created;
+  };
+  const groupFor = (row) => ensure([
+    row.family || "unknown",
+    row.regimeTimeToClose ?? row.entryRegimeTimeToClose ?? "unknown",
+    row.regimeSpread ?? row.entryRegimeSpread ?? "unknown",
+    row.regimeLiquidity ?? row.entryRegimeLiquidity ?? "unknown",
+    row.regimeVolatility ?? row.entryRegimeVolatility ?? "unknown",
+  ].map((value) => String(value || "unknown")));
+
+  for (const row of decisionRows) {
+    if (row.attempted !== true && row.accepted !== true && !row.rejectCode) continue;
+    const group = groupFor(row);
+    group.attempts += 1;
+    if (row.accepted === true) group.accepted += 1;
+    if (row.accepted !== true || row.rejectCode) {
+      group.rejected += 1;
+      incrementRejectMix(group.rejectMix, row.rejectCode || "decision_not_accepted");
+    }
+    group.realizedFillValues.push(row.accepted === true ? 1 : 0);
+  }
+  for (const row of tradeRows) {
+    const group = groupFor(row);
+    const accepted = !row.rejectCode && row.status !== "rejected";
+    group.attempts += 1;
+    if (accepted) group.accepted += 1;
+    if (!accepted) {
+      group.rejected += 1;
+      incrementRejectMix(group.rejectMix, row.rejectCode || "paper_trade_rejected");
+    }
+    const fillProbability = numberOrNull(row.fillProbability);
+    if (fillProbability !== null) group.predictedFillValues.push(fillProbability);
+    group.realizedFillValues.push(accepted ? 1 : 0);
+    const partialFillRatio = numberOrNull(row.partialFillRatio);
+    if (partialFillRatio !== null) {
+      group.predictedPartialValues.push(partialFillRatio);
+      if (accepted) group.realizedPartialValues.push(partialFillRatio);
+    }
+    const slippageCents = numberOrNull(row.slippageCents);
+    if (slippageCents !== null) {
+      group.predictedSlippageValues.push(slippageCents);
+      if (accepted) group.realizedSlippageValues.push(slippageCents);
+    }
+  }
+  for (const stat of Object.values(topStats)) {
+    const attempts = numberOrZero(stat.attempts);
+    if (attempts <= 0) continue;
+    const group = ensure([stat.family || "unknown", "unknown", "unknown", "unknown", "unknown"]);
+    group.attempts += attempts;
+    group.accepted += numberOrZero(stat.acceptedBuys);
+    group.rejected += numberOrZero(stat.rejected);
+    for (const reason of topStatRejectReasons(stat)) incrementRejectMix(group.rejectMix, reason.code, reason.count);
+    group.realizedFillValues.push(attempts > 0 ? numberOrZero(stat.acceptedBuys) / attempts : 0);
+  }
+
+  const rows = [...groups.values()].map((group) => {
+    const predictedFillRate = averageOrNull(group.predictedFillValues);
+    const realizedFillRate = group.attempts > 0 ? group.accepted / group.attempts : averageOrNull(group.realizedFillValues);
+    const predictedSlippage = averageOrNull(group.predictedSlippageValues);
+    const realizedSlippage = averageOrNull(group.realizedSlippageValues);
+    return {
+      snapshotId,
+      family: group.family,
+      regimeTimeToClose: group.regimeTimeToClose,
+      regimeSpread: group.regimeSpread,
+      regimeLiquidity: group.regimeLiquidity,
+      regimeVolatility: group.regimeVolatility,
+      predictedFillRate: roundDisplayRatio(predictedFillRate),
+      realizedFillRate: roundDisplayRatio(realizedFillRate),
+      predictedPartialFillRatio: roundDisplayRatio(averageOrNull(group.predictedPartialValues)),
+      realizedPartialFillRatio: roundDisplayRatio(averageOrNull(group.realizedPartialValues)),
+      predictedSlippage: roundDisplayRatio(predictedSlippage),
+      realizedSlippage: roundDisplayRatio(realizedSlippage),
+      predictedRejectRate: roundDisplayRatio(predictedFillRate === null ? null : 1 - predictedFillRate),
+      realizedRejectRate: roundDisplayRatio(group.attempts > 0 ? group.rejected / group.attempts : null),
+      attempts: group.attempts,
+      accepted: group.accepted,
+      rejected: group.rejected,
+      rejectMixJson: jsonCell(group.rejectMix),
+      calibrationAction: calibrationAction({ predictedFillRate, realizedFillRate, predictedSlippage, realizedSlippage, attempts: group.attempts }),
+    };
+  }).sort((left, right) => right.attempts - left.attempts
+    || left.family.localeCompare(right.family)
+    || left.regimeTimeToClose.localeCompare(right.regimeTimeToClose)
+    || left.regimeSpread.localeCompare(right.regimeSpread));
+  const report = {
+    schemaVersion: "dogeedge.simulator-calibration-report.v1",
+    snapshotId,
+    generatedAt,
+    regimeCount: rows.length,
+    attempts: rows.reduce((total, row) => total + row.attempts, 0),
+    accepted: rows.reduce((total, row) => total + row.accepted, 0),
+    rejected: rows.reduce((total, row) => total + row.rejected, 0),
+    tighteningOnly: true,
+    calibrationPolicy: "paper_evidence_can_reduce_fill_probability_or_increase_costs_only",
+    actionCounts: countBy(rows.map((row) => row.calibrationAction)),
+  };
+  return {
+    rows,
+    report,
+    markdown: simulatorCalibrationMarkdown(report, rows),
+  };
+}
+
+function simulatorCalibrationMarkdown(report, rows) {
+  const lines = [
+    "# Simulator Calibration Report",
+    "",
+    `Snapshot: ${report.snapshotId}`,
+    `Regime rows: ${report.regimeCount}`,
+    `Attempts: ${report.attempts}`,
+    `Accepted: ${report.accepted}`,
+    `Rejected: ${report.rejected}`,
+    "",
+    "Policy: paper evidence can only tighten fill probability or increase costs; it cannot loosen promotion safeguards.",
+    "",
+    "| family | regimeTimeToClose | regimeSpread | attempts | predictedFillRate | realizedFillRate | action |",
+    "|---|---|---:|---:|---:|---:|---|",
+    ...rows.slice(0, 50).map((row) => `| ${row.family} | ${row.regimeTimeToClose} | ${row.regimeSpread} | ${row.attempts} | ${row.predictedFillRate ?? ""} | ${row.realizedFillRate ?? ""} | ${row.calibrationAction} |`),
+  ];
+  return `${lines.join("\n")}\n`;
+}
+
+function rejectStreamSummaryReport({ snapshotId, generatedAt, decisionRows, tradeRows, topStats }) {
+  const byCode = {};
+  let opportunities = 0;
+  let attempted = 0;
+  let accepted = 0;
+  let rejected = 0;
+  let skipped = 0;
+  for (const row of decisionRows) {
+    opportunities += 1;
+    if (row.attempted === true || row.accepted === true || row.rejectCode) attempted += 1;
+    else skipped += 1;
+    if (row.accepted === true) accepted += 1;
+    if (row.rejectCode || row.rejected === true || row.accepted === false && row.attempted === true) {
+      rejected += 1;
+      incrementRejectMix(byCode, row.rejectCode || "decision_not_accepted");
+    }
+  }
+  for (const row of tradeRows) {
+    attempted += 1;
+    if (row.rejectCode || row.status === "rejected") {
+      rejected += 1;
+      incrementRejectMix(byCode, row.rejectCode || "paper_trade_rejected");
+    } else {
+      accepted += 1;
+    }
+  }
+  for (const stat of Object.values(topStats)) {
+    const statAttempts = numberOrZero(stat.attempts);
+    attempted += statAttempts;
+    accepted += numberOrZero(stat.acceptedBuys);
+    rejected += numberOrZero(stat.rejected);
+    skipped += Math.max(0, numberOrZero(stat.signals) - statAttempts);
+    for (const reason of topStatRejectReasons(stat)) incrementRejectMix(byCode, reason.code, reason.count);
+  }
+  return {
+    schemaVersion: "dogeedge.reject-stream-summary.v1",
+    snapshotId,
+    generatedAt,
+    opportunities,
+    attempted,
+    accepted,
+    rejected,
+    skipped,
+    rejectRate: roundDisplayRatio(attempted > 0 ? rejected / attempted : null),
+    acceptRate: roundDisplayRatio(attempted > 0 ? accepted / attempted : null),
+    fullRejectStreamPresent: attempted > 0 && rejected > 0,
+    failClosed: attempted === 0 || rejected === 0,
+    reasonCodes: [
+      ...(attempted === 0 ? ["paper_attempt_stream_absent"] : []),
+      ...(rejected === 0 ? ["reject_stream_absent_or_incomplete"] : []),
+    ],
+    rejectMix: byCode,
+  };
+}
+
+function replayParityReportFromRawManifest({ snapshotId, generatedAt, rawTickManifest }) {
+  const manifest = isRecord(rawTickManifest) ? rawTickManifest : {};
+  const targetMarketCount = numberOrZero(manifest.targetMarketCount);
+  const coveredTargetMarketCount = numberOrZero(manifest.coveredTargetMarketCount);
+  const uncoveredTargetMarketCount = numberOrZero(manifest.uncoveredTargetMarketCount ?? Math.max(0, targetMarketCount - coveredTargetMarketCount));
+  const parquetAvailable = manifest.parquetAvailable === true;
+  const jsonlAvailable = manifest.jsonlAvailable === true;
+  const replayGrade = parquetAvailable && targetMarketCount > 0 && uncoveredTargetMarketCount === 0;
+  const sampleParity = (jsonlAvailable || parquetAvailable) && targetMarketCount > 0 && uncoveredTargetMarketCount === 0;
+  return {
+    schemaVersion: "dogeedge.replay-parity-report.v1",
+    snapshotId,
+    generatedAt,
+    targetMarketCount,
+    coveredTargetMarketCount,
+    uncoveredTargetMarketCount,
+    parquetAvailable,
+    jsonlAvailable,
+    replayGrade,
+    sampleParity,
+    executionSensitivePromotionAllowed: replayGrade,
+    sourceSnapshotFileCount: numberOrZero(manifest.sourceSnapshotFileCount),
+    hashedSourceSnapshotFileCount: numberOrZero(manifest.hashedSourceSnapshotFileCount),
+    sequenceGapCheckAvailable: manifest.sequenceGapCheckAvailable === true,
+    failClosed: !replayGrade,
+    reasonCodes: [
+      ...(!parquetAvailable ? ["raw_market_tick_parquet_absent"] : []),
+      ...(targetMarketCount === 0 ? ["target_market_set_absent"] : []),
+      ...(uncoveredTargetMarketCount > 0 ? ["raw_market_tick_target_coverage_gap"] : []),
+      ...(manifest.sequenceGapCheckAvailable !== true ? ["sequence_gap_check_absent"] : []),
+    ],
+  };
+}
+
+function executableReadinessGateReport({
+  snapshotId,
+  generatedAt,
+  exactLinkSummary,
+  settlementCoverageReport,
+  rawTickManifest,
+  simulatorCalibrationReport,
+  topRosterDefaultSortAudit,
+}) {
+  const replayParity = replayParityReportFromRawManifest({ snapshotId, generatedAt, rawTickManifest });
+  const exactLinked = numberOrZero(exactLinkSummary?.supportedLiveExactLinkedCount ?? exactLinkSummary?.exactLinkedRows);
+  const officialCoverage = numberOrZero(settlementCoverageReport?.summary?.officialSettlementCoverage);
+  const calibrationAttempts = numberOrZero(simulatorCalibrationReport?.attempts);
+  const rosterCount = numberOrZero(topRosterDefaultSortAudit?.researchRankedRosterCount);
+  const reasonCodes = [
+    ...(exactLinked <= 0 ? ["exact_linked_supported_live_rows_zero"] : []),
+    ...(officialCoverage < officialPromotionCoverageThreshold ? ["official_settlement_coverage_below_threshold"] : []),
+    ...(!replayParity.replayGrade ? ["replay_grade_target_market_ticks_absent"] : []),
+    ...(calibrationAttempts <= 0 ? ["simulator_calibration_evidence_absent"] : []),
+    ...(rosterCount <= 0 ? ["research_validated_roster_empty"] : []),
+  ];
+  return {
+    schemaVersion: "dogeedge.executable-readiness-gate.v1",
+    snapshotId,
+    generatedAt,
+    allowedToLoadArenaBatch: reasonCodes.length === 0,
+    state: reasonCodes.length === 0 ? "executable_ready" : "hold_gather_evidence",
+    exactLinkedSupportedLiveRows: exactLinked,
+    officialSettlementCoverage: roundDisplayRatio(officialCoverage) ?? 0,
+    replayGradeTargetMarketCoverage: replayParity.targetMarketCount > 0
+      ? roundDisplayRatio(replayParity.coveredTargetMarketCount / replayParity.targetMarketCount)
+      : 0,
+    simulatorCalibrationAttempts: calibrationAttempts,
+    researchValidatedRosterCount: rosterCount,
+    reasonCodes,
+  };
+}
+
+function incrementRejectMix(mix, code, count = 1) {
+  const key = stringOrNull(code) ?? "unknown_reject";
+  mix[key] = numberOrZero(mix[key]) + count;
+}
+
+function averageOrNull(values) {
+  const numbers = values.filter((value) => typeof value === "number" && Number.isFinite(value));
+  return numbers.length ? numbers.reduce((total, value) => total + value, 0) / numbers.length : null;
+}
+
+function calibrationAction({ predictedFillRate, realizedFillRate, predictedSlippage, realizedSlippage, attempts }) {
+  if (attempts <= 0) return "insufficient_paper_evidence";
+  if (predictedFillRate !== null && realizedFillRate !== null && realizedFillRate < predictedFillRate) return "tighten_fill_probability";
+  if (predictedSlippage !== null && realizedSlippage !== null && realizedSlippage > predictedSlippage) return "increase_slippage";
+  return "hold_or_collect_more_evidence";
+}
+
+function countBy(values) {
+  return values.reduce((counts, value) => {
+    counts[value] = numberOrZero(counts[value]) + 1;
+    return counts;
+  }, {});
+}
+
 function metricGate(metric, researchSupported = true) {
   if (!metric) return { ok: false, reasonCodes: ["missing_research_evidence"] };
   const reasonCodes = [];
   if (!researchSupported) reasonCodes.push("unsupported_for_research");
   if (metric.nonPromotable) reasonCodes.push("non_promotable");
   if (metric.promotionVerdict !== "paper_only" && metric.promotionVerdict !== "tiny_live_eligible") reasonCodes.push("promotion_verdict_not_validated");
+  if ((metric.labelSource ?? metric.settlementEvidence?.labelSource) !== "official_resolution") reasonCodes.push("official_label_required");
+  if ((metric.settlementSource ?? metric.settlementEvidence?.settlementSource) !== "official_resolution") reasonCodes.push("official_settlement_required");
+  const officialCoverage = numberOrZero(metric.officialSettlementCoverage ?? metric.settlementEvidence?.officialSettlementCoverage);
+  if (officialCoverage < officialScoringCoverageThreshold) reasonCodes.push("official_settlement_coverage_below_scoring_threshold");
+  if (officialCoverage < officialPromotionCoverageThreshold) reasonCodes.push("official_settlement_coverage_low");
   if (metric.holdoutPass !== true) reasonCodes.push("holdout_failed");
   if (numberOrZero(metric.conservativeTotalPnl) <= 0) reasonCodes.push("conservative_pnl_not_positive");
   if (numberOrZero(metric.stressTotalPnl) < 0) reasonCodes.push("stress_pnl_negative");
@@ -2311,6 +3129,24 @@ function snapshotSettlementSource(metrics) {
   if (sources.has("official_resolution")) return "mixed";
   if (sources.has("estimated")) return "estimated";
   return "unknown";
+}
+
+function officialSettlementCoverageSummary(snapshot) {
+  if (isRecord(snapshot?.officialSettlementCoverageSummary)) return snapshot.officialSettlementCoverageSummary;
+  const rows = Array.isArray(snapshot?.algoRollup) ? snapshot.algoRollup : [];
+  const coverages = rows
+    .map((row) => numberOrNull(row.officialSettlementCoverage))
+    .filter((value) => value !== null);
+  const officialRows = rows.filter((row) => row.labelSource === "official_resolution" && row.settlementSource === "official_resolution").length;
+  return {
+    metricRows: rows.length,
+    officialRows,
+    minCoverage: coverages.length ? Math.min(...coverages) : 0,
+    maxCoverage: coverages.length ? Math.max(...coverages) : 0,
+    averageCoverage: coverages.length ? roundDisplayRatio(coverages.reduce((total, value) => total + value, 0) / coverages.length) : 0,
+    promotionGradeCoverageRows: rows.filter((row) => numberOrZero(row.officialSettlementCoverage) >= 0.95).length,
+    failClosed: rows.length === 0 || coverages.every((value) => value < 0.95),
+  };
 }
 
 function decisionFrameJsonLine(row) {
@@ -2668,6 +3504,7 @@ async function writeRawMarketTicksManifest({
   const coveredSet = new Set(coveredTargetMarkets);
   const uncoveredTargetMarkets = targetMarkets.filter((marketTicker) => !coveredSet.has(marketTicker));
   const available = jsonlFiles.length > 0;
+  const executionSensitivePromotionAllowed = available && targetMarkets.length > 0 && uncoveredTargetMarkets.length === 0;
   const exportedFormat = available ? "jsonl" : null;
   const availabilityStatus = available
     ? uncoveredTargetMarkets.length > 0 ? "partial_sample_exported" : "sample_exported"
@@ -2688,6 +3525,8 @@ async function writeRawMarketTicksManifest({
     availabilityStatus,
     parquetAvailable: false,
     jsonlAvailable: available,
+    executionSensitivePromotionAllowed,
+    promotionGateRequirement: "raw_target_market_ticks_required_for_execution_sensitive_promotion",
     reason: rawTickAvailabilityReason({ availabilityStatus, requestedFormat }),
     gitCommit: gitInfo.commitHash ?? "UNAVAILABLE",
     expectedDirectory: "raw_market_ticks/<market_ticker>.parquet",
@@ -2727,13 +3566,38 @@ async function writeRawMarketTicksManifest({
   };
   const schemaPath = path.join(dir, "schema.json");
   const manifestPath = path.join(dir, "manifest.json");
+  const coveragePath = path.join(dir, "coverage.tsv.gz");
+  const coverageRows = rawTickCoverageRows({
+    snapshotId,
+    targetMarkets,
+    jsonlFiles,
+    requestedFormat,
+  });
   await writeFile(schemaPath, `${JSON.stringify(schema, null, 2)}\n`, "utf8");
   await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+  await writeGzipText(coveragePath, tsv(rawMarketTickCoverageColumns, coverageRows));
   return [
     await fileInfo(schemaPath, "raw_market_ticks/schema.json", "raw_market_ticks/schema.json", null),
     await fileInfo(manifestPath, "raw_market_ticks/manifest.json", "raw_market_ticks/manifest.json", null),
+    await fileInfo(coveragePath, "raw_market_ticks/coverage.tsv.gz", "raw_market_ticks/coverage.tsv.gz", coverageRows.length),
     ...await Promise.all(jsonlFiles.map((file) => fileInfo(file.path, `raw_market_ticks/jsonl/${file.marketTicker}.jsonl`, slashPath(path.relative(snapshotDir, file.path)), file.rows))),
   ];
+}
+
+function rawTickCoverageRows({ snapshotId, targetMarkets, jsonlFiles, requestedFormat }) {
+  const byMarket = new Map(jsonlFiles.map((file) => [file.marketTicker, file]));
+  return targetMarkets.map((marketTicker) => {
+    const file = byMarket.get(marketTicker);
+    return {
+      snapshotId,
+      marketTicker,
+      available: Boolean(file),
+      format: file ? requestedFormat : "",
+      jsonlRows: file?.rows ?? 0,
+      relativePath: file ? slashPath(path.relative(path.dirname(path.dirname(file.path)), file.path)) : "",
+      uncoveredReason: file ? "" : "target_market_raw_tick_sample_absent",
+    };
+  });
 }
 
 function rawTickAvailabilityReason({ availabilityStatus, requestedFormat }) {
@@ -2881,6 +3745,7 @@ function dataQualitySummary(primaryRun, metrics) {
     marketEvents: numberOrZero(source.marketEvents ?? primaryRun?.eventCount),
     warningCount: numberOrZero(source.warningCount) + metrics.reduce((total, metric) => total + (metric.warnings?.length ?? 0), 0),
     errorCount: numberOrZero(source.errorCount),
+    settlementEvidence: source.settlementEvidence ?? {},
   };
 }
 
@@ -2931,6 +3796,15 @@ async function copyRepoBundle({ bundleRoot, options }) {
   };
   const gitInfo = await repoInfo();
   await writeTextTarget("repo/COMMIT_HASH.txt", `${gitInfo.commitHash ?? "UNAVAILABLE"}\n`);
+  if (gitInfo.dirty) {
+    const diffText = await gitDiffForBundle();
+    await writeTextTarget(
+      "repo/UNCOMMITTED_DIFF.patch",
+      diffText.trim().length > 0
+        ? diffText
+        : "Repository was reported dirty, but no textual git diff was available.\n",
+    );
+  }
   for (const item of [
     { source: path.join(repoRoot, "package.json"), target: "repo/package.json" },
     { source: path.join(repoRoot, "DOGEEDGE_ALGO_FACTORY.md"), target: "repo/DOGEEDGE_ALGO_FACTORY.md" },
@@ -2952,6 +3826,17 @@ async function copyRepoBundle({ bundleRoot, options }) {
     files.push(await fileInfo(target, path.basename(item.target), item.target, null));
   }
   return files;
+}
+
+async function gitDiffForBundle() {
+  const git = await gitBinary();
+  if (!git) return "";
+  try {
+    const diff = await execFileAsync(git, ["-C", repoRoot, "diff", "--binary", "HEAD"], { windowsHide: true, maxBuffer: 50 * 1024 * 1024 });
+    return diff.stdout;
+  } catch {
+    return "";
+  }
 }
 
 async function writeRegistryTarball({ bundleRoot, options, snapshot }) {
@@ -3301,6 +4186,12 @@ function identityForAlgo(identityByAlgoId, algoId) {
   return identityByAlgoId?.get(text)
     ?? identityByAlgoId?.get(text.replace(/^generated:/, ""))
     ?? null;
+}
+
+function exactIdentityKey(researchCandidateId, candidateConfigHash) {
+  const id = stringOrNull(researchCandidateId);
+  const hash = stringOrNull(candidateConfigHash);
+  return id && hash ? `${id}|${hash}` : null;
 }
 
 function uniqueStrings(values) {

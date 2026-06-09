@@ -311,12 +311,15 @@ describe("factory research safeguards", () => {
     expect(limited.limited).toBe(true);
     expect(limited.deepSweepAllowed).toBe(false);
     expect(limited.maxGeneratedAlgos).toBeLessThan(6045);
+    expect(limited.executableMintingAllowed).toBe(false);
+    expect(limited.labResearchAllowed).toBe(true);
     expect(limited.reasonCodes).toEqual(expect.arrayContaining(["search_budget_limited_by_sample_size", "deep_sweep_blocked_low_official_coverage"]));
     expect(open.limited).toBe(false);
     expect(open.deepSweepAllowed).toBe(true);
+    expect(open.executableMintingAllowed).toBe(true);
   });
 
-  it("reserves low-evidence sweep budget for supported live-family adapters", () => {
+  it("keeps low-evidence executable minting at zero and allows only tiny lab research", () => {
     const requested = [
       ...Array.from({ length: 300 }, (_, index) => ({ id: `model-${index}`, family: "sweep-model" })),
       ...Array.from({ length: 80 }, (_, index) => ({ id: `scalp-${index}`, family: "sweep-scalp" })),
@@ -333,11 +336,30 @@ describe("factory research safeguards", () => {
     const budgeted = applyFamilySearchBudget(requested, decision);
     const selectedFamilies = new Set(budgeted.algos.map((algo) => algo.family));
 
-    expect(budgeted.algos).toHaveLength(decision.maxGeneratedAlgos);
-    expect(selectedFamilies.has("sweep-scalp")).toBe(true);
-    expect(selectedFamilies.has("sweep-liquidity-imbalance")).toBe(true);
+    expect(budgeted.algos.length).toBeLessThanOrEqual(decision.maxGeneratedAlgos);
+    expect(budgeted.algos).toHaveLength(25);
+    expect(selectedFamilies.has("sweep-scalp")).toBe(false);
+    expect(selectedFamilies.has("sweep-liquidity-imbalance")).toBe(false);
+    expect(selectedFamilies.has("sweep-model")).toBe(true);
     expect(selectedFamilies.has("sweep-momentum-trail")).toBe(false);
     expect(budgeted.summary.unsupportedMintingCount).toBe(0);
+    expect(budgeted.familyBudget).toMatchObject({
+      executableMintingAllowed: false,
+      labResearchAllowed: true,
+    });
+    expect(budgeted.familyBudget.families.find((row) => row.family === "sweep-model")).toMatchObject({
+      researchSupported: true,
+      labOnly: true,
+      selected: 25,
+      budgetLane: "research_only_family",
+      budgetBucket: "lab_only_research",
+      action: "tiny_lab_research",
+    });
+    expect(budgeted.familyBudget.families.find((row) => row.family === "sweep-scalp")).toMatchObject({
+      researchSupported: true,
+      selected: 0,
+      action: "supported_budget_waiting",
+    });
     expect(budgeted.familyBudget.families.find((row) => row.family === "sweep-momentum-trail")).toMatchObject({
       researchSupported: false,
       selected: 0,
@@ -890,6 +912,37 @@ describe("factory research safeguards", () => {
     expect(Object.prototype.hasOwnProperty.call(metric, "pboApprox")).toBe(true);
     expect(Object.prototype.hasOwnProperty.call(metric, "dsr")).toBe(false);
     expect(Object.prototype.hasOwnProperty.call(metric, "pbo")).toBe(false);
+  });
+
+  it("does not elevate the best rejected metric as a viable report winner", () => {
+    const rejected = {
+      ...robustMetric("best-reject"),
+      promotionVerdict: "reject",
+      nonPromotable: true,
+      labelSource: "pre_close_frame_proxy",
+      settlementSource: "estimated",
+      officialSettlementCoverage: 0,
+      reasonCodes: ["official_settlement_required"],
+    };
+
+    const report = markdownReport({
+      runId: "best-reject-test",
+      startedAt: "2026-06-01T00:00:00.000Z",
+      finishedAt: "2026-06-01T00:01:00.000Z",
+      dataRoot: "data",
+      framesDir: "frames",
+      frameCount: 1,
+      eventCount: 1,
+      algoCount: 1,
+      sweepMode: true,
+      dataQuality: null,
+      metrics: [rejected],
+      candidates: [rejected],
+    });
+
+    expect(report).toContain("No viable candidate");
+    expect(report).toContain("not trusted ranked winners");
+    expect(report).not.toContain("best-reject: reject with robust score");
   });
 });
 

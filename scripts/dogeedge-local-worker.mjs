@@ -708,6 +708,9 @@ function recoverArenaArchivesFromPayload(payload) {
   const paperState = arena.paperState && typeof arena.paperState === "object" ? arena.paperState : {};
   const trades = Array.isArray(paperState.trades) ? paperState.trades : [];
   const events = Array.isArray(paperState.events) ? paperState.events : [];
+  const generatedAlgos = generatedAlgosFromPayload(payload);
+  const algoByStrategy = new Map(generatedAlgos.map((algo) => [stringOrNull(algo?.id), algo]).filter(([id]) => id));
+  const algoBySource = new Map(generatedAlgos.map((algo) => [stringOrNull(algo?.sourceAlgoId), algo]).filter(([id]) => id));
   const selectedIds = uniqueStrings(Array.isArray(arena.selectedAlgoIds)
     ? arena.selectedAlgoIds
     : typeof arena.selectedAlgoId === "string" ? [arena.selectedAlgoId] : []);
@@ -726,21 +729,27 @@ function recoverArenaArchivesFromPayload(payload) {
       const stats = paperSummarySnapshot({ trades, events }, strategyId);
       if (stats.buys <= 0 && stats.sells <= 0 && stats.open <= 0) return null;
       const sourceAlgoId = strategyId.slice("generated:".length);
+      const algo = algoByStrategy.get(strategyId) ?? algoBySource.get(sourceAlgoId) ?? null;
       const activity = trades.find((trade) => trade?.strategyId === strategyId)
         ?? events.find((event) => event?.strategyId === strategyId)
         ?? {};
       const name = typeof activity.strategyName === "string" && activity.strategyName.length > 0
         ? activity.strategyName
-        : fallbackFactoryAlgoName(sourceAlgoId);
-      const family = inferFactoryFamily(name);
+        : stringOrNull(algo?.name) ?? fallbackFactoryAlgoName(sourceAlgoId);
+      const family = stringOrNull(algo?.family) ?? inferFactoryFamily(name);
       return {
         activationId: `${strategyId}:${activatedAt}`,
-        displayId: displayIdFromFactorySource(sourceAlgoId) ?? fallbackDisplayId(strategyId, family),
+        displayId: stringOrNull(algo?.displayId) ?? displayIdFromFactorySource(sourceAlgoId) ?? fallbackDisplayId(strategyId, family),
         sourceAlgoId,
+        researchCandidateId: stringOrNull(algo?.researchCandidateId),
+        candidateConfigHash: stringOrNull(algo?.candidateConfigHash),
+        sourceResearchAlgoId: stringOrNull(algo?.sourceResearchAlgoId),
+        sourceSnapshotHash: stringOrNull(algo?.sourceSnapshotHash),
+        promotionVerdictAtInstall: stringOrNull(algo?.promotionVerdictAtInstall),
         name,
         family,
-        params: inferFactoryParams(name),
-        sourceRunId: sourceRunIdFromFactorySource(sourceAlgoId),
+        params: algo?.params && typeof algo.params === "object" ? algo.params : inferFactoryParams(name),
+        sourceRunId: stringOrNull(algo?.sourceRunId) ?? sourceRunIdFromFactorySource(sourceAlgoId),
         activatedAt,
         deactivatedAt,
         sourceMetrics: {
@@ -756,6 +765,13 @@ function recoverArenaArchivesFromPayload(payload) {
       };
     })
     .filter(Boolean);
+}
+
+function generatedAlgosFromPayload(payload) {
+  const direct = Array.isArray(payload?.generatedPaperAlgos) ? payload.generatedPaperAlgos : [];
+  const batches = Array.isArray(payload?.factoryAlgoBatches) ? payload.factoryAlgoBatches : [];
+  const batchAlgos = batches.flatMap((batch) => Array.isArray(batch?.algos) ? batch.algos : []);
+  return [...direct, ...batchAlgos].filter((algo) => algo && typeof algo === "object");
 }
 
 function paperSummarySnapshot(paperState, strategyId) {
@@ -1220,6 +1236,11 @@ function slimGeneratedAlgos(algos, limit) {
     id: algo?.id ?? null,
     displayId: algo?.displayId ?? null,
     sourceAlgoId: algo?.sourceAlgoId ?? null,
+    researchCandidateId: algo?.researchCandidateId ?? null,
+    candidateConfigHash: algo?.candidateConfigHash ?? null,
+    sourceResearchAlgoId: algo?.sourceResearchAlgoId ?? null,
+    sourceSnapshotHash: algo?.sourceSnapshotHash ?? null,
+    promotionVerdictAtInstall: algo?.promotionVerdictAtInstall ?? null,
     name: algo?.name ?? null,
     family: algo?.family ?? null,
     enabled: Boolean(algo?.enabled),
@@ -1235,6 +1256,11 @@ function slimGeneratedArchives(archives, limit) {
     activationId: archive?.activationId ?? null,
     displayId: archive?.displayId ?? null,
     sourceAlgoId: archive?.sourceAlgoId ?? null,
+    researchCandidateId: archive?.researchCandidateId ?? null,
+    candidateConfigHash: archive?.candidateConfigHash ?? null,
+    sourceResearchAlgoId: archive?.sourceResearchAlgoId ?? null,
+    sourceSnapshotHash: archive?.sourceSnapshotHash ?? null,
+    promotionVerdictAtInstall: archive?.promotionVerdictAtInstall ?? null,
     name: archive?.name ?? null,
     family: archive?.family ?? null,
     sourceRunId: archive?.sourceRunId ?? null,
@@ -1276,6 +1302,11 @@ function buildAlgorithmCandidates(payload, writtenAt) {
       kind: "generated-paper-algo",
       id: algo.displayId ?? algo.sourceAlgoId,
       sourceAlgoId: algo.sourceAlgoId,
+      researchCandidateId: algo.researchCandidateId ?? null,
+      candidateConfigHash: algo.candidateConfigHash ?? null,
+      sourceResearchAlgoId: algo.sourceResearchAlgoId ?? null,
+      sourceSnapshotHash: algo.sourceSnapshotHash ?? null,
+      promotionVerdictAtInstall: algo.promotionVerdictAtInstall ?? null,
       name: algo.name,
       family: algo.family,
       sourceRunId: algo.sourceRunId ?? null,

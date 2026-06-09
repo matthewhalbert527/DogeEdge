@@ -9,6 +9,7 @@ DogeEdge is a Windows PC-first, standalone Tauri-ready desktop workstation for D
 - Strategy decision module for YES/NO/skip evaluation after fee and spread penalties.
 - Risk gate with paper-only, dry-run, live enablement, spread, latency, confidence, edge, expiration, and per-trade cap checks.
 - Strategy promotion helper with backtest, walk-forward, paper, and tiny-live states.
+- Review-bundle exports for exact research/live linkage, official-settlement coverage, raw target-market tick coverage, and simulator calibration from paper evidence.
 - AI Observer UI for proposed parameter/code changes, evidence, risk note, and paper/backtest actions.
 - Backend-only Kalshi order router that keeps private keys out of the browser and enforces selected-algo, DOGE-series, max-order, account-balance, and same-ticker position/order checks.
 - Tauri v2 shell files for the desktop app.
@@ -22,6 +23,10 @@ DogeEdge is a Windows PC-first, standalone Tauri-ready desktop workstation for D
 - Live order submission requires backend Kalshi credentials, the live enable flag, dry-run disabled, Play pressed on the Live page, and a selected generated algo that decides when to buy.
 
 The UI must not display settlement as official until a CF Benchmarks RTI adapter is configured. Exchange feeds are only an estimate.
+
+Promotion and roster surfaces fail closed when official settlement coverage, exact research identity, target-market replay coverage, or review-bundle completeness is missing. Scheduled arena loading records `hold_gather_evidence` instead of rotating new research batches under those conditions. Telemetry-only rows remain visible for diagnosis, but they are separated from the Research Validated Roster.
+
+Generator v2 keeps low-evidence unattended executable minting at zero. Weak-evidence sweeps may still run a tiny lab-only research lane, but lab output cannot populate the Research Validated Roster or executable arena.
 
 ## Development
 
@@ -77,9 +82,9 @@ On Windows, `Build DogeEdge Windows Desktop.bat` is the intended installer build
 
 ## Next Implementation Steps
 
-1. Replace simulated exchange ticks with Binance/Coinbase/Kraken WebSocket adapters.
-2. Add Kalshi WebSocket user fills/order updates and cancel/reduce-only sell handling.
-3. Add SQLite journaling from the Rust core instead of in-memory UI snapshots.
-4. Add paid/imported tick-data replay formats in the Backtest Lab.
-5. Add the AI observer patch runner with isolated branch/diff/test review.
-6. Expand live execution after fills, exits, and P/L accounting are verified.
+1. Add durable official-settlement backfill from exchange/historical settlement sources.
+2. Add replay-grade Kalshi target-market orderbook/trade recording with sequence-gap checks.
+3. Add Kalshi WebSocket user fills/order updates and cancel/reduce-only sell handling.
+4. Add SQLite journaling from the Rust core instead of in-memory UI snapshots.
+5. Add paid/imported tick-data replay formats in the Backtest Lab.
+6. Expand live execution only after exact linkage, settlement, replay, fills, exits, and P/L accounting are verified.
