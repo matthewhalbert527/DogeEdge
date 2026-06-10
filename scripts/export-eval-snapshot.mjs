@@ -3066,9 +3066,12 @@ async function writeRawMarketTicksManifest({
       maxTargetMarkets: targetMarketLimit,
       maxRowsPerMarket: maxRawTickRowsPerMarket,
       sourceFileDiscoveryLimit,
-      sourceLineLimit: jsonlFiles.sourceLineLimit,
+    sourceLineLimit: jsonlFiles.sourceLineLimit,
     sourceScanBytes: jsonlFiles.sourceScanBytes,
     sourceHeadScanBytes: jsonlFiles.sourceHeadScanBytes,
+    compactScanLineLimit: jsonlFiles.compactScanLineLimit ?? null,
+    compactScanMaxBytes: jsonlFiles.compactScanMaxBytes ?? null,
+    supplementalScanPassesPlanned: jsonlFiles.supplementalScanPassesPlanned ?? null,
     supplementalScanPasses: jsonlFiles.supplementalScanPasses,
     supplementalScanBytes: jsonlFiles.supplementalScanBytes,
   },
@@ -3169,7 +3172,10 @@ async function writeRawTickJsonlSamples({
   const missingMarketCount = () => targets.size > 0
     ? [...targets].filter((marketTicker) => !rowsByMarket.has(marketTicker)).length
     : 0;
-  const supplementalScanBytes = Math.max(512 * 1024, Math.floor(resolvedSourceScanBytes / 4));
+  const compactScanLineLimit = Math.max(resolvedSourceLineLimit, 25_000);
+  const compactScanMaxBytes = Math.min(16 * 1024 * 1024, resolvedSourceScanBytes * 4);
+  let maxSupplementalPassesPlanned = 0;
+  let supplementalWindowBytes = Math.max(512 * 1024, Math.floor(resolvedSourceScanBytes / 4));
   let supplementalScanPasses = 0;
   for (const file of rawSnapshotFiles) {
     const lines = await readTailLines(file, resolvedSourceLineLimit, resolvedSourceScanBytes);
@@ -3185,14 +3191,28 @@ async function writeRawTickJsonlSamples({
     if (targets.size > 0 && missingMarketCount() > 0) {
       const fileInfo = await stat(file).catch(() => null);
       const fileSize = fileInfo?.size ?? 0;
-      const supplementalOffsets = supplementalLineScanOffsets(fileSize, supplementalScanBytes, 3);
-      for (const byteOffset of supplementalOffsets) {
-        const fallbackSampleLines = await readByteRangeLines(file, resolvedSourceLineLimit, supplementalScanBytes, byteOffset);
-        for (const line of fallbackSampleLines) {
+      const compactScanMaxBytes = Math.min(16 * 1024 * 1024, resolvedSourceScanBytes * 4);
+      if (fileSize > 0 && fileSize <= compactScanMaxBytes) {
+        const compactScanLines = await readByteRangeLines(file, compactScanLineLimit, fileSize, 0);
+        for (const line of compactScanLines) {
           addLineForMarket(line);
         }
         supplementalScanPasses += 1;
-        if (targets.size > 0 && missingMarketCount() === 0) break;
+      }
+      if (targets.size > 0 && missingMarketCount() > 0) {
+        const supplementalPasses = supplementalScanPassesForTargets(missingMarketCount());
+        maxSupplementalPassesPlanned = Math.max(maxSupplementalPassesPlanned, supplementalPasses);
+        const fileWindowBytes = Math.max(256 * 1024, Math.floor(resolvedSourceScanBytes / Math.max(1, supplementalPasses)));
+        const supplementalOffsets = supplementalLineScanOffsets(fileSize, fileWindowBytes, supplementalPasses);
+        supplementalWindowBytes = Math.max(supplementalWindowBytes, fileWindowBytes);
+        for (const byteOffset of supplementalOffsets) {
+          const fallbackSampleLines = await readByteRangeLines(file, resolvedSourceLineLimit, fileWindowBytes, byteOffset);
+          for (const line of fallbackSampleLines) {
+            addLineForMarket(line);
+          }
+          supplementalScanPasses += 1;
+          if (targets.size > 0 && missingMarketCount() === 0) break;
+        }
       }
     }
     if (targets.size === 0 && rowsByMarket.size >= 20) break;
@@ -3211,16 +3231,25 @@ async function writeRawTickJsonlSamples({
     sourceScanBytes: resolvedSourceScanBytes,
     sourceHeadScanBytes: resolvedSourceHeadScanBytes,
     supplementalScanPasses,
-    supplementalScanBytes,
-    supplementalWindowBytes: supplementalScanBytes,
+    supplementalScanPassesPlanned: maxSupplementalPassesPlanned,
+    compactScanLineLimit,
+    compactScanMaxBytes,
+    supplementalScanBytes: supplementalWindowBytes,
+    supplementalWindowBytes,
   };
+}
+
+function supplementalScanPassesForTargets(missingMarketCount) {
+  const safeCount = Number(missingMarketCount);
+  if (!Number.isFinite(safeCount) || safeCount <= 0) return 0;
+  return Math.min(12, Math.max(3, Math.ceil(safeCount * 0.75)));
 }
 
 function supplementalLineScanOffsets(fileSize, windowBytes, passCount) {
   const parsedFileSize = Number(fileSize);
   const parsedWindowBytes = Number(windowBytes);
   if (!Number.isFinite(parsedFileSize) || !Number.isFinite(parsedWindowBytes) || parsedFileSize <= parsedWindowBytes) return [];
-  const effectivePasses = Math.max(0, Math.min(3, Math.floor(passCount)));
+  const effectivePasses = Math.max(0, Math.floor(passCount));
   if (effectivePasses <= 0) return [];
   const maxStart = Math.max(0, parsedFileSize - parsedWindowBytes);
   if (maxStart <= 0) return [];

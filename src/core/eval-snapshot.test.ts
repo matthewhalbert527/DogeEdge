@@ -229,6 +229,61 @@ describe("continuous evaluation snapshot exporter", () => {
     expect(readFileSync(extractedFile, "utf8")).toContain("KXDOGE15M-FIXTURE");
   });
 
+  it("reliably recovers compact raw-tick targets missed by sampled passes", async () => {
+    const fixture = writeEvalFixture({ rawSnapshotMarketTicker: null });
+    const rawSnapshotsDir = path.join(fixture.dataRoot, "raw", "snapshots");
+    const compactFile = path.join(rawSnapshotsDir, "compact-target-scan.jsonl");
+    const lines = [];
+    const totalLines = 18_000;
+    const targetLineIndex = 14_500;
+    for (let index = 0; index < totalLines; index += 1) {
+      const isTargetLine = index === targetLineIndex;
+      const ticker = isTargetLine ? "KXDOGE15M-FIXTURE" : "KXDOGE15M-NOISE";
+      const timestamp = `2026-06-07T20:${String(Math.floor(index / 60) % 60).padStart(2, "0")}:${String(index % 60).padStart(2, "0")}.000Z`;
+      lines.push(`${JSON.stringify({
+        capturedAt: timestamp,
+        paperInput: {
+          ticker,
+          observedAt: timestamp,
+          action: "buy_yes",
+          selectedAsk: 0.41,
+          sizeContracts: 1,
+          yesBid: 0.4,
+          yesAsk: 0.41,
+          noBid: 0.58,
+          noAsk: 0.59,
+          marketStatus: "open",
+        },
+      })}\n`);
+    }
+    writeFileSync(compactFile, lines.join(""));
+
+    const result = await exportEvaluationSnapshot({
+      dataRoot: fixture.dataRoot,
+      storageDir: fixture.storageDir,
+      backtestsDir: fixture.backtestsDir,
+      outDir: fixture.outDir,
+      now: "2026-06-07T20:30:00.000Z",
+      maxRowLines: 5,
+      maxMetrics: 10,
+      maxRawTickMarkets: 1,
+    });
+
+    const rawTickManifest = JSON.parse(readFileSync(path.join(result.snapshotDir, "raw_market_ticks", "manifest.json"), "utf8"));
+    expect(rawTickManifest).toMatchObject({
+      available: true,
+      availabilityStatus: "sample_exported",
+      targetMarketCount: 1,
+      coveredTargetMarketCount: 1,
+      uncoveredTargetMarketCount: 0,
+    });
+    expect(rawTickManifest.warningCodes).not.toContain("raw_market_tick_target_coverage_gap");
+    expect(rawTickManifest.warningCodes).not.toContain("raw_market_tick_scan_budget_exhausted");
+    expect(rawTickManifest.coveredTargetMarkets).toEqual(["KXDOGE15M-FIXTURE"]);
+    expect(rawTickManifest.uncoveredTargetMarkets).toEqual([]);
+    expect(readFileSync(path.join(result.snapshotDir, "raw_market_ticks", "jsonl", "KXDOGE15M-FIXTURE.jsonl"), "utf8")).toContain("KXDOGE15M-FIXTURE");
+  });
+
   it("records raw tick target market truncation when maxRawTickMarkets is small", async () => {
     const fixture = writeEvalFixture({ rawSnapshotMarketTicker: null });
     const framesPath = path.join(fixture.dataRoot, "features", "decision-frames", "records.jsonl");

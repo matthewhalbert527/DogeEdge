@@ -870,6 +870,9 @@ function bundleEvidenceMarkdown(summary) {
   ];
   const supplementalScanPasses = numberOrDefault(extractionPolicy.supplementalScanPasses, null);
   const supplementalScanBytes = numberOrDefault(extractionPolicy.supplementalScanBytes, null);
+  const supplementalScanPassesPlanned = numberOrDefault(extractionPolicy.supplementalScanPassesPlanned, null);
+  const compactScanLineLimit = numberOrDefault(extractionPolicy.compactScanLineLimit, null);
+  const compactScanMaxBytes = numberOrDefault(extractionPolicy.compactScanMaxBytes, null);
   const hasExtractionPolicy = [extractionPolicy.maxTargetMarkets, extractionPolicy.maxRowsPerMarket, extractionPolicy.sourceFileDiscoveryLimit].every((value) => Number.isFinite(value));
   const rowText = summary.rowExport?.rowsCapped
     ? `Rows: capped at ${summary.rowExport.rowCap ?? "configured limit"} (${summary.rowExport.mode ?? "unknown"} mode).`
@@ -893,13 +896,18 @@ function bundleEvidenceMarkdown(summary) {
     hasExtractionPolicy
       ? `- Raw tick extraction policy: max ${extractionPolicy.maxTargetMarkets} target markets, ${extractionPolicy.maxRowsPerMarket} rows/market; scan budget ${extractionPolicy.sourceFileDiscoveryLimit ?? "n/a"} files, ${sourceScanBudget[1] ?? "n/a"} lines per file with ${sourceScanBudget[2] ?? "n/a"}/${sourceScanBudget[3] ?? "n/a"} bytes (tail/head).`
       : "- Raw tick extraction policy: not recorded.",
-    `- Supplemental raw-tick recovery: ${supplementalScanPasses ?? "n/a"} additional passes, ${supplementalScanBytes ?? "n/a"} bytes per pass.`,
+    `- Supplemental raw-tick recovery: ${supplementalScanPassesPlanned ?? "n/a"} planned, ${supplementalScanPasses ?? "n/a"} executed passes; ${supplementalScanBytes ?? "n/a"} bytes per pass.`,
     `- Source hashes: ${sourceHash.hashedFileCount ?? 0} hashed, ${sourceHash.skippedLargeFileCount ?? 0} skipped as large; skipped bytes: ${sourceHash.hashSkippedSourceBytes ?? 0}/${sourceHash.totalSourceBytes ?? 0} (${skippedByteRatio}).`,
     `- Limitations: ${summary.limitations?.join(", ") || "none"}.`,
     `- Raw tick warnings: ${rawWarningCodes.join(", ") || "none"}.`,
     ...rawWarningDetails,
     `- ${schemaCatalogText}.`,
   ];
+  if (hasExtractionPolicy) {
+    lines.push(compactScanLineLimit !== null || compactScanMaxBytes !== null
+      ? `- Compact fallback policy: scan first ${compactScanLineLimit ?? "n/a"} lines up to ${compactScanMaxBytes ?? "n/a"} bytes from compact source files when target markets remain uncovered.`
+      : "- Compact fallback policy: not recorded.");
+  }
   if (uncoveredSample.length) {
     const omitted = numberOrDefault(targetSamples.omittedUncoveredCount, 0);
     lines.push(`- Uncovered target sample: ${uncoveredSample.join(", ")}${omitted > 0 ? ` (+${omitted} more)` : ""}.`);
