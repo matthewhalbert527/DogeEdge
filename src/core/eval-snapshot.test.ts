@@ -209,10 +209,10 @@ describe("continuous evaluation snapshot exporter", () => {
     expect(readFileSync(extractedFile, "utf8")).toContain("KXDOGE15M-FIXTURE");
   });
 
-  it("recovers target markets that are only present before the default tail sample window", async () => {
+  it("recovers target markets in the middle of large raw snapshot files", async () => {
     const fixture = writeEvalFixture({ rawSnapshotMarketTicker: null });
     const rawSnapshotsDir = path.join(fixture.dataRoot, "raw", "snapshots");
-    const formatRawSnapshot = (marketTicker: string, ts: string) => JSON.stringify({
+    const formatRawSnapshot = (marketTicker: string, ts: string, index = 0) => JSON.stringify({
       capturedAt: ts,
       runtimeSnapshot: { generatedAt: ts, feed: { status: "ok" } },
       paperInput: {
@@ -226,17 +226,19 @@ describe("continuous evaluation snapshot exporter", () => {
         noBid: 0.58,
         noAsk: 0.59,
         marketStatus: "open",
+        note: `noise-${index}-${"x".repeat(72)}`,
       },
     });
-    const noisyRawLines = [
-      formatRawSnapshot("KXDOGE15M-FIXTURE", "2026-06-07T20:00:00.000Z"),
-      ...Array.from({ length: 3000 }, (_, index) => {
-        const minute = String(index % 60).padStart(2, "0");
-        const second = String(index % 60).padStart(2, "0");
-        return formatRawSnapshot(`KXDOGE15M-NOISE-${index}`, `2026-06-07T20:${minute}:${second}.000Z`);
-      }),
-    ];
-    writeFileSync(path.join(rawSnapshotsDir, "tail-biased.jsonl"), `${noisyRawLines.join("\n")}\n`);
+    const noisyRawLines = Array.from({ length: 5000 }, (_, index) => {
+      const minute = String(Math.floor(index / 60) % 60).padStart(2, "0");
+      const second = String(index % 60).padStart(2, "0");
+      return formatRawSnapshot(
+        index === 2500 ? "KXDOGE15M-FIXTURE" : `KXDOGE15M-NOISE-${index}`,
+        `2026-06-07T20:${minute}:${second}.000Z`,
+        index,
+      );
+    });
+    writeFileSync(path.join(rawSnapshotsDir, "middle-biased.jsonl"), `${noisyRawLines.join("\n")}\n`);
 
     const result = await exportEvaluationSnapshot({
       dataRoot: fixture.dataRoot,
@@ -264,6 +266,8 @@ describe("continuous evaluation snapshot exporter", () => {
     });
     expect(rawTickManifest.warningCodes).toContain("raw_market_tick_jsonl_sample");
     expect(rawTickManifest.warningCodes).not.toContain("raw_market_tick_target_coverage_gap");
+    expect(rawTickManifest.extractionPolicy.supplementalScanPasses).toBeGreaterThan(0);
+    expect(rawTickManifest.extractionPolicy.supplementalScanBytes).toBeGreaterThan(0);
     expect(readFileSync(extractedFile, "utf8")).toContain("KXDOGE15M-FIXTURE");
   });
 

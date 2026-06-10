@@ -1098,6 +1098,8 @@ function rawMarketTickBundleSummary(manifest, manifestPresent) {
       sourceLineLimit: numberOrNull(extractionPolicy.sourceLineLimit),
       sourceScanBytes: numberOrNull(extractionPolicy.sourceScanBytes),
       sourceHeadScanBytes: numberOrNull(extractionPolicy.sourceHeadScanBytes),
+      supplementalScanPasses: numberOrNull(extractionPolicy.supplementalScanPasses),
+      supplementalScanBytes: numberOrNull(extractionPolicy.supplementalScanBytes),
     },
     warningCodes,
   };
@@ -2773,14 +2775,19 @@ async function writeRawMarketTicksManifest({
       maxRowsPerMarket: maxRawTickRowsPerMarket,
       sourceFileDiscoveryLimit,
       sourceLineLimit: jsonlFiles.sourceLineLimit,
-      sourceScanBytes: jsonlFiles.sourceScanBytes,
-      sourceHeadScanBytes: jsonlFiles.sourceHeadScanBytes,
-    },
+    sourceScanBytes: jsonlFiles.sourceScanBytes,
+    sourceHeadScanBytes: jsonlFiles.sourceHeadScanBytes,
+    supplementalScanPasses: jsonlFiles.supplementalScanPasses,
+    supplementalScanBytes: jsonlFiles.supplementalScanBytes,
+  },
     warningCodes: [
       "raw_market_tick_parquet_absent",
       ...(requestedFormat === "jsonl" && !available ? ["raw_market_tick_jsonl_absent"] : []),
       ...(extractedJsonlFiles.length > 0 ? ["raw_market_tick_jsonl_sample"] : []),
       ...(uncoveredTargetMarkets.length > 0 ? ["raw_market_tick_target_coverage_gap"] : []),
+      ...(extractedJsonlFiles.length > 0 && jsonlFiles.supplementalScanPasses > 0 && uncoveredTargetMarkets.length > 0
+        ? ["raw_market_tick_scan_budget_exhausted"]
+        : []),
       ...(sources.length === 0 ? ["raw_snapshot_source_absent"] : []),
       ...(sources.some((source) => source.hashSkipped) ? ["raw_snapshot_hash_skipped_large_file"] : []),
     ],
@@ -2835,6 +2842,9 @@ async function writeRawTickJsonlSamples({
       sourceLineLimit: resolvedSourceLineLimit,
       sourceScanBytes: resolvedSourceScanBytes,
       sourceHeadScanBytes: resolvedSourceHeadScanBytes,
+      supplementalScanPasses: 0,
+      supplementalScanBytes: 0,
+      supplementalWindowBytes: 0,
     };
   }
   const jsonlDir = path.join(dir, "jsonl");
@@ -2866,6 +2876,8 @@ async function writeRawTickJsonlSamples({
   const missingMarketCount = () => targets.size > 0
     ? [...targets].filter((marketTicker) => !rowsByMarket.has(marketTicker)).length
     : 0;
+  const supplementalScanBytes = Math.max(512 * 1024, Math.floor(resolvedSourceScanBytes / 4));
+  let supplementalScanPasses = 0;
   for (const file of rawSnapshotFiles) {
     const lines = await readTailLines(file, resolvedSourceLineLimit, resolvedSourceScanBytes);
     for (const line of lines) {
@@ -2875,6 +2887,19 @@ async function writeRawTickJsonlSamples({
       const fallbackLines = await readHeadLines(file, resolvedSourceLineLimit, resolvedSourceHeadScanBytes);
       for (const line of fallbackLines) {
         addLineForMarket(line);
+      }
+    }
+    if (targets.size > 0 && missingMarketCount() > 0) {
+      const fileInfo = await stat(file).catch(() => null);
+      const fileSize = fileInfo?.size ?? 0;
+      const supplementalOffsets = supplementalLineScanOffsets(fileSize, supplementalScanBytes, 3);
+      for (const byteOffset of supplementalOffsets) {
+        const fallbackSampleLines = await readByteRangeLines(file, resolvedSourceLineLimit, supplementalScanBytes, byteOffset);
+        for (const line of fallbackSampleLines) {
+          addLineForMarket(line);
+        }
+        supplementalScanPasses += 1;
+        if (targets.size > 0 && missingMarketCount() === 0) break;
       }
     }
     if (targets.size === 0 && rowsByMarket.size >= 20) break;
@@ -2892,7 +2917,26 @@ async function writeRawTickJsonlSamples({
     sourceLineLimit: resolvedSourceLineLimit,
     sourceScanBytes: resolvedSourceScanBytes,
     sourceHeadScanBytes: resolvedSourceHeadScanBytes,
+    supplementalScanPasses,
+    supplementalScanBytes,
+    supplementalWindowBytes: supplementalScanBytes,
   };
+}
+
+function supplementalLineScanOffsets(fileSize, windowBytes, passCount) {
+  const parsedFileSize = Number(fileSize);
+  const parsedWindowBytes = Number(windowBytes);
+  if (!Number.isFinite(parsedFileSize) || !Number.isFinite(parsedWindowBytes) || parsedFileSize <= parsedWindowBytes) return [];
+  const effectivePasses = Math.max(0, Math.min(3, Math.floor(passCount)));
+  if (effectivePasses <= 0) return [];
+  const maxStart = Math.max(0, parsedFileSize - parsedWindowBytes);
+  if (maxStart <= 0) return [];
+  const values = [];
+  for (let index = 1; index <= effectivePasses; index += 1) {
+    const start = Math.floor((maxStart * index) / (effectivePasses + 1));
+    values.push(start);
+  }
+  return [...new Set(values)].sort((left, right) => left - right);
 }
 
 function compactRawTickRow(raw, sourceLine, context) {
@@ -3238,14 +3282,21 @@ async function readTailLines(filePath, maxLines, maxBytes = 8 * 1024 * 1024) {
 }
 
 async function readHeadLines(filePath, maxLines, maxBytes = 8 * 1024 * 1024) {
+  return readByteRangeLines(filePath, maxLines, maxBytes, 0);
+}
+
+async function readByteRangeLines(filePath, maxLines, maxBytes = 8 * 1024 * 1024, byteOffset = 0) {
   if (!filePath || maxLines <= 0 || maxBytes <= 0 || !(await exists(filePath))) return [];
   const info = await stat(filePath);
+  if (!Number.isFinite(info.size) || info.size <= 0) return [];
   const readSize = Math.min(maxBytes, info.size);
   if (!Number.isFinite(readSize) || readSize <= 0) return [];
+  const maxOffset = Math.max(0, info.size - readSize);
+  const offset = Math.max(0, Math.min(Math.floor(byteOffset), maxOffset));
   const buffer = Buffer.alloc(readSize);
   const handle = await import("node:fs/promises").then((mod) => mod.open(filePath, "r"));
   try {
-    await handle.read(buffer, 0, readSize, 0);
+    await handle.read(buffer, 0, readSize, offset);
   } finally {
     await handle.close();
   }
