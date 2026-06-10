@@ -1014,6 +1014,7 @@ function rawMarketTickBundleSummary(manifest, manifestPresent) {
   const parseOk = isRecord(manifest);
   const sourceSnapshotFiles = Array.isArray(manifest?.sourceSnapshotFiles) ? manifest.sourceSnapshotFiles : [];
   const targetMarkets = Array.isArray(manifest?.targetMarkets) ? manifest.targetMarkets : [];
+  const targetMarketRequestedCount = numberOrZero(manifest?.targetMarketRequestedCount ?? targetMarkets.length);
   const extractionPolicy = isRecord(manifest?.extractionPolicy) ? manifest.extractionPolicy : {};
   const coveredTargetMarkets = uniqueStrings(
     Array.isArray(manifest?.coveredTargetMarkets)
@@ -1033,8 +1034,11 @@ function rawMarketTickBundleSummary(manifest, manifestPresent) {
     ? manifest.exportedFormat
     : manifest?.available === true && typeof manifest?.format === "string" ? manifest.format : null;
   const targetMarketCount = numberOrZero(manifest?.targetMarketCount ?? targetMarkets.length);
+  const targetMarketLimit = numberOrNull(manifest?.targetMarketLimit ?? extractionPolicy.maxTargetMarkets);
+  const targetMarketOmittedCount = numberOrZero(manifest?.targetMarketOmittedCount ?? Math.max(0, targetMarketRequestedCount - targetMarketCount));
   const coveredTargetMarketCount = numberOrZero(manifest?.coveredTargetMarketCount ?? jsonlFiles.length);
   const uncoveredTargetMarketCount = numberOrZero(manifest?.uncoveredTargetMarketCount ?? Math.max(0, targetMarketCount - coveredTargetMarketCount));
+  const targetMarketCoverageDenominator = targetMarketRequestedCount > 0 ? targetMarketRequestedCount : targetMarketCount;
   const sourceSnapshotFileCount = numberOrZero(manifest?.sourceSnapshotFileCount ?? sourceSnapshotFiles.length);
   const hashedSourceSnapshotFileCount = numberOrZero(manifest?.hashedSourceSnapshotFileCount ?? sourceSnapshotFiles.filter((source) => source?.sha256).length);
   const hashSkippedSourceSnapshotFileCount = numberOrZero(manifest?.hashSkippedSourceSnapshotFileCount ?? sourceSnapshotFiles.filter((source) => source?.hashSkipped).length);
@@ -1066,13 +1070,18 @@ function rawMarketTickBundleSummary(manifest, manifestPresent) {
     reason: typeof manifest?.reason === "string" ? manifest.reason : null,
     parquetAvailable: manifest?.parquetAvailable === true,
     jsonlAvailable: manifest?.jsonlAvailable === true,
+    targetMarketRequestedCount,
     targetMarketCount,
+    targetMarketLimit,
+    targetMarketOmittedCount,
     jsonlFileCount: jsonlFiles.length,
     sourceSnapshotFileCount,
     targetMarketCoverage: {
       covered: coveredTargetMarketCount,
-      uncovered: uncoveredTargetMarketCount,
-      ratio: targetMarketCount > 0 ? roundDisplayRatio(coveredTargetMarketCount / targetMarketCount) : null,
+      uncovered: targetMarketRequestedCount > 0
+        ? Math.max(0, targetMarketCoverageDenominator - coveredTargetMarketCount)
+        : uncoveredTargetMarketCount,
+      ratio: targetMarketCoverageDenominator > 0 ? roundDisplayRatio(coveredTargetMarketCount / targetMarketCoverageDenominator) : null,
     },
     targetMarketSamples: {
       covered: coveredTargetSample,
@@ -2687,10 +2696,14 @@ async function writeRawMarketTicksManifest({
     [".jsonl", ".ndjson", ".json", ".csv"],
     sourceFileDiscoveryLimit,
   );
-  const targetMarkets = uniqueStrings([
+  const allTargetMarkets = uniqueStrings([
     ...decisionRows.map((row) => row.marketTicker),
     ...tradeRows.map((row) => row.marketTicker),
-  ]).sort().slice(0, Math.max(1, maxRawTickMarkets));
+  ]).sort();
+  const targetMarketLimit = Math.max(1, maxRawTickMarkets);
+  const targetMarkets = allTargetMarkets.slice(0, targetMarketLimit);
+  const targetMarketRequestedCount = allTargetMarkets.length;
+  const targetMarketOmittedCount = Math.max(0, targetMarketRequestedCount - targetMarkets.length);
   const sourceLineLimit = Math.max(2_000, Math.min(50_000, targetMarkets.length * 2_000));
   const sourceScanBytes = Math.min(64 * 1024 * 1024, Math.max(4 * 1024 * 1024, targetMarkets.length * 4 * 1024 * 1024));
   const sourceHeadScanBytes = Math.max(256 * 1024, Math.min(2 * 1024 * 1024, sourceScanBytes));
@@ -2748,6 +2761,9 @@ async function writeRawMarketTicksManifest({
     jsonlDirectory: "raw_market_ticks/jsonl/<market_ticker>.jsonl",
     targetMarkets,
     targetMarketCount: targetMarkets.length,
+    targetMarketRequestedCount,
+    targetMarketLimit,
+    targetMarketOmittedCount,
     coveredTargetMarkets,
     uncoveredTargetMarkets,
     coveredTargetMarketCount: coveredTargetMarkets.length,
@@ -2771,7 +2787,7 @@ async function writeRawMarketTicksManifest({
       hashSkippedByteRatio: sourceHashPolicy.hashSkippedByteRatio,
     },
     extractionPolicy: {
-      maxTargetMarkets: maxRawTickMarkets,
+      maxTargetMarkets: targetMarketLimit,
       maxRowsPerMarket: maxRawTickRowsPerMarket,
       sourceFileDiscoveryLimit,
       sourceLineLimit: jsonlFiles.sourceLineLimit,
@@ -2785,6 +2801,7 @@ async function writeRawMarketTicksManifest({
       ...(requestedFormat === "jsonl" && !available ? ["raw_market_tick_jsonl_absent"] : []),
       ...(extractedJsonlFiles.length > 0 ? ["raw_market_tick_jsonl_sample"] : []),
       ...(uncoveredTargetMarkets.length > 0 ? ["raw_market_tick_target_coverage_gap"] : []),
+      ...(targetMarketOmittedCount > 0 ? ["raw_market_tick_target_market_truncated"] : []),
       ...(extractedJsonlFiles.length > 0 && jsonlFiles.supplementalScanPasses > 0 && uncoveredTargetMarkets.length > 0
         ? ["raw_market_tick_scan_budget_exhausted"]
         : []),

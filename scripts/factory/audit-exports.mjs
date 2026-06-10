@@ -206,6 +206,7 @@ function bundleEvidenceSummary({ bundleManifest, rawTicksManifest }) {
   const rawCoverage = objectOrEmpty(rawExport.targetMarketCoverage);
   const rawTargetSamples = objectOrEmpty(rawExport.targetMarketSamples);
   const sourceHash = objectOrEmpty(rawExport.sourceHash);
+  const extractionPolicy = objectOrEmpty(rawExport.extractionPolicy);
   const rawSourceFiles = Array.isArray(rawTicksManifest?.sourceSnapshotFiles) ? rawTicksManifest.sourceSnapshotFiles : [];
   const rawSourceHashPolicy = objectOrEmpty(rawTicksManifest?.sourceHashPolicy);
   const covered = numberOrDefault(rawCoverage.covered, numberOrDefault(rawTicksManifest?.coveredTargetMarketCount, 0));
@@ -213,6 +214,14 @@ function bundleEvidenceSummary({ bundleManifest, rawTicksManifest }) {
   const targetMarketCount = numberOrDefault(
     rawExport.targetMarketCount,
     numberOrDefault(rawTicksManifest?.targetMarketCount, covered + uncovered),
+  );
+  const targetMarketRequestedCount = numberOrDefault(
+    rawExport.targetMarketRequestedCount,
+    numberOrDefault(rawTicksManifest?.targetMarketRequestedCount, targetMarketCount),
+  );
+  const targetMarketOmittedCount = numberOrDefault(
+    rawExport.targetMarketOmittedCount,
+    Math.max(0, targetMarketRequestedCount - targetMarketCount),
   );
   const coverageRatio = numberOrDefault(
     rawCoverage.ratio,
@@ -266,7 +275,10 @@ function bundleEvidenceSummary({ bundleManifest, rawTicksManifest }) {
       reason: stringOrNull(rawExport.reason ?? rawTicksManifest?.reason),
       requestedFormat: stringOrNull(rawExport.requestedFormat ?? rawTicksManifest?.requestedFormat),
       exportedFormat: stringOrNull(rawExport.exportedFormat ?? rawTicksManifest?.exportedFormat ?? rawTicksManifest?.format),
+      targetMarketRequestedCount,
       targetMarketCount,
+      targetMarketLimit: numberOrDefault(rawExport.targetMarketLimit, numberOrDefault(extractionPolicy.maxTargetMarkets, numberOrDefault(rawTicksManifest?.targetMarketLimit, targetMarketCount))),
+      targetMarketOmittedCount,
       jsonlFileCount: numberOrDefault(rawExport.jsonlFileCount, Array.isArray(rawTicksManifest?.jsonlFiles) ? rawTicksManifest.jsonlFiles.length : 0),
       sourceSnapshotFileCount: numberOrDefault(rawExport.sourceSnapshotFileCount, numberOrDefault(rawTicksManifest?.sourceSnapshotFileCount, 0)),
       coverage: {
@@ -818,7 +830,9 @@ function bundleEvidenceMarkdown(summary) {
   const targetSamples = raw.targetMarketSamples ?? {};
   const sourceHash = raw.sourceHash ?? {};
   const extractionPolicy = raw.extractionPolicy ?? {};
-  const totalTargets = raw.targetMarketCount || numberOrDefault(coverage.covered, 0) + numberOrDefault(coverage.uncovered, 0);
+  const totalTargets = raw.targetMarketRequestedCount
+    || raw.targetMarketCount
+    || numberOrDefault(coverage.covered, 0) + numberOrDefault(coverage.uncovered, 0);
   const coveragePercent = typeof coverage.ratio === "number" ? `${Math.round(coverage.ratio * 1000) / 10}%` : "n/a";
   const sourceScanBudget = [
     numberOrDefault(extractionPolicy.sourceFileDiscoveryLimit, null),
@@ -855,6 +869,9 @@ function bundleEvidenceMarkdown(summary) {
   if (uncoveredSample.length) {
     const omitted = numberOrDefault(targetSamples.omittedUncoveredCount, 0);
     lines.push(`- Uncovered target sample: ${uncoveredSample.join(", ")}${omitted > 0 ? ` (+${omitted} more)` : ""}.`);
+  }
+  if (numberOrDefault(raw.targetMarketOmittedCount, 0) > 0) {
+    lines.push(`- Target market selection was truncated: ${raw.targetMarketRequestedCount ?? raw.targetMarketCount ?? 0} requested, ${raw.targetMarketCount ?? 0} exported.`);
   }
   if (skippedSourceSample.length) {
     const omitted = numberOrDefault(sourceHash.omittedSkippedLargeFileCount, 0);

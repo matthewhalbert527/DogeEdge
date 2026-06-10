@@ -209,6 +209,82 @@ describe("continuous evaluation snapshot exporter", () => {
     expect(readFileSync(extractedFile, "utf8")).toContain("KXDOGE15M-FIXTURE");
   });
 
+  it("records raw tick target market truncation when maxRawTickMarkets is small", async () => {
+    const fixture = writeEvalFixture({ rawSnapshotMarketTicker: null });
+    const framesPath = path.join(fixture.dataRoot, "features", "decision-frames", "records.jsonl");
+    const rawSnapshotsPath = path.join(fixture.dataRoot, "raw", "snapshots", "records.jsonl");
+    const truncatedMarkets = ["KXDOGE15M-Z1", "KXDOGE15M-Z2", "KXDOGE15M-Z3", "KXDOGE15M-Z4"];
+    const formatDecisionFrame = (marketTicker: string, observedAt: string, idSuffix: string) => `${JSON.stringify({
+      id: `frame-${idSuffix}`,
+      marketTicker,
+      observedAt,
+      capturedAt: observedAt,
+      featureTimestamp: observedAt,
+      labelTimestamp: "2026-06-07T21:00:00.000Z",
+      settlementTimestamp: "2026-06-07T21:00:00.000Z",
+      labelSource: "pre_close_frame_proxy",
+      settlementSource: "estimated",
+      marketCloseTimestamp: "2026-06-07T21:00:00.000Z",
+      secondsToClose: 300,
+      targetPrice: 0.25,
+      estimate: 0.251,
+      spotPrice: 0.251,
+      modelAction: "buy_yes",
+      yesBid: 0.4,
+      yesAsk: 0.41,
+      noBid: 0.58,
+      noAsk: 0.59,
+    })}\n`;
+    const formatRawSnapshot = (marketTicker: string, capturedAt: string) => `${JSON.stringify({
+      capturedAt,
+      runtimeSnapshot: { generatedAt: capturedAt, feed: { status: "ok" } },
+      paperInput: {
+        ticker: marketTicker,
+        observedAt: capturedAt,
+        action: "buy_yes",
+        selectedAsk: 0.41,
+        sizeContracts: 2,
+        yesBid: 0.4,
+        yesAsk: 0.41,
+        noBid: 0.58,
+        noAsk: 0.59,
+        marketStatus: "open",
+      },
+    })}\n`;
+
+    for (const [index, marketTicker] of truncatedMarkets.entries()) {
+      writeFileSync(framesPath, formatDecisionFrame(marketTicker, `2026-06-07T20:${String(20 + index).padStart(2, "0")}:00.000Z`, `extra-${index + 1}`), { flag: "a" });
+      writeFileSync(rawSnapshotsPath, formatRawSnapshot(marketTicker, "2026-06-07T20:10:00.250Z"), { flag: "a" });
+    }
+    writeFileSync(rawSnapshotsPath, formatRawSnapshot("KXDOGE15M-FIXTURE", "2026-06-07T20:10:00.250Z"), { flag: "a" });
+
+    const result = await exportEvaluationSnapshot({
+      dataRoot: fixture.dataRoot,
+      storageDir: fixture.storageDir,
+      backtestsDir: fixture.backtestsDir,
+      outDir: fixture.outDir,
+      now: "2026-06-07T20:30:00.000Z",
+      maxRowLines: 10,
+      maxMetrics: 10,
+      maxRawTickMarkets: 2,
+    });
+
+    const rawTickManifest = JSON.parse(readFileSync(path.join(result.snapshotDir, "raw_market_ticks", "manifest.json"), "utf8"));
+    expect(rawTickManifest).toMatchObject({
+      targetMarketRequestedCount: 5,
+      targetMarketCount: 2,
+      targetMarketLimit: 2,
+      targetMarketOmittedCount: 3,
+    });
+    expect(rawTickManifest.available).toBe(true);
+    expect(rawTickManifest.availabilityStatus).toBe("sample_exported");
+    expect(rawTickManifest.warningCodes).toContain("raw_market_tick_target_market_truncated");
+    expect(rawTickManifest.warningCodes).not.toContain("raw_market_tick_target_coverage_gap");
+    expect(rawTickManifest.warningCodes).toContain("raw_market_tick_jsonl_sample");
+    expect(rawTickManifest.coveredTargetMarketCount).toBe(2);
+    expect(rawTickManifest.uncoveredTargetMarketCount).toBe(0);
+  });
+
   it("recovers target markets in the middle of large raw snapshot files", async () => {
     const fixture = writeEvalFixture({ rawSnapshotMarketTicker: null });
     const rawSnapshotsDir = path.join(fixture.dataRoot, "raw", "snapshots");
