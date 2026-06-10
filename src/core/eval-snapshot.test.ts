@@ -106,6 +106,7 @@ describe("continuous evaluation snapshot exporter", () => {
     const schedulerBudget = JSON.parse(readFileSync(path.join(result.snapshotDir, "scheduler_budget_report.json"), "utf8"));
     expect(schedulerBudget).toMatchObject({ unsupportedNormalBudgetRows: 0 });
     const rawTickManifest = JSON.parse(readFileSync(path.join(result.snapshotDir, "raw_market_ticks", "manifest.json"), "utf8"));
+    const rawTickSchema = JSON.parse(readFileSync(path.join(result.snapshotDir, "raw_market_ticks", "schema.json"), "utf8"));
     expect(rawTickManifest).toMatchObject({
       schemaVersion: "dogeedge.raw-market-ticks.manifest.v1",
       generatedAt: snapshot.generatedAt,
@@ -138,6 +139,17 @@ describe("continuous evaluation snapshot exporter", () => {
     });
     expect(rawTickManifest.sourceHashPolicy.totalSourceBytes).toBeGreaterThan(0);
     expect(rawTickManifest.sourceHashPolicy.hashedSourceBytes).toBe(rawTickManifest.sourceHashPolicy.totalSourceBytes);
+    expect(rawTickSchema.fields).toEqual(expect.arrayContaining([
+      "spot_price",
+      "target_price",
+      "seconds_to_close",
+    ]));
+    const rawTickLine = readFileSync(path.join(result.snapshotDir, "raw_market_ticks", "jsonl", "KXDOGE15M-FIXTURE.jsonl"), "utf8").trim();
+    if (rawTickLine.length > 0) {
+      const rawTickRow = JSON.parse(rawTickLine.split("\n")[0]);
+      const schemaFields = new Set(rawTickSchema.fields ?? []);
+      expect(Object.keys(rawTickRow).every((field) => schemaFields.has(field))).toBe(true);
+    }
     expect(readFileSync(path.join(result.snapshotDir, "raw_market_ticks", "jsonl", "KXDOGE15M-FIXTURE.jsonl"), "utf8")).toContain("orderbook_snapshot");
     const history = JSON.parse(readFileSync(path.join(fixture.outDir, "snapshot-history-48h.json"), "utf8"));
     expect(history.schemaVersion).toBe("dogeedge.eval.snapshot-history.v1");
