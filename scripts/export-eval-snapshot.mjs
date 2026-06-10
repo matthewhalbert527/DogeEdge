@@ -262,6 +262,56 @@ const decisionRowsColumns = [
   "sourceLine",
 ];
 
+const decisionFramesSchemaFields = [
+  "snapshot_id",
+  "row_id",
+  "source_file_hash",
+  "source_line",
+  "captured_at",
+  "observed_at",
+  "feature_timestamp",
+  "decision_timestamp",
+  "label_timestamp",
+  "settlement_timestamp",
+  "label_source",
+  "settlement_source",
+  "official_resolution_available",
+  "market_close_timestamp",
+  "market_ticker",
+  "target_price",
+  "research_candidate_id",
+  "candidate_config_hash",
+  "estimate",
+  "spot_price",
+  "distance_from_target",
+  "one_minute_change",
+  "seconds_to_close",
+  "yes_bid",
+  "yes_ask",
+  "no_bid",
+  "no_ask",
+  "yes_bid_depth",
+  "yes_ask_depth",
+  "no_bid_depth",
+  "no_ask_depth",
+  "decision_action",
+  "side",
+  "attempted",
+  "accepted",
+  "reject_code",
+  "reject_message",
+  "model_edge_after_fees",
+  "regime.time_to_close",
+  "regime.spread",
+  "regime.liquidity",
+  "regime.volatility",
+  "regime.momentum",
+  "regime.distance",
+  "regime.phase",
+  "independent_key",
+  "overlap_count",
+];
+
 const tradeRowsColumns = [
   "snapshotId",
   "tradeId",
@@ -609,17 +659,72 @@ export async function exportEvaluationSnapshot(options = {}) {
   });
 
   const filesToWrite = [
-    { logicalName: "algoMetrics.tsv.gz", relativePath: "algoMetrics.tsv.gz", content: tsv(algoMetricsColumns, algoRollup.map((row) => flattenAlgoMetrics(row))) },
-    { logicalName: "foldMetrics.tsv.gz", relativePath: "foldMetrics.tsv.gz", content: tsv(foldMetricsColumns, foldMetrics) },
-    { logicalName: "decisionAggregates.tsv.gz", relativePath: "decisionAggregates.tsv.gz", content: tsv(decisionAggregateColumns, decisionAggregates) },
-    { logicalName: "tradeAggregates.tsv.gz", relativePath: "tradeAggregates.tsv.gz", content: tsv(tradeAggregateColumns, tradeAggregates) },
-    { logicalName: "warnings.tsv.gz", relativePath: "warnings.tsv.gz", content: tsv(warningsColumns, warnings.map(flattenWarning)) },
-    { logicalName: "roster_alignment.tsv.gz", relativePath: "roster_alignment.tsv.gz", content: tsv(rosterAlignmentColumns, alignmentArtifacts.rosterAlignment) },
-    { logicalName: "research_coverage_by_family.tsv.gz", relativePath: "research_coverage_by_family.tsv.gz", content: tsv(familyCoverageColumns, alignmentArtifacts.researchCoverage) },
-    { logicalName: "live_coverage_by_family.tsv.gz", relativePath: "live_coverage_by_family.tsv.gz", content: tsv(familyCoverageColumns, alignmentArtifacts.liveCoverage) },
-    { logicalName: "unsupported_live_families.tsv.gz", relativePath: "unsupported_live_families.tsv.gz", content: tsv(familyCoverageColumns, alignmentArtifacts.unsupportedLiveFamilies) },
-    { logicalName: "promotion_gate_results.tsv.gz", relativePath: "promotion_gate_results.tsv.gz", content: tsv(promotionGateColumns, alignmentArtifacts.promotionGateResults) },
-    { logicalName: "post_close_frame_audit.tsv.gz", relativePath: "post_close_frame_audit.tsv.gz", content: tsv(postCloseAuditColumns, [alignmentArtifacts.postCloseFrameAudit]) },
+    {
+      logicalName: "algoMetrics.tsv.gz",
+      relativePath: "algoMetrics.tsv.gz",
+      content: tsv(algoMetricsColumns, algoRollup.map((row) => flattenAlgoMetrics(row))),
+      schema: { format: "tsv", columns: algoMetricsColumns, kind: "table" },
+    },
+    {
+      logicalName: "foldMetrics.tsv.gz",
+      relativePath: "foldMetrics.tsv.gz",
+      content: tsv(foldMetricsColumns, foldMetrics),
+      schema: { format: "tsv", columns: foldMetricsColumns, kind: "table" },
+    },
+    {
+      logicalName: "decisionAggregates.tsv.gz",
+      relativePath: "decisionAggregates.tsv.gz",
+      content: tsv(decisionAggregateColumns, decisionAggregates),
+      schema: { format: "tsv", columns: decisionAggregateColumns, kind: "table" },
+    },
+    {
+      logicalName: "tradeAggregates.tsv.gz",
+      relativePath: "tradeAggregates.tsv.gz",
+      content: tsv(tradeAggregateColumns, tradeAggregates),
+      schema: { format: "tsv", columns: tradeAggregateColumns, kind: "table" },
+    },
+    {
+      logicalName: "warnings.tsv.gz",
+      relativePath: "warnings.tsv.gz",
+      content: tsv(warningsColumns, warnings.map(flattenWarning)),
+      schema: { format: "tsv", columns: warningsColumns, kind: "table" },
+    },
+    {
+      logicalName: "roster_alignment.tsv.gz",
+      relativePath: "roster_alignment.tsv.gz",
+      content: tsv(rosterAlignmentColumns, alignmentArtifacts.rosterAlignment),
+      schema: { format: "tsv", columns: rosterAlignmentColumns, kind: "table" },
+    },
+    {
+      logicalName: "research_coverage_by_family.tsv.gz",
+      relativePath: "research_coverage_by_family.tsv.gz",
+      content: tsv(familyCoverageColumns, alignmentArtifacts.researchCoverage),
+      schema: { format: "tsv", columns: familyCoverageColumns, kind: "table" },
+    },
+    {
+      logicalName: "live_coverage_by_family.tsv.gz",
+      relativePath: "live_coverage_by_family.tsv.gz",
+      content: tsv(familyCoverageColumns, alignmentArtifacts.liveCoverage),
+      schema: { format: "tsv", columns: familyCoverageColumns, kind: "table" },
+    },
+    {
+      logicalName: "unsupported_live_families.tsv.gz",
+      relativePath: "unsupported_live_families.tsv.gz",
+      content: tsv(familyCoverageColumns, alignmentArtifacts.unsupportedLiveFamilies),
+      schema: { format: "tsv", columns: familyCoverageColumns, kind: "table" },
+    },
+    {
+      logicalName: "promotion_gate_results.tsv.gz",
+      relativePath: "promotion_gate_results.tsv.gz",
+      content: tsv(promotionGateColumns, alignmentArtifacts.promotionGateResults),
+      schema: { format: "tsv", columns: promotionGateColumns, kind: "table" },
+    },
+    {
+      logicalName: "post_close_frame_audit.tsv.gz",
+      relativePath: "post_close_frame_audit.tsv.gz",
+      content: tsv(postCloseAuditColumns, [alignmentArtifacts.postCloseFrameAudit]),
+      schema: { format: "tsv", columns: postCloseAuditColumns, kind: "table" },
+    },
   ];
 
   if (includeRows) {
@@ -636,8 +741,18 @@ export async function exportEvaluationSnapshot(options = {}) {
     decisionRows = enrichRowsWithCandidateIdentity(decisionRows, identityByAlgoId);
     tradeRows = enrichRowsWithCandidateIdentity(tradeRows, identityByAlgoId);
     filesToWrite.push(
-      { logicalName: "decisionRows.tsv.gz", relativePath: "decisionRows.tsv.gz", content: tsv(decisionRowsColumns, decisionRows) },
-      { logicalName: "tradeRows.tsv.gz", relativePath: "tradeRows.tsv.gz", content: tsv(tradeRowsColumns, tradeRows) },
+      {
+        logicalName: "decisionRows.tsv.gz",
+        relativePath: "decisionRows.tsv.gz",
+        content: tsv(decisionRowsColumns, decisionRows),
+        schema: { format: "tsv", columns: decisionRowsColumns, kind: "table" },
+      },
+      {
+        logicalName: "tradeRows.tsv.gz",
+        relativePath: "tradeRows.tsv.gz",
+        content: tsv(tradeRowsColumns, tradeRows),
+        schema: { format: "tsv", columns: tradeRowsColumns, kind: "table" },
+      },
     );
   }
   const identityArtifacts = exactCandidateArtifacts({
@@ -650,12 +765,37 @@ export async function exportEvaluationSnapshot(options = {}) {
     metricByAlgoId,
     alignmentArtifacts,
   });
-  filesToWrite.push(
-    { logicalName: "candidate_lineage_audit.tsv.gz", relativePath: "candidate_lineage_audit.tsv.gz", content: tsv(candidateLineageAuditColumns, identityArtifacts.candidateLineageAudit) },
-    { logicalName: "unlinked_live_rows.tsv.gz", relativePath: "unlinked_live_rows.tsv.gz", content: tsv(unlinkedLiveRowsColumns, identityArtifacts.unlinkedLiveRows) },
-    { logicalName: "evidence_allocation_by_family.tsv.gz", relativePath: "evidence_allocation_by_family.tsv.gz", content: tsv(evidenceAllocationByFamilyColumns, identityArtifacts.evidenceAllocationByFamily) },
-    { logicalName: "evidence_allocation_by_candidate.tsv.gz", relativePath: "evidence_allocation_by_candidate.tsv.gz", content: tsv(evidenceAllocationByCandidateColumns, identityArtifacts.evidenceAllocationByCandidate) },
-    { logicalName: "missing_provenance_rows.tsv.gz", relativePath: "missing_provenance_rows.tsv.gz", content: tsv(missingProvenanceRowsColumns, identityArtifacts.missingProvenanceRows) },
+    filesToWrite.push(
+    {
+      logicalName: "candidate_lineage_audit.tsv.gz",
+      relativePath: "candidate_lineage_audit.tsv.gz",
+      content: tsv(candidateLineageAuditColumns, identityArtifacts.candidateLineageAudit),
+      schema: { format: "tsv", columns: candidateLineageAuditColumns, kind: "table" },
+    },
+    {
+      logicalName: "unlinked_live_rows.tsv.gz",
+      relativePath: "unlinked_live_rows.tsv.gz",
+      content: tsv(unlinkedLiveRowsColumns, identityArtifacts.unlinkedLiveRows),
+      schema: { format: "tsv", columns: unlinkedLiveRowsColumns, kind: "table" },
+    },
+    {
+      logicalName: "evidence_allocation_by_family.tsv.gz",
+      relativePath: "evidence_allocation_by_family.tsv.gz",
+      content: tsv(evidenceAllocationByFamilyColumns, identityArtifacts.evidenceAllocationByFamily),
+      schema: { format: "tsv", columns: evidenceAllocationByFamilyColumns, kind: "table" },
+    },
+    {
+      logicalName: "evidence_allocation_by_candidate.tsv.gz",
+      relativePath: "evidence_allocation_by_candidate.tsv.gz",
+      content: tsv(evidenceAllocationByCandidateColumns, identityArtifacts.evidenceAllocationByCandidate),
+      schema: { format: "tsv", columns: evidenceAllocationByCandidateColumns, kind: "table" },
+    },
+    {
+      logicalName: "missing_provenance_rows.tsv.gz",
+      relativePath: "missing_provenance_rows.tsv.gz",
+      content: tsv(missingProvenanceRowsColumns, identityArtifacts.missingProvenanceRows),
+      schema: { format: "tsv", columns: missingProvenanceRowsColumns, kind: "table" },
+    },
   );
 
   const fileManifest = [];
@@ -686,6 +826,35 @@ export async function exportEvaluationSnapshot(options = {}) {
     sourceSnapshotHash,
   });
   fileManifest.push(...exactExportFiles);
+  const decisionFramesSchema = {
+    format: "jsonl",
+    kind: "ndjson",
+    fields: decisionFramesSchemaFields,
+    note: "Flattened decision row payload used in reviewer evidence tables.",
+  };
+  const tradesCsvSchema = {
+    format: "csv",
+    kind: "table",
+    columns: tradeRowsColumns,
+    note: "Flattened trade rows used for paper trade ledger joins.",
+  };
+  const paperLedgerSchema = {
+    format: "csv",
+    kind: "table",
+    columns: paperDecisionLedgerColumns,
+    note: "Research decision/trade ledger exported for audit and UI context.",
+  };
+  const fileSchemaCatalog = await writeExportedFileSchemaCatalog({
+    snapshotDir,
+    generatedAt,
+    snapshotId,
+    snapshotFiles: filesToWrite,
+    includeDecisionFrames: true,
+    decisionFramesSchema,
+    tradesSchema: tradesCsvSchema,
+    paperLedgerSchema,
+  });
+  fileManifest.push(fileSchemaCatalog);
   const auditExportFiles = await writeAuditReviewFiles({
     snapshotDir,
     alignment,
@@ -911,6 +1080,7 @@ export async function buildReviewBundle(options = {}) {
     "evidence_allocation_by_candidate.tsv.gz",
     "missing_provenance_rows.tsv.gz",
     "post_close_frame_audit.tsv.gz",
+    "exported-file-schemas.json",
   ]) {
     const source = path.join(snapshotResult.snapshotDir, name);
     if (await exists(source)) {
@@ -945,6 +1115,7 @@ export async function buildReviewBundle(options = {}) {
     await copyFile(source, target);
     bundleFiles.push(await fileInfo(target, relative, path.relative(bundleRoot, target), snapshotExportRows.get(relative) ?? null));
   }
+  const exportedFileSchemaCatalog = await readJsonMaybe(path.join(snapshotResult.snapshotDir, "exported-file-schemas.json"));
   for (const name of ["snapshot-history-48h.json", "snapshot-history-48h.md"]) {
     const source = path.join(outRoot, name);
     if (await exists(source)) {
@@ -972,6 +1143,13 @@ export async function buildReviewBundle(options = {}) {
     safetyStatus: snapshotResult.snapshot.appState.liveSafety,
     rowExport: snapshotResult.snapshot.rowExport,
     rawMarketTickExport,
+    exportedFileSchemas: exportedFileSchemaCatalog
+      ? {
+        path: "snapshots/exported-file-schemas.json",
+        schemaVersion: stringOrNull(exportedFileSchemaCatalog.schemaVersion),
+        fileCount: Array.isArray(exportedFileSchemaCatalog.files) ? exportedFileSchemaCatalog.files.length : null,
+      }
+      : null,
     alerts: snapshotResult.snapshot.alerts,
     files: bundleFiles,
     limitations: bundleLimitations({
@@ -1008,6 +1186,104 @@ function snapshotExportRowsByName(snapshotResult) {
     }
   }
   return rowsByName;
+}
+
+async function writeExportedFileSchemaCatalog({
+  snapshotDir,
+  snapshotFiles,
+  generatedAt,
+  snapshotId,
+  includeDecisionFrames = true,
+  decisionFramesSchema,
+  tradesSchema,
+  paperLedgerSchema,
+}) {
+  const entries = [];
+  const addEntry = (entry) => {
+    if (!entry?.relativePath) return;
+    const { schema: entrySchema, ...rawEntry } = isRecord(entry) ? entry : {};
+    const schema = isRecord(entrySchema) ? entrySchema : {};
+    entries.push({
+      ...schema,
+      ...rawEntry,
+      kind: rawEntry.kind ?? schema.kind ?? "file",
+      relativePath: slashPath(rawEntry.relativePath),
+    });
+  };
+  for (const file of snapshotFiles) {
+    if (!isRecord(file?.schema) || typeof file.relativePath !== "string") continue;
+    addEntry({ relativePath: file.relativePath, ...file.schema });
+  }
+  if (includeDecisionFrames && isRecord(decisionFramesSchema)) {
+    addEntry({ relativePath: "decision_frames.jsonl", ...decisionFramesSchema, kind: "ndjson-document" });
+  }
+  if (isRecord(tradesSchema)) {
+    addEntry({ relativePath: "trades.csv", ...tradesSchema, kind: "csv-table" });
+  }
+  if (isRecord(paperLedgerSchema)) {
+    addEntry({ relativePath: "paper_decision_ledger.csv", ...paperLedgerSchema, kind: "csv-table" });
+  }
+
+  const rawTickSchema = await readJsonMaybe(path.join(snapshotDir, "raw_market_ticks", "schema.json"));
+  const rawTickManifest = await readJsonMaybe(path.join(snapshotDir, "raw_market_ticks", "manifest.json"));
+  if (rawTickSchema) {
+    addEntry({
+      relativePath: "raw_market_ticks/schema.json",
+      kind: "json-schema",
+      format: "json",
+      schemaVersion: stringOrNull(rawTickSchema.schemaVersion),
+      fields: uniqueStrings(Array.isArray(rawTickSchema.fields) ? rawTickSchema.fields : []),
+      fieldTypes: isRecord(rawTickSchema.fieldTypes) ? rawTickSchema.fieldTypes : null,
+      note: "Compact per-market raw tick schema.",
+    });
+  } else {
+    addEntry({
+      relativePath: "raw_market_ticks/schema.json",
+      kind: "json-schema",
+      format: "json",
+      fields: [],
+      note: "Raw tick schema file was requested but absent.",
+    });
+  }
+  if (rawTickManifest) {
+    addEntry({
+      relativePath: "raw_market_ticks/manifest.json",
+      kind: "json-manifest",
+      format: "json",
+      fields: uniqueStrings(Object.keys(rawTickManifest)),
+      note: "Raw tick extraction manifest.",
+    });
+  }
+  if (rawTickManifest && Array.isArray(rawTickManifest.jsonlFiles)) {
+    const rawTickFields = uniqueStrings(Array.isArray(rawTickSchema?.fields) ? rawTickSchema.fields : []);
+    for (const jsonlFile of rawTickManifest.jsonlFiles) {
+      addEntry({
+        relativePath: slashPath(stringOrNull(jsonlFile.relativePath) ?? ""),
+        kind: "ndjson-sample",
+        format: "jsonl",
+        fields: rawTickFields,
+        rowCount: numberOrZero(jsonlFile?.rows),
+        marketTicker: isRecord(jsonlFile) ? stringOrNull(jsonlFile.marketTicker) : null,
+        note: "Compact raw tick sample replay file; one file per market.",
+      });
+    }
+  }
+
+  const dedupe = new Map();
+  for (const entry of entries) {
+    const key = entry.relativePath;
+    if (!dedupe.has(key)) dedupe.set(key, entry);
+  }
+  const sortedEntries = [...dedupe.values()].sort((left, right) => left.relativePath.localeCompare(right.relativePath));
+  const artifact = {
+    schemaVersion: "dogeedge.exported-file-schemas.v1",
+    snapshotId,
+    generatedAt,
+    files: sortedEntries,
+  };
+  const schemaPath = path.join(snapshotDir, "exported-file-schemas.json");
+  await writeFile(schemaPath, `${JSON.stringify(artifact, null, 2)}\n`, "utf8");
+  return fileInfo(schemaPath, "exported-file-schemas.json", "exported-file-schemas.json", null);
 }
 
 function rawMarketTickBundleSummary(manifest, manifestPresent) {

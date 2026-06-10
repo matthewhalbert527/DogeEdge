@@ -90,6 +90,7 @@ describe("continuous evaluation snapshot exporter", () => {
       "research_live_identity_alignment.json",
       "scheduler_budget_report.json",
       "provenance_completeness_report.json",
+      "exported-file-schemas.json",
       "candidate_lineage_audit.tsv.gz",
       "unlinked_live_rows.tsv.gz",
       "evidence_allocation_by_family.tsv.gz",
@@ -106,7 +107,26 @@ describe("continuous evaluation snapshot exporter", () => {
     const schedulerBudget = JSON.parse(readFileSync(path.join(result.snapshotDir, "scheduler_budget_report.json"), "utf8"));
     expect(schedulerBudget).toMatchObject({ unsupportedNormalBudgetRows: 0 });
     const rawTickManifest = JSON.parse(readFileSync(path.join(result.snapshotDir, "raw_market_ticks", "manifest.json"), "utf8"));
+    const exportedFileSchemas = JSON.parse(readFileSync(path.join(result.snapshotDir, "exported-file-schemas.json"), "utf8"));
     const rawTickSchema = JSON.parse(readFileSync(path.join(result.snapshotDir, "raw_market_ticks", "schema.json"), "utf8"));
+    expect(exportedFileSchemas).toMatchObject({
+      schemaVersion: "dogeedge.exported-file-schemas.v1",
+      snapshotId: snapshot.snapshotId,
+      generatedAt: snapshot.generatedAt,
+    });
+    expect(exportedFileSchemas.files.map((file: { relativePath: string }) => file.relativePath)).toEqual(expect.arrayContaining([
+      "algoMetrics.tsv.gz",
+      "decision_frames.jsonl",
+      "trades.csv",
+      "paper_decision_ledger.csv",
+      "raw_market_ticks/schema.json",
+      "raw_market_ticks/manifest.json",
+      "raw_market_ticks/jsonl/KXDOGE15M-FIXTURE.jsonl",
+    ]));
+    expect(exportedFileSchemas.files.find((file: { relativePath: string }) => file.relativePath === "decision_frames.jsonl")?.fields?.length).toBeGreaterThan(0);
+    expect(exportedFileSchemas.files.find((file: { relativePath: string }) => file.relativePath === "raw_market_ticks/jsonl/KXDOGE15M-FIXTURE.jsonl")?.fields).toEqual(
+      expect.arrayContaining(["market_ticker", "event_type", "source"]),
+    );
     expect(rawTickManifest).toMatchObject({
       schemaVersion: "dogeedge.raw-market-ticks.manifest.v1",
       generatedAt: snapshot.generatedAt,
@@ -471,6 +491,7 @@ describe("continuous evaluation snapshot exporter", () => {
       "snapshots/research_live_identity_alignment.json",
       "snapshots/scheduler_budget_report.json",
       "snapshots/provenance_completeness_report.json",
+      "snapshots/exported-file-schemas.json",
       "snapshots/roster_alignment.tsv.gz",
       "snapshots/promotion_gate_results.tsv.gz",
       "snapshots/post_close_frame_audit.tsv.gz",

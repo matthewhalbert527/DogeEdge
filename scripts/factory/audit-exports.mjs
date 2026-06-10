@@ -203,6 +203,7 @@ function bundleEvidenceSummary({ bundleManifest, rawTicksManifest }) {
   if (!bundleManifest && !rawTicksManifest) return null;
   const rowExport = objectOrEmpty(bundleManifest?.rowExport);
   const rawExport = objectOrEmpty(bundleManifest?.rawMarketTickExport);
+  const exportedFileSchemas = objectOrEmpty(bundleManifest?.exportedFileSchemas);
   const rawCoverage = objectOrEmpty(rawExport.targetMarketCoverage);
   const rawTargetSamples = objectOrEmpty(rawExport.targetMarketSamples);
   const sourceHash = objectOrEmpty(rawExport.sourceHash);
@@ -307,6 +308,12 @@ function bundleEvidenceSummary({ bundleManifest, rawTicksManifest }) {
         ),
       },
       warningCodes,
+    },
+    exportedFileSchemas: {
+      available: typeof exportedFileSchemas.path === "string" && typeof exportedFileSchemas.schemaVersion === "string",
+      path: stringOrNull(exportedFileSchemas.path),
+      fileCount: numberOrDefault(exportedFileSchemas.fileCount, null),
+      schemaVersion: stringOrNull(exportedFileSchemas.schemaVersion),
     },
     limitations: uniqueStrings(arrayOfStrings(bundleManifest?.limitations)),
   };
@@ -854,6 +861,10 @@ function bundleEvidenceMarkdown(summary) {
   const uncoveredSample = Array.isArray(targetSamples.uncovered) ? targetSamples.uncovered : [];
   const skippedSourceSample = Array.isArray(sourceHash.skippedLargeFileSample) ? sourceHash.skippedLargeFileSample : [];
   const skippedByteRatio = typeof sourceHash.hashSkippedByteRatio === "number" ? `${Math.round(sourceHash.hashSkippedByteRatio * 1000) / 10}%` : "n/a";
+  const schemaCatalog = objectOrEmpty(summary.exportedFileSchemas);
+  const schemaCatalogText = schemaCatalog.available
+    ? `schema catalog: ${schemaCatalog.path} (${schemaCatalog.fileCount ?? "n/a"} files)`
+    : "schema catalog: not yet exported";
   const lines = [
     `- ${rowText}`,
     `- Raw ticks: ${rawState} (${raw.available ? "available" : "unavailable"}).`,
@@ -865,6 +876,7 @@ function bundleEvidenceMarkdown(summary) {
     `- Source hashes: ${sourceHash.hashedFileCount ?? 0} hashed, ${sourceHash.skippedLargeFileCount ?? 0} skipped as large; skipped bytes: ${sourceHash.hashSkippedSourceBytes ?? 0}/${sourceHash.totalSourceBytes ?? 0} (${skippedByteRatio}).`,
     `- Limitations: ${summary.limitations?.join(", ") || "none"}.`,
     `- Raw tick warnings: ${raw.warningCodes?.join(", ") || "none"}.`,
+    `- ${schemaCatalogText}.`,
   ];
   if (uncoveredSample.length) {
     const omitted = numberOrDefault(targetSamples.omittedUncoveredCount, 0);
