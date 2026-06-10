@@ -6,6 +6,23 @@ import { finalHoldoutSplit } from "./holdout.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
+const RAW_TICK_WARNING_EXPLANATIONS = {
+  raw_market_tick_parquet_absent: "Parquet raw-tick exports were not generated in this packet.",
+  raw_market_tick_jsonl_sample: "Compact JSONL raw-tick sample files were exported for some or all requested markets.",
+  raw_market_tick_jsonl_absent: "No matching JSONL sample rows were found for requested target markets.",
+  raw_market_tick_target_coverage_gap: "One or more requested markets did not produce sample rows from available raw snapshots.",
+  raw_market_tick_target_market_truncated: "The requested target market list exceeded the scan limit and was truncated.",
+  raw_market_tick_scan_budget_exhausted: "The scan budget was exhausted before all requested markets could be recovered.",
+  raw_snapshot_source_absent: "No local raw snapshot source files were discoverable.",
+  raw_snapshot_hash_skipped_large_file: "Some raw snapshot files were too large to hash under the local policy.",
+  raw_market_tick_manifest_absent: "The raw-tick manifest was not present in this bundle.",
+  raw_market_tick_manifest_parse_failed: "The raw-tick manifest could not be parsed.",
+};
+
+function explainRawTickWarningCode(code) {
+  return stringOrNull(RAW_TICK_WARNING_EXPLANATIONS[code]) ?? "No explanation available for this code in the current schema.";
+}
+
 export async function auditReviewExports({
   input = "review_exports",
   outDir = "artifacts/factory-audit",
@@ -231,7 +248,7 @@ function bundleEvidenceSummary({ bundleManifest, rawTicksManifest }) {
   const warningCodes = uniqueStrings([
     ...arrayOfStrings(rawExport.warningCodes),
     ...arrayOfStrings(rawTicksManifest?.warningCodes),
-  ]);
+  ]).sort();
   const coveredTargetSample = Array.isArray(rawTargetSamples.covered)
     ? arrayOfStrings(rawTargetSamples.covered)
     : arrayOfStrings(rawTicksManifest?.coveredTargetMarkets).slice(0, 10);
@@ -833,6 +850,10 @@ function bundleEvidenceMarkdown(summary) {
     return "- No bundle manifest was present; raw-tick and row-export readiness were not summarized.";
   }
   const raw = summary.rawTicks ?? {};
+  const rawWarningCodes = Array.isArray(raw.warningCodes) ? raw.warningCodes : [];
+  const rawWarningDetails = rawWarningCodes
+    .filter((code) => String(code).startsWith("raw_market_tick_") || String(code).startsWith("raw_snapshot_"))
+    .map((code) => `- ${code}: ${explainRawTickWarningCode(code)}`);
   const coverage = raw.coverage ?? {};
   const targetSamples = raw.targetMarketSamples ?? {};
   const sourceHash = raw.sourceHash ?? {};
@@ -875,7 +896,8 @@ function bundleEvidenceMarkdown(summary) {
     `- Supplemental raw-tick recovery: ${supplementalScanPasses ?? "n/a"} additional passes, ${supplementalScanBytes ?? "n/a"} bytes per pass.`,
     `- Source hashes: ${sourceHash.hashedFileCount ?? 0} hashed, ${sourceHash.skippedLargeFileCount ?? 0} skipped as large; skipped bytes: ${sourceHash.hashSkippedSourceBytes ?? 0}/${sourceHash.totalSourceBytes ?? 0} (${skippedByteRatio}).`,
     `- Limitations: ${summary.limitations?.join(", ") || "none"}.`,
-    `- Raw tick warnings: ${raw.warningCodes?.join(", ") || "none"}.`,
+    `- Raw tick warnings: ${rawWarningCodes.join(", ") || "none"}.`,
+    ...rawWarningDetails,
     `- ${schemaCatalogText}.`,
   ];
   if (uncoveredSample.length) {

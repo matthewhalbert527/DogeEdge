@@ -825,6 +825,8 @@ describe("factory research safeguards", () => {
     expect(finalReview).toContain("Raw ticks: target_samples_absent");
     expect(finalReview).toContain("Coverage: 0/2 target markets");
     expect(finalReview).toContain("raw_market_tick_jsonl_absent");
+    expect(finalReview).toContain("raw_market_tick_jsonl_absent: No matching JSONL sample rows were found for requested target markets.");
+    expect(finalReview).toContain("raw_market_tick_target_coverage_gap: One or more requested markets did not produce sample rows from available raw snapshots.");
     expect(finalReview).toContain("Uncovered target sample: m-0, m-1");
     expect(finalReview).toContain("skipped bytes: 60000000/60000000 (100%)");
     expect(finalReview).toContain("Hash-skipped source sample: raw/snapshots/records.jsonl (60000000 bytes)");
