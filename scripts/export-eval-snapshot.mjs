@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { createReadStream } from "node:fs";
-import { copyFile, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, open, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { gzipSync } from "node:zlib";
@@ -3264,21 +3264,29 @@ async function readTailLines(filePath, maxLines, maxBytes = 8 * 1024 * 1024) {
   let position = info.size;
   let loaded = 0;
   let text = "";
-  while (position > 0 && loaded < byteBudget && countLines(text) <= maxLines + 1) {
-    const readSize = Math.min(chunkSize, position, byteBudget - loaded);
-    position -= readSize;
-    loaded += readSize;
-    const buffer = Buffer.alloc(readSize);
-    const handle = await import("node:fs/promises").then((mod) => mod.open(filePath, "r"));
-    try {
-      await handle.read(buffer, 0, readSize, position);
-    } finally {
-      await handle.close();
+  let firstChunkStart = info.size;
+  const handle = await open(filePath, "r");
+  try {
+    while (position > 0 && loaded < byteBudget && countLines(text) <= maxLines + 1) {
+      const readSize = Math.min(chunkSize, position, byteBudget - loaded);
+      const chunkStart = Math.max(0, position - readSize);
+      position = chunkStart;
+      loaded += readSize;
+      const buffer = Buffer.alloc(readSize);
+      await handle.read(buffer, 0, readSize, chunkStart);
+      firstChunkStart = Math.min(firstChunkStart, chunkStart);
+      chunks.unshift(buffer);
+      text = Buffer.concat(chunks).toString("utf8");
     }
-    chunks.unshift(buffer);
-    text = Buffer.concat(chunks).toString("utf8");
+  } finally {
+    await handle.close();
   }
-  return text.split(/\r?\n/).filter(Boolean).slice(-maxLines);
+  const lines = text.split(/\r?\n/);
+  if (firstChunkStart > 0) {
+    const startsAtLineBoundary = await isLineBoundaryByte(filePath, firstChunkStart);
+    if (!startsAtLineBoundary) lines.shift();
+  }
+  return lines.filter(Boolean).slice(-maxLines);
 }
 
 async function readHeadLines(filePath, maxLines, maxBytes = 8 * 1024 * 1024) {
@@ -3289,18 +3297,61 @@ async function readByteRangeLines(filePath, maxLines, maxBytes = 8 * 1024 * 1024
   if (!filePath || maxLines <= 0 || maxBytes <= 0 || !(await exists(filePath))) return [];
   const info = await stat(filePath);
   if (!Number.isFinite(info.size) || info.size <= 0) return [];
-  const readSize = Math.min(maxBytes, info.size);
-  if (!Number.isFinite(readSize) || readSize <= 0) return [];
-  const maxOffset = Math.max(0, info.size - readSize);
+  const requestedReadSize = Math.min(maxBytes, info.size);
+  if (!Number.isFinite(requestedReadSize) || requestedReadSize <= 0) return [];
+  const maxOffset = Math.max(0, info.size - requestedReadSize);
   const offset = Math.max(0, Math.min(Math.floor(byteOffset), maxOffset));
-  const buffer = Buffer.alloc(readSize);
-  const handle = await import("node:fs/promises").then((mod) => mod.open(filePath, "r"));
+  const windowStart = await alignLineStart(filePath, offset);
+  const readSize = Math.min(requestedReadSize, Math.max(0, info.size - windowStart));
+  if (!Number.isFinite(readSize) || readSize <= 0) return [];
+  const windowEnd = Math.min(info.size, windowStart + readSize);
+  const buffer = Buffer.alloc(windowEnd - windowStart);
+  const handle = await open(filePath, "r");
+  let rawText;
   try {
-    await handle.read(buffer, 0, readSize, offset);
+    await handle.read(buffer, 0, buffer.length, windowStart);
+    rawText = buffer.toString("utf8");
   } finally {
     await handle.close();
   }
-  return buffer.toString("utf8").split(/\r?\n/).filter(Boolean).slice(0, maxLines);
+  let lines = rawText.split(/\r?\n/);
+  const startsAtLineBoundary = await isLineBoundaryByte(filePath, windowStart);
+  if (!startsAtLineBoundary) lines.shift();
+  if (windowEnd < info.size && !rawText.endsWith("\n")) {
+    lines = lines.slice(0, -1);
+  }
+  return lines.filter(Boolean).slice(0, maxLines);
+}
+
+async function alignLineStart(filePath, byteOffset, maxLookback = 32 * 1024) {
+  if (!Number.isFinite(byteOffset) || byteOffset <= 0) return 0;
+  const info = await stat(filePath);
+  if (!Number.isFinite(info.size) || info.size <= 0) return 0;
+  const safeOffset = Math.min(Math.max(0, Math.floor(byteOffset)), info.size);
+  if (safeOffset <= 0 || safeOffset >= info.size) return safeOffset;
+  const lookback = Math.min(maxLookback, safeOffset);
+  const handle = await open(filePath, "r");
+  try {
+    const probeStart = safeOffset - lookback;
+    const probe = Buffer.alloc(lookback);
+    await handle.read(probe, 0, lookback, probeStart);
+    const newlineIndex = probe.lastIndexOf(10);
+    return newlineIndex >= 0 ? probeStart + newlineIndex + 1 : safeOffset;
+  } finally {
+    await handle.close();
+  }
+}
+
+async function isLineBoundaryByte(filePath, byteOffset) {
+  if (!Number.isFinite(byteOffset) || byteOffset <= 0) return true;
+  const handle = await open(filePath, "r");
+  try {
+    const marker = Buffer.alloc(1);
+    const bytesRead = await handle.read(marker, 0, 1, byteOffset - 1);
+    return bytesRead.bytesRead === 1 && marker[0] === 10;
+  } finally {
+    await handle.close();
+  }
 }
 
 function countLines(text) {
