@@ -2697,8 +2697,8 @@ async function writeRawMarketTicksManifest({
     sourceFileDiscoveryLimit,
   );
   const allTargetMarkets = uniqueStrings([
-    ...decisionRows.map((row) => row.marketTicker),
-    ...tradeRows.map((row) => row.marketTicker),
+    ...decisionRows.map((row) => normalizeRawMarketTicker(row.marketTicker)),
+    ...tradeRows.map((row) => normalizeRawMarketTicker(row.marketTicker)),
   ]).sort();
   const targetMarketLimit = Math.max(1, maxRawTickMarkets);
   const targetMarkets = allTargetMarkets.slice(0, targetMarketLimit);
@@ -2989,7 +2989,7 @@ function compactRawTickRow(raw, sourceLine, context) {
 }
 
 function rawSnapshotMarketTicker(raw) {
-  return stringOrNull([
+  const normalizedCandidates = [
     raw?.paperInput?.ticker,
     raw?.paperInput?.marketTicker,
     raw?.paperInput?.market_ticker,
@@ -3006,7 +3006,39 @@ function rawSnapshotMarketTicker(raw) {
     raw?.runtimeSnapshot?.market_ticker,
     raw?.runtimeSnapshot?.market_id,
     raw?.runtimeSnapshot?.marketId,
-  ].find((value) => typeof value === "string" && value.length > 0));
+    raw?.runtimeSnapshot?.market?.ticker,
+    raw?.runtimeSnapshot?.market?.marketTicker,
+    raw?.runtimeSnapshot?.market?.market_ticker,
+    raw?.runtimeSnapshot?.market?.market_id,
+    raw?.runtimeSnapshot?.market?.marketId,
+  ]
+    .map((value) => normalizeRawMarketTicker(value))
+    .find((value) => isLikelyMarketTicker(value));
+  if (normalizedCandidates) return normalizedCandidates;
+  return marketTickerFromRawRowId(raw?.id)
+    || marketTickerFromRawRowId(raw?.runtimeSnapshot?.id)
+    || null;
+}
+
+function normalizeRawMarketTicker(value) {
+  const text = stringOrNull(value);
+  if (!text) return null;
+  const normalized = text.trim().toUpperCase();
+  if (!normalized || normalized === "NO_MARKET") return null;
+  return normalized;
+}
+
+function isLikelyMarketTicker(value) {
+  return typeof value === "string" && value.includes("-") && /[A-Z]/.test(value) && /[0-9]/.test(value);
+}
+
+function marketTickerFromRawRowId(value) {
+  const id = stringOrNull(value);
+  if (!id) return null;
+  return id.split(":")
+    .map((piece) => piece.split("/")[0].trim())
+    .map((piece) => normalizeRawMarketTicker(piece))
+    .find((value) => isLikelyMarketTicker(value));
 }
 
 function rawSnapshotAction(raw) {
