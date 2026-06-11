@@ -826,6 +826,16 @@ export async function exportEvaluationSnapshot(options = {}) {
     sourceSnapshotHash,
   });
   fileManifest.push(...exactExportFiles);
+  const fileRowsByPath = new Map();
+  for (const file of fileManifest) {
+    if (!isRecord(file)) continue;
+    const rows = typeof file.rows === "number" ? file.rows : null;
+    for (const key of [file.logicalName, file.relativePath]) {
+      if (typeof key === "string" && !fileRowsByPath.has(slashPath(key))) {
+        fileRowsByPath.set(slashPath(key), rows);
+      }
+    }
+  }
   const decisionFramesSchema = {
     format: "jsonl",
     kind: "ndjson",
@@ -849,6 +859,7 @@ export async function exportEvaluationSnapshot(options = {}) {
     generatedAt,
     snapshotId,
     snapshotFiles: filesToWrite,
+    fileRowsByPath,
     includeDecisionFrames: true,
     decisionFramesSchema,
     tradesSchema: tradesCsvSchema,
@@ -1191,6 +1202,7 @@ function snapshotExportRowsByName(snapshotResult) {
 async function writeExportedFileSchemaCatalog({
   snapshotDir,
   snapshotFiles,
+  fileRowsByPath = new Map(),
   generatedAt,
   snapshotId,
   includeDecisionFrames = true,
@@ -1203,9 +1215,11 @@ async function writeExportedFileSchemaCatalog({
     if (!entry?.relativePath) return;
     const { schema: entrySchema, ...rawEntry } = isRecord(entry) ? entry : {};
     const schema = isRecord(entrySchema) ? entrySchema : {};
+    const rows = fileRowsByPath.get(slashPath(rawEntry.relativePath)) ?? null;
     entries.push({
       ...schema,
       ...rawEntry,
+      rows: typeof rows === "number" ? rows : null,
       kind: rawEntry.kind ?? schema.kind ?? "file",
       relativePath: slashPath(rawEntry.relativePath),
     });
@@ -1257,12 +1271,14 @@ async function writeExportedFileSchemaCatalog({
   if (rawTickManifest && Array.isArray(rawTickManifest.jsonlFiles)) {
     const rawTickFields = uniqueStrings(Array.isArray(rawTickSchema?.fields) ? rawTickSchema.fields : []);
     for (const jsonlFile of rawTickManifest.jsonlFiles) {
+      const rowCount = numberOrZero(jsonlFile?.rows);
       addEntry({
         relativePath: slashPath(stringOrNull(jsonlFile.relativePath) ?? ""),
         kind: "ndjson-sample",
         format: "jsonl",
         fields: rawTickFields,
-        rowCount: numberOrZero(jsonlFile?.rows),
+        rowCount,
+        rows: rowCount,
         marketTicker: isRecord(jsonlFile) ? stringOrNull(jsonlFile.marketTicker) : null,
         note: "Compact raw tick sample replay file; one file per market.",
       });

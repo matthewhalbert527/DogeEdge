@@ -109,6 +109,12 @@ describe("continuous evaluation snapshot exporter", () => {
     const rawTickManifest = JSON.parse(readFileSync(path.join(result.snapshotDir, "raw_market_ticks", "manifest.json"), "utf8"));
     const exportedFileSchemas = JSON.parse(readFileSync(path.join(result.snapshotDir, "exported-file-schemas.json"), "utf8"));
     const rawTickSchema = JSON.parse(readFileSync(path.join(result.snapshotDir, "raw_market_ticks", "schema.json"), "utf8"));
+    const snapshotRowsByPath = Object.fromEntries(
+      snapshot.filesManifest.map((file: { relativePath: string; rows: number | null }) => [file.relativePath, file.rows]),
+    );
+    const exportedSchemaRowsByPath = Object.fromEntries(
+      exportedFileSchemas.files.map((file: { relativePath: string; rows: number | null }) => [file.relativePath, file.rows]),
+    );
     expect(exportedFileSchemas).toMatchObject({
       schemaVersion: "dogeedge.exported-file-schemas.v1",
       snapshotId: snapshot.snapshotId,
@@ -126,6 +132,13 @@ describe("continuous evaluation snapshot exporter", () => {
     expect(exportedFileSchemas.files.find((file: { relativePath: string }) => file.relativePath === "decision_frames.jsonl")?.fields?.length).toBeGreaterThan(0);
     expect(exportedFileSchemas.files.find((file: { relativePath: string }) => file.relativePath === "raw_market_ticks/jsonl/KXDOGE15M-FIXTURE.jsonl")?.fields).toEqual(
       expect.arrayContaining(["market_ticker", "event_type", "source"]),
+    );
+    expect(exportedSchemaRowsByPath["algoMetrics.tsv.gz"]).toBe(snapshotRowsByPath["algoMetrics.tsv.gz"]);
+    expect(exportedSchemaRowsByPath["decision_frames.jsonl"]).toBe(snapshotRowsByPath["decision_frames.jsonl"]);
+    expect(exportedSchemaRowsByPath["trades.csv"]).toBe(snapshotRowsByPath["trades.csv"]);
+    expect(exportedSchemaRowsByPath["paper_decision_ledger.csv"]).toBe(snapshotRowsByPath["paper_decision_ledger.csv"]);
+    expect(exportedSchemaRowsByPath["raw_market_ticks/jsonl/KXDOGE15M-FIXTURE.jsonl"]).toBe(
+      snapshotRowsByPath["raw_market_ticks/jsonl/KXDOGE15M-FIXTURE.jsonl"],
     );
     expect(rawTickManifest).toMatchObject({
       schemaVersion: "dogeedge.raw-market-ticks.manifest.v1",

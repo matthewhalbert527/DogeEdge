@@ -1,0 +1,639 @@
+{
+  "generatedAtUtc": "2026-06-11T01:52:19.335Z",
+  "inputRoot": "C:\\Users\\matth\\DogeEdge\\review_exports\\bundles\\dogeedge-review-bundle-20260611T014953Z",
+  "roles": {
+    "inputRoot": "C:\\Users\\matth\\DogeEdge\\review_exports\\bundles\\dogeedge-review-bundle-20260611T014953Z",
+    "repoSnapshot": null,
+    "factoryFullRun": null,
+    "perTradeCsv": null,
+    "perTradeManifest": null,
+    "decisionFramesSample": "C:\\Users\\matth\\DogeEdge\\review_exports\\bundles\\dogeedge-review-bundle-20260611T014953Z\\snapshots\\decision_frames.jsonl",
+    "decisionFrameManifest": null,
+    "simulatorConfig": null,
+    "experimentRegistry": "C:\\Users\\matth\\DogeEdge\\review_exports\\bundles\\dogeedge-review-bundle-20260611T014953Z\\registry\\experiment-registry.json",
+    "latestJson": "C:\\Users\\matth\\DogeEdge\\review_exports\\bundles\\dogeedge-review-bundle-20260611T014953Z\\repo\\local-worker-latest.json",
+    "latestSweep": "C:\\Users\\matth\\DogeEdge\\review_exports\\bundles\\dogeedge-review-bundle-20260611T014953Z\\repo\\latest-sweep.json",
+    "bundleManifest": "C:\\Users\\matth\\DogeEdge\\review_exports\\bundles\\dogeedge-review-bundle-20260611T014953Z\\manifest.json",
+    "bundleLatestSweep": "C:\\Users\\matth\\DogeEdge\\review_exports\\bundles\\dogeedge-review-bundle-20260611T014953Z\\repo\\latest-sweep.json",
+    "topTradersExecutable": "C:\\Users\\matth\\DogeEdge\\review_exports\\bundles\\dogeedge-review-bundle-20260611T014953Z\\repo\\top-traders-executable.json",
+    "rawTicksManifest": "C:\\Users\\matth\\DogeEdge\\review_exports\\bundles\\dogeedge-review-bundle-20260611T014953Z\\snapshots\\raw_market_ticks\\manifest.json",
+    "leakageAudit": "C:\\Users\\matth\\DogeEdge\\review_exports\\bundles\\dogeedge-review-bundle-20260611T014953Z\\snapshots\\leakage_audit.json",
+    "researchLiveAlignment": "C:\\Users\\matth\\DogeEdge\\review_exports\\bundles\\dogeedge-review-bundle-20260611T014953Z\\snapshots\\research_live_alignment.json",
+    "rosterAlignment": "C:\\Users\\matth\\DogeEdge\\review_exports\\bundles\\dogeedge-review-bundle-20260611T014953Z\\snapshots\\roster_alignment.tsv.gz",
+    "researchCoverageByFamily": "C:\\Users\\matth\\DogeEdge\\review_exports\\bundles\\dogeedge-review-bundle-20260611T014953Z\\snapshots\\research_coverage_by_family.tsv.gz",
+    "liveCoverageByFamily": "C:\\Users\\matth\\DogeEdge\\review_exports\\bundles\\dogeedge-review-bundle-20260611T014953Z\\snapshots\\live_coverage_by_family.tsv.gz",
+    "unsupportedLiveFamilies": "C:\\Users\\matth\\DogeEdge\\review_exports\\bundles\\dogeedge-review-bundle-20260611T014953Z\\snapshots\\unsupported_live_families.tsv.gz",
+    "promotionGateResults": "C:\\Users\\matth\\DogeEdge\\review_exports\\bundles\\dogeedge-review-bundle-20260611T014953Z\\snapshots\\promotion_gate_results.tsv.gz",
+    "postCloseFrameAudit": "C:\\Users\\matth\\DogeEdge\\review_exports\\bundles\\dogeedge-review-bundle-20260611T014953Z\\snapshots\\post_close_frame_audit.tsv.gz",
+    "familyAllocationReport": "C:\\Users\\matth\\DogeEdge\\review_exports\\bundles\\dogeedge-review-bundle-20260611T014953Z\\snapshots\\family_allocation_report.json",
+    "topRosterDefaultSortAudit": "C:\\Users\\matth\\DogeEdge\\review_exports\\bundles\\dogeedge-review-bundle-20260611T014953Z\\snapshots\\top_roster_default_sort_audit.json",
+    "snapshotDecisionFrames": "C:\\Users\\matth\\DogeEdge\\review_exports\\bundles\\dogeedge-review-bundle-20260611T014953Z\\snapshots\\decision_frames.jsonl",
+    "snapshotTradesCsv": "C:\\Users\\matth\\DogeEdge\\review_exports\\bundles\\dogeedge-review-bundle-20260611T014953Z\\snapshots\\trades.csv",
+    "candidatesJson": null,
+    "metricsJson": null,
+    "reportMd": null,
+    "rawSampleManifest": null,
+    "snapshotHistoryJson": "C:\\Users\\matth\\DogeEdge\\review_exports\\bundles\\dogeedge-review-bundle-20260611T014953Z\\snapshots\\snapshot-history-48h.json",
+    "snapshotHistoryMd": "C:\\Users\\matth\\DogeEdge\\review_exports\\bundles\\dogeedge-review-bundle-20260611T014953Z\\snapshots\\snapshot-history-48h.md",
+    "factoryPageScreenshot": null,
+    "screenshotReadme": null,
+    "splitManifests": [],
+    "splitFiles": []
+  },
+  "schema": {
+    "warnings": [
+      "metrics_json_is_split_or_missing",
+      "missing_factory_page_png",
+      "repo_snapshot_missing_git_head",
+      "simulator_config_missing_multiple_cost_models",
+      "unsupported_live_families_present"
+    ],
+    "errors": [],
+    "warningCount": 5,
+    "errorCount": 0
+  },
+  "bundleEvidence": {
+    "rowExport": {
+      "mode": "capped",
+      "includeRows": true,
+      "rowsCapped": true,
+      "rowCap": 1000,
+      "promotionReviewComplete": false
+    },
+    "rawTicks": {
+      "manifestPresent": true,
+      "parseOk": true,
+      "available": true,
+      "availabilityStatus": "partial_sample_exported",
+      "reason": "Replayable compact JSONL raw-tick samples are exported for some target review markets; uncovered targets are listed explicitly.",
+      "requestedFormat": "jsonl",
+      "exportedFormat": "jsonl",
+      "targetMarketRequestedCount": 14,
+      "targetMarketCount": 14,
+      "targetMarketLimit": 20,
+      "targetMarketOmittedCount": 0,
+      "jsonlFileCount": 3,
+      "sourceSnapshotFileCount": 5,
+      "coverage": {
+        "covered": 3,
+        "uncovered": 11,
+        "ratio": 0.214
+      },
+      "targetMarketSamples": {
+        "covered": [
+          "KXDOGE15M-26JUN091215-15",
+          "KXDOGE15M-26JUN102000-00",
+          "KXDOGE15M-26JUN102200-00"
+        ],
+        "uncovered": [
+          "KXDOGE15M-26JUN091115-15",
+          "KXDOGE15M-26JUN091130-30",
+          "KXDOGE15M-26JUN091145-45",
+          "KXDOGE15M-26JUN091200-00",
+          "KXDOGE15M-26JUN101915-15",
+          "KXDOGE15M-26JUN101930-30",
+          "KXDOGE15M-26JUN101945-45",
+          "KXDOGE15M-26JUN102100-00",
+          "KXDOGE15M-26JUN102115-15",
+          "KXDOGE15M-26JUN102130-30"
+        ],
+        "omittedCoveredCount": 0,
+        "omittedUncoveredCount": 1
+      },
+      "sourceHash": {
+        "hashedFileCount": 0,
+        "skippedLargeFileCount": 5,
+        "sha256MaxBytes": 52428800,
+        "totalSourceBytes": 310111532324,
+        "hashedSourceBytes": 0,
+        "hashSkippedSourceBytes": 310111532324,
+        "hashSkippedByteRatio": 1,
+        "skippedLargeFileSample": [
+          {
+            "relativePath": "raw/snapshots/2026-06-11/records.jsonl",
+            "bytes": 5249982763,
+            "hashSkipped": true
+          },
+          {
+            "relativePath": "raw/snapshots/2026-06-10/records.jsonl",
+            "bytes": 43901753519,
+            "hashSkipped": true
+          },
+          {
+            "relativePath": "raw/snapshots/2026-06-09/records.jsonl",
+            "bytes": 67914226005,
+            "hashSkipped": true
+          },
+          {
+            "relativePath": "raw/snapshots/2026-06-08/records.jsonl",
+            "bytes": 104823962964,
+            "hashSkipped": true
+          },
+          {
+            "relativePath": "raw/snapshots/2026-06-07/records.jsonl",
+            "bytes": 88221607073,
+            "hashSkipped": true
+          }
+        ],
+        "omittedSkippedLargeFileCount": 0
+      },
+      "warningCodes": [
+        "raw_market_tick_jsonl_sample",
+        "raw_market_tick_parquet_absent",
+        "raw_market_tick_scan_budget_exhausted",
+        "raw_market_tick_target_coverage_gap",
+        "raw_snapshot_hash_skipped_large_file"
+      ]
+    },
+    "exportedFileSchemas": {
+      "available": true,
+      "path": "snapshots/exported-file-schemas.json",
+      "fileCount": 26,
+      "schemaVersion": "dogeedge.exported-file-schemas.v1"
+    },
+    "limitations": [
+      "rows_capped",
+      "raw_market_tick_parquet_absent",
+      "raw_market_tick_jsonl_sample",
+      "raw_market_tick_target_coverage_gap",
+      "raw_market_tick_scan_budget_exhausted",
+      "raw_snapshot_hash_skipped_large_file"
+    ]
+  },
+  "reproducibility": {
+    "warnings": [
+      "seed_not_recorded_everywhere"
+    ],
+    "partial": true,
+    "repoSnapshotCommit": null,
+    "fullRunCommit": null,
+    "registryCommit": "a4a55eed4f33644e51e618dcede9705e5a8fb219",
+    "inputManifestHash": "2d890a44ef5d30ba0813e4318b5d59b0d4e41c1b4ef5f56bfd2bd15edfae5a4b"
+  },
+  "foldDiff": {
+    "generatedAtUtc": "2026-06-11T01:52:19.331Z",
+    "tables": {
+      "splitCounts": {
+        "exportedTrain": null,
+        "recomputedTrain": 5,
+        "exportedValidation": null,
+        "recomputedValidation": 2,
+        "exportedTest": null,
+        "recomputedTest": 4,
+        "exportedHoldout": 58,
+        "recomputedHoldout": 3
+      },
+      "foldCounts": {
+        "exportedPurged": 5,
+        "recomputedPurged": 5,
+        "exportedCpcv": 10,
+        "recomputedCpcv": 10
+      }
+    },
+    "leakage": [],
+    "exportedHoldout": {
+      "immutable": true,
+      "strictlyLater": true,
+      "reason": "ok",
+      "latestResearchEnd": "2026-06-09T14:00:00.000Z",
+      "earliestHoldoutStart": "2026-06-09T14:00:18.236Z",
+      "holdoutEventIds": [
+        "KXDOGE15M-26JUN091015-15",
+        "KXDOGE15M-26JUN091030-30",
+        "KXDOGE15M-26JUN091045-45",
+        "KXDOGE15M-26JUN091100-00",
+        "KXDOGE15M-26JUN091115-15",
+        "KXDOGE15M-26JUN091130-30",
+        "KXDOGE15M-26JUN091145-45",
+        "KXDOGE15M-26JUN091200-00",
+        "KXDOGE15M-26JUN091215-15",
+        "KXDOGE15M-26JUN101000-00",
+        "KXDOGE15M-26JUN101015-15",
+        "KXDOGE15M-26JUN101030-30",
+        "KXDOGE15M-26JUN101045-45",
+        "KXDOGE15M-26JUN101100-00",
+        "KXDOGE15M-26JUN101115-15",
+        "KXDOGE15M-26JUN101130-30",
+        "KXDOGE15M-26JUN101145-45",
+        "KXDOGE15M-26JUN101200-00",
+        "KXDOGE15M-26JUN101215-15",
+        "KXDOGE15M-26JUN101230-30",
+        "KXDOGE15M-26JUN101245-45",
+        "KXDOGE15M-26JUN101300-00",
+        "KXDOGE15M-26JUN101315-15",
+        "KXDOGE15M-26JUN101330-30",
+        "KXDOGE15M-26JUN101345-45",
+        "KXDOGE15M-26JUN101400-00",
+        "KXDOGE15M-26JUN101415-15",
+        "KXDOGE15M-26JUN101430-30",
+        "KXDOGE15M-26JUN101445-45",
+        "KXDOGE15M-26JUN101500-00",
+        "KXDOGE15M-26JUN101515-15",
+        "KXDOGE15M-26JUN101530-30",
+        "KXDOGE15M-26JUN101545-45",
+        "KXDOGE15M-26JUN101600-00",
+        "KXDOGE15M-26JUN101615-15",
+        "KXDOGE15M-26JUN101630-30",
+        "KXDOGE15M-26JUN101645-45",
+        "KXDOGE15M-26JUN101700-00",
+        "KXDOGE15M-26JUN101715-15",
+        "KXDOGE15M-26JUN101730-30",
+        "KXDOGE15M-26JUN101745-45",
+        "KXDOGE15M-26JUN101800-00",
+        "KXDOGE15M-26JUN101815-15",
+        "KXDOGE15M-26JUN101830-30",
+        "KXDOGE15M-26JUN101845-45",
+        "KXDOGE15M-26JUN101900-00",
+        "KXDOGE15M-26JUN101915-15",
+        "KXDOGE15M-26JUN101930-30",
+        "KXDOGE15M-26JUN101945-45",
+        "KXDOGE15M-26JUN102000-00",
+        "KXDOGE15M-26JUN102015-15",
+        "KXDOGE15M-26JUN102030-30",
+        "KXDOGE15M-26JUN102045-45",
+        "KXDOGE15M-26JUN102100-00",
+        "KXDOGE15M-26JUN102115-15",
+        "KXDOGE15M-26JUN102130-30",
+        "KXDOGE15M-26JUN102145-45",
+        "KXDOGE15M-26JUN102200-00"
+      ]
+    },
+    "recomputedHoldout": {
+      "immutable": true,
+      "strictlyLater": true,
+      "reason": "ok",
+      "latestResearchEnd": "2026-06-11T01:15:00.000Z",
+      "earliestHoldoutStart": "2026-06-11T01:15:25.957Z",
+      "holdoutEventIds": [
+        "KXDOGE15M-26JUN102130-30",
+        "KXDOGE15M-26JUN102145-45",
+        "KXDOGE15M-26JUN102200-00"
+      ]
+    },
+    "exportedPurged": [
+      {
+        "id": "purged-1",
+        "train": 184,
+        "validation": 46,
+        "purged": 0,
+        "embargoed": 1,
+        "embargoMs": 900000
+      },
+      {
+        "id": "purged-2",
+        "train": 184,
+        "validation": 46,
+        "purged": 0,
+        "embargoed": 1,
+        "embargoMs": 900000
+      },
+      {
+        "id": "purged-3",
+        "train": 184,
+        "validation": 46,
+        "purged": 0,
+        "embargoed": 1,
+        "embargoMs": 900000
+      },
+      {
+        "id": "purged-4",
+        "train": 184,
+        "validation": 46,
+        "purged": 0,
+        "embargoed": 1,
+        "embargoMs": 900000
+      },
+      {
+        "id": "purged-5",
+        "train": 184,
+        "validation": 47,
+        "purged": 0,
+        "embargoed": 0,
+        "embargoMs": 900000
+      }
+    ],
+    "recomputedPurged": [
+      {
+        "id": "purged-1",
+        "train": 8,
+        "validation": 2,
+        "purged": 0,
+        "embargoed": 1,
+        "embargoMs": 900000
+      },
+      {
+        "id": "purged-2",
+        "train": 8,
+        "validation": 2,
+        "purged": 0,
+        "embargoed": 1,
+        "embargoMs": 900000
+      },
+      {
+        "id": "purged-3",
+        "train": 8,
+        "validation": 2,
+        "purged": 0,
+        "embargoed": 1,
+        "embargoMs": 900000
+      },
+      {
+        "id": "purged-4",
+        "train": 8,
+        "validation": 2,
+        "purged": 0,
+        "embargoed": 1,
+        "embargoMs": 900000
+      },
+      {
+        "id": "purged-5",
+        "train": 8,
+        "validation": 3,
+        "purged": 0,
+        "embargoed": 0,
+        "embargoMs": 900000
+      }
+    ],
+    "exportedCpcv": [
+      {
+        "id": "cpcv-1-2",
+        "train": 138,
+        "validation": 92,
+        "purged": 0,
+        "embargoed": 1,
+        "embargoMs": 900000
+      },
+      {
+        "id": "cpcv-1-3",
+        "train": 92,
+        "validation": 92,
+        "purged": 46,
+        "embargoed": 1,
+        "embargoMs": 900000
+      },
+      {
+        "id": "cpcv-1-4",
+        "train": 46,
+        "validation": 92,
+        "purged": 92,
+        "embargoed": 1,
+        "embargoMs": 900000
+      },
+      {
+        "id": "cpcv-1-5",
+        "train": 0,
+        "validation": 93,
+        "purged": 138,
+        "embargoed": 0,
+        "embargoMs": 900000
+      },
+      {
+        "id": "cpcv-2-3",
+        "train": 138,
+        "validation": 92,
+        "purged": 0,
+        "embargoed": 1,
+        "embargoMs": 900000
+      },
+      {
+        "id": "cpcv-2-4",
+        "train": 92,
+        "validation": 92,
+        "purged": 46,
+        "embargoed": 1,
+        "embargoMs": 900000
+      },
+      {
+        "id": "cpcv-2-5",
+        "train": 46,
+        "validation": 93,
+        "purged": 92,
+        "embargoed": 0,
+        "embargoMs": 900000
+      },
+      {
+        "id": "cpcv-3-4",
+        "train": 138,
+        "validation": 92,
+        "purged": 0,
+        "embargoed": 1,
+        "embargoMs": 900000
+      },
+      {
+        "id": "cpcv-3-5",
+        "train": 92,
+        "validation": 93,
+        "purged": 46,
+        "embargoed": 0,
+        "embargoMs": 900000
+      },
+      {
+        "id": "cpcv-4-5",
+        "train": 138,
+        "validation": 93,
+        "purged": 0,
+        "embargoed": 0,
+        "embargoMs": 900000
+      }
+    ],
+    "recomputedCpcv": [
+      {
+        "id": "cpcv-1-2",
+        "train": 6,
+        "validation": 4,
+        "purged": 0,
+        "embargoed": 1,
+        "embargoMs": 900000
+      },
+      {
+        "id": "cpcv-1-3",
+        "train": 4,
+        "validation": 4,
+        "purged": 2,
+        "embargoed": 1,
+        "embargoMs": 900000
+      },
+      {
+        "id": "cpcv-1-4",
+        "train": 2,
+        "validation": 4,
+        "purged": 4,
+        "embargoed": 1,
+        "embargoMs": 900000
+      },
+      {
+        "id": "cpcv-1-5",
+        "train": 0,
+        "validation": 5,
+        "purged": 6,
+        "embargoed": 0,
+        "embargoMs": 900000
+      },
+      {
+        "id": "cpcv-2-3",
+        "train": 6,
+        "validation": 4,
+        "purged": 0,
+        "embargoed": 1,
+        "embargoMs": 900000
+      },
+      {
+        "id": "cpcv-2-4",
+        "train": 4,
+        "validation": 4,
+        "purged": 2,
+        "embargoed": 1,
+        "embargoMs": 900000
+      },
+      {
+        "id": "cpcv-2-5",
+        "train": 2,
+        "validation": 5,
+        "purged": 4,
+        "embargoed": 0,
+        "embargoMs": 900000
+      },
+      {
+        "id": "cpcv-3-4",
+        "train": 6,
+        "validation": 4,
+        "purged": 0,
+        "embargoed": 1,
+        "embargoMs": 900000
+      },
+      {
+        "id": "cpcv-3-5",
+        "train": 4,
+        "validation": 5,
+        "purged": 2,
+        "embargoed": 0,
+        "embargoMs": 900000
+      },
+      {
+        "id": "cpcv-4-5",
+        "train": 6,
+        "validation": 5,
+        "purged": 0,
+        "embargoed": 0,
+        "embargoMs": 900000
+      }
+    ],
+    "warnings": [],
+    "errors": [],
+    "failClosed": false
+  },
+  "leakageAudit": {
+    "snapshotId": "snap-20260611T014953Z",
+    "postCloseRowsDetected": 496,
+    "postCloseRowsExcluded": 496,
+    "featureAtOrAfterCloseCount": 496,
+    "labelBeforeFeatureCount": 0,
+    "settlementBeforeFeatureCount": 0,
+    "futureOutcomeFieldViolations": 0,
+    "duplicateFramesRemoved": 108,
+    "overlappingFramesDownsampled": 452,
+    "rawFrames": 27370,
+    "usableFrames": 26314,
+    "excludedFrames": 496
+  },
+  "researchLiveAlignment": {
+    "familyRegistryVersion": "dogeedge.family-registry.v1",
+    "liveAlgoCount": 4622,
+    "researchAlgoCount": 259,
+    "overlapByIdCount": 0,
+    "overlapByFamilyCount": 2,
+    "unsupportedLiveAlgoCount": 4159,
+    "supportedLiveAlgoCount": 463,
+    "researchFamilies": {
+      "paper-variant": 5,
+      "sweep-liquidity-imbalance": 50,
+      "paper": 4,
+      "sweep-model": 150,
+      "sweep-scalp": 50
+    },
+    "liveFamilies": {
+      "sweep-distance": 55,
+      "sweep-scalp": 186,
+      "sweep-managed-scalp": 125,
+      "sweep-momentum-trail": 3107,
+      "sweep-target-revert": 44,
+      "sweep-liquidity-imbalance": 277,
+      "sweep-momentum": 33,
+      "sweep-order-flow-pressure": 794,
+      "sweep-late-favorite": 1
+    },
+    "unsupportedLiveFamilies": [
+      {
+        "family": "sweep-momentum-trail",
+        "count": 3107,
+        "reason": "missing_research_adapter"
+      },
+      {
+        "family": "sweep-order-flow-pressure",
+        "count": 794,
+        "reason": "missing_research_adapter"
+      },
+      {
+        "family": "sweep-managed-scalp",
+        "count": 125,
+        "reason": "missing_research_adapter"
+      },
+      {
+        "family": "sweep-distance",
+        "count": 55,
+        "reason": "missing_research_adapter"
+      },
+      {
+        "family": "sweep-target-revert",
+        "count": 44,
+        "reason": "missing_research_adapter"
+      },
+      {
+        "family": "sweep-momentum",
+        "count": 33,
+        "reason": "missing_research_adapter"
+      },
+      {
+        "family": "sweep-late-favorite",
+        "count": 1,
+        "reason": "unregistered_family"
+      }
+    ],
+    "supportedLiveFamilies": [
+      {
+        "family": "sweep-liquidity-imbalance",
+        "count": 277
+      },
+      {
+        "family": "sweep-scalp",
+        "count": 186
+      }
+    ]
+  },
+  "topRosterDefaultSortAudit": {
+    "snapshotId": "snap-20260611T014953Z",
+    "checkedRows": 4622,
+    "researchRankedRosterCount": 0,
+    "telemetryWatchlistCount": 4622,
+    "supportedNonNegativeCount": 0,
+    "defaultRankOneAlgoId": null,
+    "defaultRankOneFamily": null,
+    "defaultRankOneSupported": null,
+    "defaultRankOneDryRunTotalPnl": null,
+    "unsafeRankOne": false,
+    "verdict": "ok_or_no_supported_nonnegative_rows"
+  },
+  "metricsSummary": {
+    "metricCount": 50,
+    "nonPromotableCount": 50,
+    "holdoutPassCount": 0,
+    "telemetryPresentCount": 50,
+    "approximateNamingOk": true
+  },
+  "promotionSummary": {
+    "reject": 50
+  },
+  "gate": null,
+  "topRosterReconciliation": null,
+  "verdict": "usable_with_warnings"
+}
