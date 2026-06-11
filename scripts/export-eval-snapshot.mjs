@@ -822,6 +822,10 @@ export async function exportEvaluationSnapshot(options = {}) {
     rawTickFormat: options.rawTickFormat ?? "jsonl",
     maxRawTickMarkets: numberOption(options.maxRawTickMarkets, 20),
     maxRawTickRowsPerMarket: numberOption(options.maxRawTickRowsPerMarket, 50_000),
+    sourceFileDiscoveryLimit: options.sourceFileDiscoveryLimit,
+    sourceLineLimit: options.sourceLineLimit,
+    sourceScanBytes: options.sourceScanBytes,
+    sourceHeadScanBytes: options.sourceHeadScanBytes,
     sourceRunId: primaryRun?.runId ?? null,
     sourceSnapshotHash,
   });
@@ -1037,7 +1041,13 @@ export async function exportEvaluationSnapshot(options = {}) {
 }
 
 export async function buildReviewBundle(options = {}) {
-  const snapshotResult = await exportEvaluationSnapshot(options);
+  const snapshotResult = await exportEvaluationSnapshot({
+    ...options,
+    sourceFileDiscoveryLimit: numberOption(options.sourceFileDiscoveryLimit, 30),
+    sourceLineLimit: numberOption(options.sourceLineLimit, 75_000),
+    sourceScanBytes: numberOption(options.sourceScanBytes, 128 * 1024 * 1024),
+    sourceHeadScanBytes: numberOption(options.sourceHeadScanBytes, 4 * 1024 * 1024),
+  });
   const outRoot = path.resolve(options.outDir ?? path.join(path.resolve(options.dataRoot ?? defaultDataRoot()), "gpt-review-packets"));
   const generatedAt = snapshotResult.snapshot.generatedAt;
   const bundleId = `dogeedge-review-bundle-${compactIso(new Date(generatedAt))}`;
@@ -2109,6 +2119,10 @@ async function writeExactReviewFiles({
   rawTickFormat = "jsonl",
   maxRawTickMarkets = 20,
   maxRawTickRowsPerMarket = 50_000,
+  sourceFileDiscoveryLimit,
+  sourceLineLimit,
+  sourceScanBytes,
+  sourceHeadScanBytes,
   sourceRunId,
   sourceSnapshotHash,
 }) {
@@ -2154,6 +2168,10 @@ async function writeExactReviewFiles({
     rawTickFormat,
     maxRawTickMarkets,
     maxRawTickRowsPerMarket,
+    sourceFileDiscoveryLimit,
+    sourceLineLimit,
+    sourceScanBytes,
+    sourceHeadScanBytes,
   }));
   return files;
 }
@@ -2921,11 +2939,14 @@ async function writeRawMarketTicksManifest({
   rawTickFormat = "jsonl",
   maxRawTickMarkets = 20,
   maxRawTickRowsPerMarket = 50_000,
+  sourceFileDiscoveryLimit = 10,
+  sourceLineLimit,
+  sourceScanBytes,
+  sourceHeadScanBytes,
 }) {
   const dir = path.join(snapshotDir, "raw_market_ticks");
   await mkdir(dir, { recursive: true });
   const requestedFormat = rawTickFormat === "jsonl" ? "jsonl" : "parquet";
-  const sourceFileDiscoveryLimit = 10;
   const rawTickSchemaFields = [
     "ts_event",
     "ts_receive",
@@ -2983,10 +3004,11 @@ async function writeRawMarketTicksManifest({
     fieldTypes: rawTickFieldTypes,
     requiredFields: rawTickSchemaFields,
   };
+  const resolvedSourceFileDiscoveryLimit = Math.max(1, Math.floor(numberOption(sourceFileDiscoveryLimit, 10)));
   const rawSnapshotFiles = await latestFilesRecursive(
     path.join(dataRoot, "raw", "snapshots"),
     [".jsonl", ".ndjson", ".json", ".csv"],
-    sourceFileDiscoveryLimit,
+    resolvedSourceFileDiscoveryLimit,
   );
   const allTargetMarkets = uniqueStrings([
     ...decisionRows.map((row) => normalizeRawMarketTicker(row.marketTicker)),
@@ -2996,9 +3018,20 @@ async function writeRawMarketTicksManifest({
   const targetMarkets = allTargetMarkets.slice(0, targetMarketLimit);
   const targetMarketRequestedCount = allTargetMarkets.length;
   const targetMarketOmittedCount = Math.max(0, targetMarketRequestedCount - targetMarkets.length);
-  const sourceLineLimit = Math.max(2_000, Math.min(50_000, targetMarkets.length * 2_000));
-  const sourceScanBytes = Math.min(64 * 1024 * 1024, Math.max(4 * 1024 * 1024, targetMarkets.length * 4 * 1024 * 1024));
-  const sourceHeadScanBytes = Math.max(256 * 1024, Math.min(2 * 1024 * 1024, sourceScanBytes));
+  const targetBasedSourceLineLimit = Math.max(2_000, Math.min(50_000, targetMarkets.length * 2_000));
+  const targetBasedSourceScanBytes = Math.min(
+    64 * 1024 * 1024,
+    Math.max(4 * 1024 * 1024, targetMarkets.length * 4 * 1024 * 1024),
+  );
+  const resolvedSourceLineLimit = Math.max(1, numberOption(sourceLineLimit, targetBasedSourceLineLimit));
+  const resolvedSourceScanBytes = Math.max(1, numberOption(sourceScanBytes, targetBasedSourceScanBytes));
+  const resolvedSourceHeadScanBytes = Math.max(
+    1,
+    numberOption(sourceHeadScanBytes, Math.max(256 * 1024, Math.min(2 * 1024 * 1024, resolvedSourceScanBytes))),
+  );
+  const effectiveSourceLineLimit = resolvedSourceLineLimit;
+  const effectiveSourceScanBytes = resolvedSourceScanBytes;
+  const effectiveSourceHeadScanBytes = resolvedSourceHeadScanBytes;
   const jsonlFiles = requestedFormat === "jsonl"
     ? await writeRawTickJsonlSamples({
       dir,
@@ -3007,9 +3040,9 @@ async function writeRawMarketTicksManifest({
       gitInfo,
       targetMarkets,
       maxRowsPerMarket: maxRawTickRowsPerMarket,
-      sourceLineLimit,
-      sourceScanBytes,
-      sourceHeadScanBytes,
+      sourceLineLimit: effectiveSourceLineLimit,
+      sourceScanBytes: effectiveSourceScanBytes,
+      sourceHeadScanBytes: effectiveSourceHeadScanBytes,
     })
     : { files: [], sourceLineLimit: null, sourceScanBytes: null, sourceHeadScanBytes: null };
   const sources = [];
@@ -3081,17 +3114,17 @@ async function writeRawMarketTicksManifest({
     extractionPolicy: {
       maxTargetMarkets: targetMarketLimit,
       maxRowsPerMarket: maxRawTickRowsPerMarket,
-      sourceFileDiscoveryLimit,
-    sourceLineLimit: jsonlFiles.sourceLineLimit,
-    sourceScanBytes: jsonlFiles.sourceScanBytes,
-    sourceHeadScanBytes: jsonlFiles.sourceHeadScanBytes,
-    compactScanLineLimit: jsonlFiles.compactScanLineLimit ?? null,
-    compactScanMaxBytes: jsonlFiles.compactScanMaxBytes ?? null,
-    supplementalScanPassesPlanned: jsonlFiles.supplementalScanPassesPlanned ?? null,
-    supplementalScanPasses: jsonlFiles.supplementalScanPasses,
-    supplementalScanBytes: jsonlFiles.supplementalScanBytes,
-    supplementalScanBudgetBytes: numberOrNull(jsonlFiles.supplementalScanBudgetBytes),
-  },
+      sourceFileDiscoveryLimit: resolvedSourceFileDiscoveryLimit,
+      sourceLineLimit: jsonlFiles.sourceLineLimit,
+      sourceScanBytes: jsonlFiles.sourceScanBytes,
+      sourceHeadScanBytes: jsonlFiles.sourceHeadScanBytes,
+      compactScanLineLimit: jsonlFiles.compactScanLineLimit ?? null,
+      compactScanMaxBytes: jsonlFiles.compactScanMaxBytes ?? null,
+      supplementalScanPassesPlanned: jsonlFiles.supplementalScanPassesPlanned ?? null,
+      supplementalScanPasses: jsonlFiles.supplementalScanPasses,
+      supplementalScanBytes: jsonlFiles.supplementalScanBytes,
+      supplementalScanBudgetBytes: numberOrNull(jsonlFiles.supplementalScanBudgetBytes),
+    },
     warningCodes: [
       "raw_market_tick_parquet_absent",
       ...(requestedFormat === "jsonl" && !available ? ["raw_market_tick_jsonl_absent"] : []),
