@@ -1241,6 +1241,15 @@ function slimGeneratedAlgos(algos, limit) {
     sourceResearchAlgoId: algo?.sourceResearchAlgoId ?? null,
     sourceSnapshotHash: algo?.sourceSnapshotHash ?? null,
     promotionVerdictAtInstall: algo?.promotionVerdictAtInstall ?? null,
+    lane: algo?.lane ?? null,
+    evidenceStatus: algo?.evidenceStatus ?? null,
+    promotionEligibility: algo?.promotionEligibility ?? null,
+    paperOnly: algo?.paperOnly !== false,
+    exactLinked: Boolean(algo?.exactLinked || (algo?.researchCandidateId && algo?.candidateConfigHash)),
+    seed: algo?.seed ?? null,
+    metricsVersion: algo?.metricsVersion ?? null,
+    executionVersion: algo?.executionVersion ?? null,
+    lineageHash: algo?.lineageHash ?? null,
     name: algo?.name ?? null,
     family: algo?.family ?? null,
     enabled: Boolean(algo?.enabled),
@@ -1370,7 +1379,10 @@ function generatedPaperAlgoLines(algos) {
   return active.map((algo) => {
     const metrics = algo?.sourceMetrics ?? {};
     const id = algo?.displayId ? `${algo.displayId} ` : "";
-    return `- ${algo?.enabled ? "ON" : "OFF"} ${id}${algo?.name ?? algo?.sourceAlgoId ?? "generated"} (${workerFamilyLabel(algo?.family)}): ${metrics.closed ?? 0} closed, P/L ${money(metrics.totalPnl ?? 0)}, ROI ${((metrics.roi ?? 0) * 100).toFixed(1)}%`;
+    const lane = algo?.evidenceStatus === "evidence_probe_only" || algo?.lane === "exact_linked_evidence_probe"
+      ? "Evidence Probe, Paper Only, Not Promotion Eligible, Exact Linked"
+      : "Generated Paper";
+    return `- ${algo?.enabled ? "ON" : "OFF"} ${id}${algo?.name ?? algo?.sourceAlgoId ?? "generated"} (${workerFamilyLabel(algo?.family)}; ${lane}): ${metrics.closed ?? 0} closed, P/L ${money(metrics.totalPnl ?? 0)}, ROI ${((metrics.roi ?? 0) * 100).toFixed(1)}%`;
   });
 }
 

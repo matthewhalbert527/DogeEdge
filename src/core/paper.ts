@@ -59,6 +59,15 @@ export interface GeneratedPaperAlgo {
   sourceResearchAlgoId?: string | null;
   sourceSnapshotHash?: string | null;
   promotionVerdictAtInstall?: string | null;
+  lane?: "research_validated" | "telemetry_watchlist" | "exact_linked_evidence_probe" | null;
+  evidenceStatus?: "research_validated" | "telemetry_only" | "evidence_probe_only" | "rejected" | "insufficient_data" | null;
+  promotionEligibility?: "not_promotion_eligible" | "paper_candidate" | "tiny_live_eligible" | "research_validated" | null;
+  paperOnly?: boolean;
+  exactLinked?: boolean;
+  seed?: string | null;
+  metricsVersion?: string | null;
+  executionVersion?: string | null;
+  lineageHash?: string | null;
   name: string;
   family: string;
   params: Record<string, unknown>;
@@ -2155,6 +2164,15 @@ function normalizeGeneratedPaperAlgo(value: unknown): GeneratedPaperAlgo | null 
     sourceResearchAlgoId: stringOrNullable(value.sourceResearchAlgoId),
     sourceSnapshotHash: stringOrNullable(value.sourceSnapshotHash),
     promotionVerdictAtInstall: stringOrNullable(value.promotionVerdictAtInstall),
+    lane: normalizeGeneratedAlgoLane(value.lane),
+    evidenceStatus: normalizeGeneratedAlgoEvidenceStatus(value.evidenceStatus),
+    promotionEligibility: normalizeGeneratedAlgoPromotionEligibility(value.promotionEligibility),
+    paperOnly: value.paperOnly !== false,
+    exactLinked: value.exactLinked === true || Boolean(value.researchCandidateId && value.candidateConfigHash),
+    seed: stringOrNullable(value.seed),
+    metricsVersion: stringOrNullable(value.metricsVersion),
+    executionVersion: stringOrNullable(value.executionVersion),
+    lineageHash: stringOrNullable(value.lineageHash),
     name,
     family,
     params: isRecord(value.params) ? { ...value.params } : {},
@@ -2171,6 +2189,27 @@ function normalizeGeneratedPaperAlgo(value: unknown): GeneratedPaperAlgo | null 
       maxDrawdown: numberOrDefault(sourceMetrics.maxDrawdown, 0),
     },
   };
+}
+
+function normalizeGeneratedAlgoLane(value: unknown): GeneratedPaperAlgo["lane"] {
+  if (value === "research_validated" || value === "telemetry_watchlist" || value === "exact_linked_evidence_probe") return value;
+  return null;
+}
+
+function normalizeGeneratedAlgoEvidenceStatus(value: unknown): GeneratedPaperAlgo["evidenceStatus"] {
+  if (
+    value === "research_validated"
+    || value === "telemetry_only"
+    || value === "evidence_probe_only"
+    || value === "rejected"
+    || value === "insufficient_data"
+  ) return value;
+  return null;
+}
+
+function normalizeGeneratedAlgoPromotionEligibility(value: unknown): GeneratedPaperAlgo["promotionEligibility"] {
+  if (value === "not_promotion_eligible" || value === "paper_candidate" || value === "tiny_live_eligible" || value === "research_validated") return value;
+  return null;
 }
 
 export function generatedPaperFamilyCode(family: string, nameOrSource = "") {

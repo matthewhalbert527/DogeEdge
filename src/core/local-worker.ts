@@ -425,6 +425,11 @@ function normalizeSweepCandidate(value: unknown): LocalFactorySweepCandidate | n
   return {
     algoId: stringOrDefault(value.algoId, "unknown"),
     displayId: typeof value.displayId === "string" && value.displayId.length > 0 ? value.displayId : displayIdFromAlgoId(stringOrDefault(value.algoId, "")),
+    researchCandidateId: stringOrNullable(value.researchCandidateId) ?? undefined,
+    candidateConfigHash: stringOrNullable(value.candidateConfigHash) ?? undefined,
+    sourceResearchAlgoId: stringOrNullable(value.sourceResearchAlgoId) ?? undefined,
+    sourceRunId: stringOrNullable(value.sourceRunId) ?? undefined,
+    sourceSnapshotHash: stringOrNullable(value.sourceSnapshotHash) ?? undefined,
     algoName: stringOrDefault(value.algoName, "Unknown algo"),
     family: stringOrDefault(value.family, "unknown"),
     params: isRecord(value.params) ? { ...value.params } : {},
@@ -561,6 +566,10 @@ function normalizePaperTradeStrategySummary(value: unknown): LocalPaperTradeStra
 
 function stringOrDefault(value: unknown, fallback: string) {
   return typeof value === "string" && value.length > 0 ? value : fallback;
+}
+
+function stringOrNullable(value: unknown) {
+  return typeof value === "string" && value.length > 0 ? value : null;
 }
 
 function displayIdFromAlgoId(algoId: string): string | null {

@@ -13,6 +13,12 @@ import { researchCandidateIdentity, researchCandidateIdentityContext } from "./f
 import { compactReplayTickRow } from "./factory/raw-tick-extract.mjs";
 import { replayParityReportFromManifest } from "./factory/replay-coverage.mjs";
 import { buildExecutableReadinessGate, readinessKpisFromGate } from "./factory/readiness-gate.mjs";
+import {
+  forecastCalibrationForDecisionRows,
+  officialForecastCalibrationReport,
+  probabilityCalibrationForTrades,
+  tradeCalibrationByCandidate,
+} from "./factory/probability-calibration.mjs";
 
 const execFileAsync = promisify(execFile);
 const schemaVersion = "dogeedge.eval.snapshot.v1";
@@ -285,6 +291,10 @@ const tradeRowsColumns = [
   "labelSource",
   "settlementSource",
   "officialResolutionAvailable",
+  "outcomeSide",
+  "fairProbability",
+  "modelConfidence",
+  "modelEdgeAfterFees",
   "status",
   "side",
   "contracts",
@@ -536,6 +546,45 @@ const supportedLiveLinkageColumns = [
   "dryRunAcceptedBuys",
 ];
 
+const evidenceProbeColumns = [
+  "snapshotId",
+  "probeId",
+  "displayId",
+  "family",
+  "researchCandidateId",
+  "candidateConfigHash",
+  "sourceResearchAlgoId",
+  "sourceRunId",
+  "sourceSnapshotHash",
+  "promotionVerdictAtInstall",
+  "lane",
+  "evidenceStatus",
+  "paperOnly",
+  "exactLinked",
+  "promotionEligibility",
+  "enabled",
+];
+
+const replayGapReportColumns = [
+  "snapshotId",
+  "marketTicker",
+  "fallbackKind",
+  "replayGradeAvailable",
+  "reason",
+];
+
+const readinessTrendColumns = [
+  "snapshotId",
+  "generatedAt",
+  "headlineState",
+  "officialSettlementCoverage",
+  "replayGradeTargetMarketCoverage",
+  "exactLinkedSupportedLiveRows",
+  "exactLinkedEvidenceProbeCount",
+  "calibrationLabelKnownCount",
+  "researchValidatedRosterCount",
+];
+
 const officialSettlementColumns = [
   "snapshotId",
   "marketTicker",
@@ -611,6 +660,21 @@ const simulatorCalibrationColumns = [
   "calibrationAction",
 ];
 
+const forecastCalibrationByCandidateColumns = [
+  "snapshotId",
+  "calibrationKind",
+  "candidateKey",
+  "algoId",
+  "family",
+  "researchCandidateId",
+  "candidateConfigHash",
+  "labelKnownCount",
+  "calibrationReady",
+  "brierScore",
+  "logLoss",
+  "expectedCalibrationError",
+];
+
 const officialScoringCoverageThreshold = 0.8;
 const officialPromotionCoverageThreshold = 0.95;
 
@@ -640,24 +704,39 @@ export async function exportEvaluationSnapshot(options = {}) {
   const liveSwitchPath = path.join(storageDir, "live-switch.json");
   const factoryAutomationPath = path.join(storageDir, "factory-automation.json");
   const topTradersPath = path.join(storageDir, "top-traders-executable.json");
+  const evidenceProbesPath = path.join(storageDir, "evidence-probes.json");
   const latestBacktestPath = path.join(backtestsDir, "latest.json");
   const latestSweepPath = path.join(backtestsDir, "latest-sweep.json");
+  const settlementFetchReportPath = path.join(dataRoot, "settlement_fetch_report.json");
+  const replayManifestSummaryPath = path.join(dataRoot, "replay", "final", "replay_manifest_summary.json");
+  const evidenceStatusPath = path.resolve("artifacts", "evidence", "evidence_status.json");
+  const evidencePreflightReportPath = path.resolve("artifacts", "evidence-preflight", "report.json");
 
   const [
     localLatest,
     liveSwitch,
     factoryAutomationFile,
     topTradersFile,
+    evidenceProbesFile,
     latestBacktest,
     latestSweep,
+    settlementFetchReport,
+    replayManifestSummary,
+    evidenceStatus,
+    evidencePreflightReport,
     gitInfo,
   ] = await Promise.all([
     readJsonMaybe(localLatestPath),
     readJsonMaybe(liveSwitchPath),
     readJsonMaybe(factoryAutomationPath),
     readJsonMaybe(topTradersPath),
+    readJsonMaybe(evidenceProbesPath),
     readJsonMaybe(latestBacktestPath),
     readJsonMaybe(latestSweepPath),
+    readJsonMaybe(settlementFetchReportPath),
+    readJsonMaybe(replayManifestSummaryPath),
+    readJsonMaybe(evidenceStatusPath),
+    readJsonMaybe(evidencePreflightReportPath),
     repoInfo(),
   ]);
 
@@ -680,6 +759,7 @@ export async function exportEvaluationSnapshot(options = {}) {
   const localStoredAt = parseTime(localLatest?.storedAt);
   const dataQuality = dataQualitySummary(primaryRun, metrics);
   const safety = liveSafetyState(liveSwitch);
+  const evidenceProbeArtifacts = evidenceProbeLaneArtifacts({ snapshotId, evidenceProbesFile });
 
   const algoRollup = metrics.map((metric) => algoRollupRow(metric, {
     snapshotId,
@@ -696,6 +776,7 @@ export async function exportEvaluationSnapshot(options = {}) {
   const foldMetrics = foldMetricRows({ snapshotId, metrics, registry, primaryRun });
   const alignment = researchLiveAlignment({ researchMetrics: metrics, liveStats: topStats });
   const leakageAudit = leakageAuditSummary({ snapshotId, dataQuality, metrics });
+  const seedCompleteness = seedCompletenessForMetrics(metrics, primaryRun);
   const alignmentArtifacts = alignmentRows({ snapshotId, metrics, topStats, primaryRun, alignment, leakageAudit, identityByAlgoId });
   let decisionRows = [];
   let tradeRows = [];
@@ -769,6 +850,20 @@ export async function exportEvaluationSnapshot(options = {}) {
     tradeRows,
     topStats,
   });
+  const forecastCalibrationByCandidate = forecastCalibrationForDecisionRows([...decisionRows, ...tradeRows])
+    .map((row) => ({ snapshotId, ...row }));
+  const tradeCalibrationByCandidateRows = tradeCalibrationByCandidate(tradeRows)
+    .map((row) => ({ snapshotId, ...row }));
+  const calibrationReport = {
+    schemaVersion: "dogeedge.calibration-report.v1",
+    snapshotId,
+    generatedAt,
+    forecastCalibration: officialForecastCalibrationReport([...decisionRows, ...tradeRows]),
+    tradeOutcomeCalibration: probabilityCalibrationForTrades(tradeRows),
+    simulatorCalibration: simulatorCalibration.report,
+    officialLabelsOnlyForForecast: true,
+    tradeOutcomeCalibrationUsesRealizedClosedTrades: true,
+  };
   filesToWrite.push(
     { logicalName: "candidate_lineage_audit.tsv.gz", relativePath: "candidate_lineage_audit.tsv.gz", content: tsv(candidateLineageAuditColumns, identityArtifacts.candidateLineageAudit) },
     { logicalName: "unlinked_live_rows.tsv.gz", relativePath: "unlinked_live_rows.tsv.gz", content: tsv(unlinkedLiveRowsColumns, identityArtifacts.unlinkedLiveRows) },
@@ -777,9 +872,13 @@ export async function exportEvaluationSnapshot(options = {}) {
     { logicalName: "missing_provenance_rows.tsv.gz", relativePath: "missing_provenance_rows.tsv.gz", content: tsv(missingProvenanceRowsColumns, identityArtifacts.missingProvenanceRows) },
     { logicalName: "supported_live_linkage.tsv.gz", relativePath: "supported_live_linkage.tsv.gz", content: tsv(supportedLiveLinkageColumns, identityArtifacts.supportedLiveLinkage) },
     { logicalName: "supported_live_exact_links.tsv.gz", relativePath: "supported_live_exact_links.tsv.gz", content: tsv(supportedLiveLinkageColumns, identityArtifacts.supportedLiveExactLinks) },
+    { logicalName: "evidence_probe_lane.tsv.gz", relativePath: "evidence_probe_lane.tsv.gz", content: tsv(evidenceProbeColumns, evidenceProbeArtifacts.rows) },
+    { logicalName: "replay_gap_report.tsv.gz", relativePath: "replay_gap_report.tsv.gz", content: tsv(replayGapReportColumns, replayGapRows({ snapshotId, replayManifestSummary })) },
     { logicalName: "official_settlements.tsv.gz", relativePath: "official_settlements.tsv.gz", content: tsv(officialSettlementColumns, settlementArtifacts.settlements) },
     { logicalName: "official_settlement_coverage_by_family.tsv.gz", relativePath: "official_settlement_coverage_by_family.tsv.gz", content: tsv(officialSettlementCoverageByFamilyColumns, settlementArtifacts.coverageByFamily) },
     { logicalName: "official_settlement_coverage_by_candidate.tsv.gz", relativePath: "official_settlement_coverage_by_candidate.tsv.gz", content: tsv(officialSettlementCoverageByCandidateColumns, settlementArtifacts.coverageByCandidate) },
+    { logicalName: "forecast_calibration_by_candidate.tsv.gz", relativePath: "forecast_calibration_by_candidate.tsv.gz", content: tsv(forecastCalibrationByCandidateColumns, forecastCalibrationByCandidate) },
+    { logicalName: "trade_calibration_by_candidate.tsv.gz", relativePath: "trade_calibration_by_candidate.tsv.gz", content: tsv(forecastCalibrationByCandidateColumns, tradeCalibrationByCandidateRows) },
     { logicalName: "simulator_calibration_by_regime.tsv.gz", relativePath: "simulator_calibration_by_regime.tsv.gz", content: tsv(simulatorCalibrationColumns, simulatorCalibration.rows) },
     { logicalName: "calibration_by_bucket.tsv.gz", relativePath: "calibration_by_bucket.tsv.gz", content: tsv(simulatorCalibrationColumns, simulatorCalibration.rows) },
   );
@@ -814,7 +913,7 @@ export async function exportEvaluationSnapshot(options = {}) {
   });
   fileManifest.push(...exactExportFiles);
   const rawTickManifest = await readJsonMaybe(path.join(snapshotDir, "raw_market_ticks", "manifest.json"));
-  const replayParityReport = replayParityReportFromRawManifest({ snapshotId, generatedAt, rawTickManifest });
+  const replayParityReport = replayParityReportFromRawManifest({ snapshotId, generatedAt, rawTickManifest, replayManifestSummary });
   const rejectStreamSummary = rejectStreamSummaryReport({ snapshotId, generatedAt, decisionRows, tradeRows, topStats });
   const topRosterAudit = topRosterDefaultSortAudit({ snapshotId, alignmentArtifacts });
   const executableReadinessGate = executableReadinessGateReport({
@@ -827,12 +926,19 @@ export async function exportEvaluationSnapshot(options = {}) {
     simulatorCalibrationReport: simulatorCalibration.report,
     topRosterDefaultSortAudit: topRosterAudit,
     dataQuality,
+    evidenceProbeSummary: evidenceProbeArtifacts.summary,
+    seedCompleteness,
   });
   const readinessKpis = readinessKpisFromGate(executableReadinessGate, {
     settlementCoverageReport: settlementArtifacts.coverageReport,
+    settlementFetchReport,
     replayParityReport,
     exactLinkSummary: identityArtifacts.exactLinkSummary,
+    evidenceProbeSummary: evidenceProbeArtifacts.summary,
   });
+  const readinessTrend = readinessTrendRows({ priorHistory, current: readinessKpis });
+  const improvementScorecard = improvementScorecardFromTrend({ snapshotId, generatedAt, readinessTrend });
+  const improvementRegressionAlerts = improvementRegressionAlertsFromScorecard(improvementScorecard);
   const auditExportFiles = await writeAuditReviewFiles({
     snapshotDir,
     alignment,
@@ -842,16 +948,28 @@ export async function exportEvaluationSnapshot(options = {}) {
     researchLiveIdentityAlignment: identityArtifacts.researchLiveIdentityAlignment,
     exactLinkSummary: identityArtifacts.exactLinkSummary,
     settlementCoverageReport: settlementArtifacts.coverageReport,
+    settlementFetchReport,
     replayParityReport,
+    replayManifestSummary,
     rejectStreamSummary,
+    evidenceProbeLane: evidenceProbeArtifacts.summary,
+    evidenceStatus,
+    evidencePreflightReport,
     executableReadinessGate,
     readinessKpis,
+    improvementScorecard,
+    improvementRegressionAlerts,
+    calibrationReport,
     simulatorCalibrationReport: simulatorCalibration.report,
     simulatorCalibrationMarkdown: simulatorCalibration.markdown,
     schedulerBudgetReport: identityArtifacts.schedulerBudgetReport,
     provenanceCompletenessReport: identityArtifacts.provenanceCompletenessReport,
   });
   fileManifest.push(...auditExportFiles);
+  const readinessTrendPath = path.join(snapshotDir, "readiness_trend_48h.tsv.gz");
+  const readinessTrendContent = tsv(readinessTrendColumns, readinessTrend);
+  await writeGzipText(readinessTrendPath, readinessTrendContent);
+  fileManifest.push(await fileInfo(readinessTrendPath, "readiness_trend_48h.tsv.gz", "readiness_trend_48h.tsv.gz", rowCountFromTsv(readinessTrendContent)));
 
   const snapshot = {
     schemaVersion,
@@ -900,9 +1018,13 @@ export async function exportEvaluationSnapshot(options = {}) {
     researchLiveIdentityAlignment: identityArtifacts.researchLiveIdentityAlignment,
     exactLinkSummary: identityArtifacts.exactLinkSummary,
     officialSettlementCoverageSummary: settlementArtifacts.coverageReport.summary,
+    settlementFetchReport,
     simulatorCalibrationReport: simulatorCalibration.report,
     replayParityReport,
     rejectStreamSummary,
+    evidenceProbeLane: evidenceProbeArtifacts.summary,
+    evidenceStatus,
+    evidencePreflightReport,
     executableReadinessGate,
     readinessKpis,
     schedulerBudgetReport: identityArtifacts.schedulerBudgetReport,
@@ -1062,17 +1184,28 @@ export async function buildReviewBundle(options = {}) {
     "research_live_identity_alignment.json",
     "exact_link_summary.json",
     "settlement_coverage_report.json",
+    "settlement_fetch_report.json",
     "official_settlement_coverage_by_family.tsv.gz",
     "official_settlement_coverage_by_candidate.tsv.gz",
+    "forecast_calibration_by_candidate.tsv.gz",
+    "trade_calibration_by_candidate.tsv.gz",
     "simulator_calibration_by_regime.tsv.gz",
     "calibration_by_bucket.tsv.gz",
     "simulator_calibration_report.json",
     "calibration_report.json",
     "simulator_calibration_report.md",
     "reject_stream_summary.json",
+    "evidence_probe_lane.json",
+    "evidence_status.json",
+    "evidence_preflight_report.json",
     "replay_parity_report.json",
+    "replay_manifest_summary.json",
+    "replay_gap_report.tsv.gz",
     "executable_readiness_gate.json",
     "readiness_kpis.json",
+    "readiness_trend_48h.tsv.gz",
+    "improvement_scorecard.json",
+    "improvement_regression_alerts.json",
     "family_allocation_report.json",
     "scheduler_budget_report.json",
     "provenance_completeness_report.json",
@@ -1088,6 +1221,7 @@ export async function buildReviewBundle(options = {}) {
     "evidence_allocation_by_candidate.tsv.gz",
     "supported_live_linkage.tsv.gz",
     "supported_live_exact_links.tsv.gz",
+    "evidence_probe_lane.tsv.gz",
     "missing_provenance_rows.tsv.gz",
     "post_close_frame_audit.tsv.gz",
   ]) {
@@ -2008,6 +2142,10 @@ function tradeRowFromPaperTrade(trade, context) {
     labelSource: trade.labelSource ?? trade.entryContext?.labelSource ?? "unknown",
     settlementSource: trade.settlementSource ?? "estimated",
     officialResolutionAvailable: trade.officialResolutionAvailable === true || trade.settlementSource === "official_resolution",
+    outcomeSide: trade.outcomeSide ?? "",
+    fairProbability: numberOrNull(trade.fairProbability ?? trade.entryContext?.fairProbability),
+    modelConfidence: numberOrNull(trade.modelConfidence ?? trade.entryContext?.confidence),
+    modelEdgeAfterFees: numberOrNull(trade.modelEdgeAfterFees ?? trade.entryContext?.edgeAfterFees),
     status: trade.status ?? "",
     side: trade.side ?? "",
     contracts: numberOrZero(trade.contracts ?? trade.size),
@@ -2122,10 +2260,18 @@ async function writeAuditReviewFiles({
   researchLiveIdentityAlignment,
   exactLinkSummary,
   settlementCoverageReport,
+  settlementFetchReport,
   replayParityReport,
+  replayManifestSummary,
   rejectStreamSummary,
+  evidenceProbeLane,
+  evidenceStatus,
+  evidencePreflightReport,
   executableReadinessGate,
   readinessKpis,
+  improvementScorecard,
+  improvementRegressionAlerts,
+  calibrationReport,
   simulatorCalibrationReport,
   simulatorCalibrationMarkdown,
   schedulerBudgetReport,
@@ -2138,12 +2284,19 @@ async function writeAuditReviewFiles({
     ["research_live_identity_alignment.json", researchLiveIdentityAlignment],
     ["exact_link_summary.json", exactLinkSummary],
     ["settlement_coverage_report.json", settlementCoverageReport],
+    ["settlement_fetch_report.json", settlementFetchReport ?? { schemaVersion: "dogeedge.settlement-fetch-job.v1", status: "absent" }],
     ["simulator_calibration_report.json", simulatorCalibrationReport],
-    ["calibration_report.json", simulatorCalibrationReport],
+    ["calibration_report.json", calibrationReport ?? simulatorCalibrationReport],
     ["replay_parity_report.json", replayParityReport],
+    ["replay_manifest_summary.json", replayManifestSummary ?? { schemaVersion: "dogeedge.replay-manifest-summary.v1", status: "absent" }],
     ["reject_stream_summary.json", rejectStreamSummary],
+    ["evidence_probe_lane.json", evidenceProbeLane],
+    ["evidence_status.json", evidenceStatus ?? { schemaVersion: "dogeedge.evidence-status.v1", status: "absent" }],
+    ["evidence_preflight_report.json", evidencePreflightReport ?? { schemaVersion: "dogeedge.evidence-preflight.v1", status: "absent" }],
     ["executable_readiness_gate.json", executableReadinessGate],
     ["readiness_kpis.json", readinessKpis],
+    ["improvement_scorecard.json", improvementScorecard],
+    ["improvement_regression_alerts.json", improvementRegressionAlerts],
     ["family_allocation_report.json", familyAllocationReport],
     ["scheduler_budget_report.json", schedulerBudgetReport],
     ["provenance_completeness_report.json", provenanceCompletenessReport],
@@ -2639,6 +2792,150 @@ function topRosterDefaultSortAudit({ snapshotId, alignmentArtifacts }) {
   };
 }
 
+function evidenceProbeLaneArtifacts({ snapshotId, evidenceProbesFile }) {
+  const probes = Array.isArray(evidenceProbesFile?.probes) ? evidenceProbesFile.probes : [];
+  const rows = probes.map((probe) => ({
+    snapshotId,
+    probeId: probe.id ?? probe.sourceAlgoId ?? "",
+    displayId: probe.displayId ?? "",
+    family: probe.family ?? "unknown",
+    researchCandidateId: probe.researchCandidateId ?? "",
+    candidateConfigHash: probe.candidateConfigHash ?? "",
+    sourceResearchAlgoId: probe.sourceResearchAlgoId ?? probe.sourceAlgoId ?? "",
+    sourceRunId: probe.sourceRunId ?? "",
+    sourceSnapshotHash: probe.sourceSnapshotHash ?? "",
+    promotionVerdictAtInstall: probe.promotionVerdictAtInstall ?? "",
+    lane: probe.lane ?? "exact_linked_evidence_probe",
+    evidenceStatus: probe.evidenceStatus ?? "evidence_probe_only",
+    paperOnly: probe.paperOnly !== false,
+    exactLinked: Boolean(probe.exactLinked || (probe.researchCandidateId && probe.candidateConfigHash)),
+    promotionEligibility: probe.promotionEligibility ?? "not_promotion_eligible",
+    enabled: probe.enabled !== false,
+  }));
+  const exactLinkedProbeCount = rows.filter((row) => row.exactLinked && row.enabled).length;
+  const summary = {
+    schemaVersion: "dogeedge.evidence-probe-lane.summary.v1",
+    snapshotId,
+    generatedAt: evidenceProbesFile?.generatedAt ?? null,
+    lane: "exact_linked_evidence_probe",
+    installedProbeCount: rows.length,
+    enabledProbeCount: rows.filter((row) => row.enabled).length,
+    exactLinkedProbeCount,
+    paperOnly: true,
+    promotionEligible: false,
+    researchValidatedRosterImpact: 0,
+    reasonCodes: [
+      ...(rows.length === 0 ? ["evidence_probe_lane_empty"] : []),
+      ...(exactLinkedProbeCount === 0 ? ["exact_linked_evidence_probe_count_zero"] : []),
+    ],
+  };
+  return { rows, summary };
+}
+
+function replayGapRows({ snapshotId, replayManifestSummary }) {
+  if (!isRecord(replayManifestSummary) || !Array.isArray(replayManifestSummary.markets)) {
+    return [{
+      snapshotId,
+      marketTicker: "",
+      fallbackKind: "absent",
+      replayGradeAvailable: false,
+      reason: "replay_manifest_summary_absent",
+    }];
+  }
+  const rows = replayManifestSummary.markets
+    .filter((market) => market.replayGradeAvailable !== true)
+    .map((market) => ({
+      snapshotId,
+      marketTicker: market.marketTicker ?? "",
+      fallbackKind: market.fallbackKind ?? "absent",
+      replayGradeAvailable: market.replayGradeAvailable === true,
+      reason: market.rowCount > 0 ? "sequence_incomplete_or_gap" : "target_market_replay_absent",
+    }));
+  return rows.length ? rows : [{
+    snapshotId,
+    marketTicker: "",
+    fallbackKind: "replay_grade",
+    replayGradeAvailable: true,
+    reason: "",
+  }];
+}
+
+function readinessTrendRows({ priorHistory = [], current }) {
+  const priorRows = priorHistory.map((item) => ({
+    snapshotId: item.snapshotId,
+    generatedAt: item.generatedAt,
+    headlineState: item.readinessHeadlineState ?? "unknown",
+    officialSettlementCoverage: numberOrZero(item.officialSettlementCoverage),
+    replayGradeTargetMarketCoverage: numberOrZero(item.replayGradeTargetMarketCoverage),
+    exactLinkedSupportedLiveRows: numberOrZero(item.exactLinkedSupportedLiveRows),
+    exactLinkedEvidenceProbeCount: numberOrZero(item.exactLinkedEvidenceProbeCount),
+    calibrationLabelKnownCount: numberOrZero(item.calibrationLabelKnownCount),
+    researchValidatedRosterCount: numberOrZero(item.researchValidatedRosterCount),
+  }));
+  return [
+    ...priorRows,
+    {
+      snapshotId: current.snapshotId,
+      generatedAt: current.generatedAt,
+      headlineState: current.headlineState,
+      officialSettlementCoverage: current.officialSettlementCoverage,
+      replayGradeTargetMarketCoverage: current.replayGradeTargetMarketCoverage,
+      exactLinkedSupportedLiveRows: current.exactLinkedSupportedLiveRows,
+      exactLinkedEvidenceProbeCount: current.exactLinkedEvidenceProbeCount,
+      calibrationLabelKnownCount: current.calibrationLabelKnownCount,
+      researchValidatedRosterCount: current.researchValidatedRosterCount,
+    },
+  ];
+}
+
+function improvementScorecardFromTrend({ snapshotId, generatedAt, readinessTrend }) {
+  const latest = readinessTrend.at(-1) ?? {};
+  const baseline = readinessTrend[0] ?? latest;
+  const metrics = [
+    "officialSettlementCoverage",
+    "replayGradeTargetMarketCoverage",
+    "exactLinkedSupportedLiveRows",
+    "exactLinkedEvidenceProbeCount",
+    "calibrationLabelKnownCount",
+    "researchValidatedRosterCount",
+  ].map((key) => ({
+    key,
+    baseline: numberOrZero(baseline[key]),
+    latest: numberOrZero(latest[key]),
+    delta: roundDisplayRatio(numberOrZero(latest[key]) - numberOrZero(baseline[key])),
+  }));
+  const improving = metrics.some((metric) => metric.delta > 0);
+  const promotionReady = latest.headlineState === "executable_ready";
+  return {
+    schemaVersion: "dogeedge.improvement-scorecard.v1",
+    snapshotId,
+    generatedAt,
+    state: promotionReady ? "promotion_ready" : improving ? "progress_improving" : "hold_gather_evidence",
+    promotionReady,
+    improving,
+    metrics,
+  };
+}
+
+function improvementRegressionAlertsFromScorecard(scorecard) {
+  const regressions = (scorecard.metrics ?? [])
+    .filter((metric) => metric.delta < 0)
+    .map((metric) => ({
+      severity: "warn",
+      code: `${metric.key}_regressed`,
+      baseline: metric.baseline,
+      latest: metric.latest,
+      delta: metric.delta,
+    }));
+  return {
+    schemaVersion: "dogeedge.improvement-regression-alerts.v1",
+    snapshotId: scorecard.snapshotId,
+    generatedAt: scorecard.generatedAt,
+    alertCount: regressions.length,
+    alerts: regressions,
+  };
+}
+
 function officialSettlementArtifacts({ snapshotId, generatedAt, metrics, decisionRows, tradeRows, dataQuality }) {
   const officialByMarket = new Map();
   const ingest = (row, source) => {
@@ -3022,7 +3319,35 @@ function rejectStreamSummaryReport({ snapshotId, generatedAt, decisionRows, trad
   };
 }
 
-function replayParityReportFromRawManifest({ snapshotId, generatedAt, rawTickManifest }) {
+function replayParityReportFromRawManifest({ snapshotId, generatedAt, rawTickManifest, replayManifestSummary = null }) {
+  if (isRecord(replayManifestSummary)) {
+    const targetMarketCount = numberOrZero(replayManifestSummary.targetMarketCount);
+    const replayGradeTargetMarketCount = numberOrZero(replayManifestSummary.replayGradeTargetMarketCount);
+    const coveredTargetMarketCount = numberOrZero(replayManifestSummary.coveredTargetMarketCount);
+    const replayGrade = replayManifestSummary.replayGradeAvailable === true;
+    return {
+      schemaVersion: "dogeedge.replay-parity-report.v1",
+      snapshotId,
+      generatedAt,
+      targetMarketCount,
+      coveredTargetMarketCount,
+      uncoveredTargetMarketCount: Math.max(0, targetMarketCount - coveredTargetMarketCount),
+      replayGradeTargetMarketCount,
+      coverageRate: targetMarketCount > 0 ? roundDisplayRatio(coveredTargetMarketCount / targetMarketCount) : 0,
+      replayGradeTargetMarketCoverage: targetMarketCount > 0 ? roundDisplayRatio(replayGradeTargetMarketCount / targetMarketCount) : 0,
+      parquetAvailable: false,
+      jsonlAvailable: coveredTargetMarketCount > 0,
+      replayGrade,
+      sampleParity: coveredTargetMarketCount === targetMarketCount && targetMarketCount > 0,
+      executionSensitivePromotionAllowed: replayGrade,
+      fallbackKind: replayManifestSummary.fallbackKind ?? (replayGrade ? "replay_grade" : "absent"),
+      sourceSnapshotFileCount: numberOrZero(replayManifestSummary.rawFileCount),
+      hashedSourceSnapshotFileCount: 0,
+      sequenceGapCheckAvailable: replayGrade,
+      failClosed: !replayGrade,
+      reasonCodes: replayManifestSummary.reasonCodes ?? (!replayGrade ? ["replay_grade_target_market_ticks_absent"] : []),
+    };
+  }
   return replayParityReportFromManifest({ snapshotId, generatedAt, rawTickManifest });
 }
 
@@ -3036,6 +3361,7 @@ function executableReadinessGateReport({
   simulatorCalibrationReport,
   topRosterDefaultSortAudit,
   dataQuality = {},
+  evidenceProbeSummary = {},
 }) {
   return buildExecutableReadinessGate({
     snapshotId,
@@ -3047,6 +3373,7 @@ function executableReadinessGateReport({
     simulatorCalibrationReport,
     topRosterDefaultSortAudit,
     dataQuality,
+    evidenceProbeSummary,
   });
 }
 
@@ -3700,6 +4027,22 @@ function dataQualitySummary(primaryRun, metrics) {
     errorCount: numberOrZero(source.errorCount),
     settlementEvidence: source.settlementEvidence ?? {},
   };
+}
+
+function seedCompletenessForMetrics(metrics = [], primaryRun = null) {
+  const rows = Array.isArray(metrics) && metrics.length
+    ? metrics
+    : Array.isArray(primaryRun?.topMetrics) && primaryRun.topMetrics.length
+      ? primaryRun.topMetrics
+      : Array.isArray(primaryRun?.candidates) ? primaryRun.candidates : [];
+  if (!rows.length) return 0;
+  const runSeed = primaryRun?.seed ?? primaryRun?.randomSeed ?? primaryRun?.registry?.seed ?? primaryRun?.config?.seed;
+  const complete = rows.filter((metric) => metric?.seed || metric?.bootstrapSeed || metric?.reproducibility?.seed || runSeed).length;
+  if (complete > 0) return roundDisplayRatio(complete / rows.length);
+  const fallbackRows = Array.isArray(primaryRun?.topMetrics) && primaryRun.topMetrics.length ? primaryRun.topMetrics : [];
+  if (!fallbackRows.length || fallbackRows === rows) return 0;
+  const fallbackComplete = fallbackRows.filter((metric) => metric?.seed || metric?.bootstrapSeed || metric?.reproducibility?.seed || runSeed).length;
+  return roundDisplayRatio(fallbackComplete / fallbackRows.length);
 }
 
 function liveSafetyState(liveSwitch) {

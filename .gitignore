@@ -47,6 +47,9 @@ dogeedge-review-bundle-*.zip
 gpt-review-packets/
 artifacts/factory-audit/
 artifacts/eval-smoke/
+artifacts/evidence/
+artifacts/evidence-*/
+artifacts/cli-audit-latest/
 
 # Tauri/Rust build artifacts and installers
 src-tauri/target/

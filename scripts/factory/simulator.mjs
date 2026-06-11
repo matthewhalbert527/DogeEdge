@@ -90,7 +90,7 @@ export function simulateAlgoEvents(algo, events, options = {}) {
           if (exitDecision) {
             const closed = closeByExecutableBid(openTrade, frame, costModel, exitDecision.reason, rng);
             if (closed) {
-              trades.push(closed);
+              trades.push(withEventLabel(closed, event));
               openTrade = null;
               managedClosedThisFrame = true;
             } else {
@@ -99,7 +99,7 @@ export function simulateAlgoEvents(algo, events, options = {}) {
           } else if (shouldFlip) {
             const closed = closeByExecutableBid(openTrade, frame, costModel, "Algo flipped to the opposite side.", rng);
             if (closed) {
-              trades.push(closed);
+              trades.push(withEventLabel(closed, event));
               openTrade = null;
             } else {
               rejects.push(reject(frame, algo, "exit_no_fill", "No executable bid depth for flip exit.", fillTelemetry(frame, openTrade.side, "exit", costModel, { queueResult: "exit_no_fill", requestedContracts: openTrade.contracts })));
@@ -243,9 +243,9 @@ function closeByExecutableBid(trade, frame, costModel, reason, rng) {
 }
 
 function closeBySettlement(trade, event, frame, costModel, reason) {
-  if (trade.side === "BOTH") return closeByPrice(trade, frame, 1, reason, costModel, trade.contracts);
+  if (trade.side === "BOTH") return withEventLabel(closeByPrice(trade, frame, 1, reason, costModel, trade.contracts), event);
   const sideWon = trade.side === event.outcomeSide;
-  return closeByPrice(trade, frame, sideWon ? 1 : 0, reason, costModel, trade.contracts);
+  return withEventLabel(closeByPrice(trade, frame, sideWon ? 1 : 0, reason, costModel, trade.contracts), event);
 }
 
 function closeByPrice(trade, frame, exitPrice, reason, costModel, contracts) {
@@ -278,6 +278,19 @@ function closeByPrice(trade, frame, exitPrice, reason, costModel, contracts) {
       exit: telemetry,
     },
     lastFrame: undefined,
+  };
+}
+
+function withEventLabel(trade, event) {
+  if (!trade || !event) return trade;
+  return {
+    ...trade,
+    outcomeSide: event.outcomeSide ?? null,
+    labelTimestamp: event.labelTimestamp ?? null,
+    settlementTimestamp: event.settlementTimestamp ?? null,
+    labelSource: event.labelSource ?? "unknown",
+    settlementSource: event.settlementSource ?? "unknown",
+    officialResolutionAvailable: event.officialResolutionAvailable === true,
   };
 }
 

@@ -179,8 +179,16 @@ const identityContext = researchCandidateIdentityContext({
   costModels: pipeline.costModels,
   riskModel: registry.riskModel ?? {},
 });
-metrics = withResearchCandidateIdentity(metrics, identityContext, { sourceRunId: runId, sourceSnapshotHash: registry.inputManifestHash ?? registry.dataHash ?? null });
-candidates = withResearchCandidateIdentity(candidates, identityContext, { sourceRunId: runId, sourceSnapshotHash: registry.inputManifestHash ?? registry.dataHash ?? null });
+metrics = withResearchCandidateIdentity(metrics, identityContext, {
+  sourceRunId: runId,
+  sourceSnapshotHash: registry.inputManifestHash ?? registry.dataHash ?? null,
+  seed: randomSeed,
+});
+candidates = withResearchCandidateIdentity(candidates, identityContext, {
+  sourceRunId: runId,
+  sourceSnapshotHash: registry.inputManifestHash ?? registry.dataHash ?? null,
+  seed: randomSeed,
+});
 
 await writeFile(path.join(runDir, "config.json"), `${JSON.stringify({
   runId,
@@ -1240,6 +1248,9 @@ function withResearchCandidateIdentity(rows, context, extra = {}) {
       sourceResearchAlgoId: identity.sourceResearchAlgoId,
       sourceRunId: extra.sourceRunId ?? context.sourceRunId ?? null,
       sourceSnapshotHash: extra.sourceSnapshotHash ?? null,
+      seed: extra.seed ?? context.seed ?? null,
+      metricsVersion: context.metricsVersion ?? "dogeedge.factory.metrics.v1",
+      executionVersion: context.executionModelVersion ?? "dogeedge.simulator.v1",
     };
   });
 }

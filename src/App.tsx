@@ -142,6 +142,15 @@ type GeneratedPaperAlgoArchive = {
   sourceResearchAlgoId?: string | null;
   sourceSnapshotHash?: string | null;
   promotionVerdictAtInstall?: string | null;
+  lane?: GeneratedPaperAlgo["lane"];
+  evidenceStatus?: GeneratedPaperAlgo["evidenceStatus"];
+  promotionEligibility?: GeneratedPaperAlgo["promotionEligibility"];
+  paperOnly?: boolean;
+  exactLinked?: boolean;
+  seed?: string | null;
+  metricsVersion?: string | null;
+  executionVersion?: string | null;
+  lineageHash?: string | null;
   name: string;
   family: string;
   params: Record<string, unknown>;
@@ -3885,7 +3894,8 @@ function TopTradersView({
     [asOf, executableState, factoryEvidenceBySource, sourceRows],
   );
   const researchRosterRows = rows.filter((row) => row.bucket !== "standby").slice(0, topTradersRosterSize);
-  const telemetryWatchRows = rows.filter((row) => row.bucket === "standby").slice(0, topTradersTelemetryOnlyRosterSize);
+  const evidenceProbeRows = rows.filter(topTraderEvidenceProbeOnly).slice(0, topTradersTelemetryOnlyRosterSize);
+  const telemetryWatchRows = rows.filter((row) => row.bucket === "standby" && !topTraderEvidenceProbeOnly(row)).slice(0, topTradersTelemetryOnlyRosterSize);
   const eligibleBatchCounts = useMemo(() => topTraderEligibleBatchCounts(researchRosterRows), [researchRosterRows]);
   const championRows = researchRosterRows.filter((row) => row.bucket === "champion");
   const prospectRows = researchRosterRows.filter((row) => row.bucket === "prospect");
@@ -4251,6 +4261,62 @@ function TopTradersView({
             </table>
           </div>
         </section>
+
+        <section className="panel arena-history-panel full">
+          <div className="panel-heading compact">
+            <div>
+              <h2>Exact-Linked Evidence Probes</h2>
+              <span className="panel-subtitle">Paper-only exact-linked candidates collecting execution evidence</span>
+            </div>
+            <Badge tone="info">{evidenceProbeRows.length} probes</Badge>
+          </div>
+          <div className="upgrade-table-wrap">
+            <table className="activated-table top-traders-table">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Family</th>
+                  <th>Badges</th>
+                  <th>Research Link</th>
+                  <th>Accepted / Attempts</th>
+                  <th>Dry P/L</th>
+                </tr>
+              </thead>
+              <tbody>
+                {evidenceProbeRows.length === 0 ? (
+                  <tr>
+                    <td className="empty-cell" colSpan={6}>No exact-linked evidence probes are installed.</td>
+                  </tr>
+                ) : evidenceProbeRows.map((row) => {
+                  const execStats = executableStats[row.sourceAlgoId];
+                  const execSummary = topTraderExecutableSummary(execStats);
+                  return (
+                    <tr key={`evidence-probe-${row.sourceAlgoId}`}>
+                      <td><span className="algo-id-pill">{row.displayId}</span></td>
+                      <td>{familyLabel(row.family)}</td>
+                      <td>
+                        <div className="confidence-cell">
+                          <Badge tone="info">Evidence Probe</Badge>
+                          <Badge tone="neutral">Paper Only</Badge>
+                          <Badge tone="warn">Not Promotion Eligible</Badge>
+                          <Badge tone={row.exactLinked ? "good" : "bad"}>{row.exactLinked ? "Exact Linked" : "Missing Link"}</Badge>
+                        </div>
+                      </td>
+                      <td>
+                        <div className="metric-cell">
+                          <strong>{row.researchCandidateId ? "Research candidate linked" : "No research candidate"}</strong>
+                          <span>{row.candidateConfigHash ? "Config hash present" : "Config hash missing"}</span>
+                        </div>
+                      </td>
+                      <td>{execStats ? `${execStats.acceptedBuys} / ${execStats.attempts}` : "0 / 0"}</td>
+                      <td className={execSummary.totalPnl >= 0 ? "positive" : "negative"}>{signedMoney(execSummary.totalPnl)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </section>
       </div>
     </section>
   );
@@ -4550,6 +4616,7 @@ function rankTopTraderRowsByExecutableStats(
   factoryEvidenceBySource: Map<string, LocalFactorySweepCandidate> = new Map(),
 ): TopTraderRow[] {
   const scored = rows.map((row) => executableTopTraderScore(row, executableState, asOf, factoryEvidenceForTopTraderRow(row, factoryEvidenceBySource)));
+  const rosterScored = scored.filter((item) => !topTraderEvidenceProbeOnly(item.row));
   const selected = new Set<string>();
   const pickRows = (
     candidates: ExecutableTopTraderScore[],
@@ -4567,18 +4634,18 @@ function rankTopTraderRowsByExecutableStats(
   };
 
   const champions = pickRows(
-    scored.filter((item) => executableChampionEligible(item, asOf)),
+    rosterScored.filter((item) => executableChampionEligible(item, asOf)),
     topTradersChampionSlots,
     "champion",
   );
   const prospects = pickRows(
-    scored.filter((item) => executableProspectEligible(item, asOf) && !selected.has(item.row.sourceAlgoId)),
+    rosterScored.filter((item) => executableProspectEligible(item, asOf) && !selected.has(item.row.sourceAlgoId)),
     topTradersProspectSlots,
     "prospect",
   );
   const watchLimit = Math.max(0, topTradersRosterSize - champions.length - prospects.length);
   const watchQueue = pickRows(
-    scored.filter((item) => executableResearchRosterEligible(item) && item.row.bucket !== "standby" && !selected.has(item.row.sourceAlgoId)),
+    rosterScored.filter((item) => executableResearchRosterEligible(item) && item.row.bucket !== "standby" && !selected.has(item.row.sourceAlgoId)),
     watchLimit,
     "wildcard",
   );
@@ -4609,6 +4676,12 @@ function executableRankedTopTraderRow(item: ExecutableTopTraderScore, bucket: To
     score: item.score,
     prospectScore: item.score,
   };
+}
+
+function topTraderEvidenceProbeOnly(row: Partial<GeneratedPaperAlgoArchive> | Partial<TopTraderRow>) {
+  return row.evidenceStatus === "evidence_probe_only"
+    || row.lane === "exact_linked_evidence_probe"
+    || (row.paperOnly === true && row.promotionEligibility === "not_promotion_eligible" && row.exactLinked === true);
 }
 
 function executableTopTraderScore(
@@ -8585,6 +8658,15 @@ function lineageFieldsFromAlgo(algo: GeneratedPaperAlgo) {
     sourceResearchAlgoId: algo.sourceResearchAlgoId ?? null,
     sourceSnapshotHash: algo.sourceSnapshotHash ?? null,
     promotionVerdictAtInstall: algo.promotionVerdictAtInstall ?? null,
+    lane: algo.lane ?? null,
+    evidenceStatus: algo.evidenceStatus ?? null,
+    promotionEligibility: algo.promotionEligibility ?? null,
+    paperOnly: algo.paperOnly === true,
+    exactLinked: algo.exactLinked === true,
+    seed: algo.seed ?? null,
+    metricsVersion: algo.metricsVersion ?? null,
+    executionVersion: algo.executionVersion ?? null,
+    lineageHash: algo.lineageHash ?? null,
   };
 }
 
@@ -8595,6 +8677,15 @@ function lineageFieldsFromArchive(archive: GeneratedPaperAlgoArchive) {
     sourceResearchAlgoId: archive.sourceResearchAlgoId ?? null,
     sourceSnapshotHash: archive.sourceSnapshotHash ?? null,
     promotionVerdictAtInstall: archive.promotionVerdictAtInstall ?? null,
+    lane: archive.lane ?? null,
+    evidenceStatus: archive.evidenceStatus ?? null,
+    promotionEligibility: archive.promotionEligibility ?? null,
+    paperOnly: archive.paperOnly === true,
+    exactLinked: archive.exactLinked === true,
+    seed: archive.seed ?? null,
+    metricsVersion: archive.metricsVersion ?? null,
+    executionVersion: archive.executionVersion ?? null,
+    lineageHash: archive.lineageHash ?? null,
   };
 }
 
@@ -10838,6 +10929,15 @@ function normalizeGeneratedPaperAlgoArchive(value: unknown): GeneratedPaperAlgoA
     sourceResearchAlgoId: stringOrNull(value.sourceResearchAlgoId),
     sourceSnapshotHash: stringOrNull(value.sourceSnapshotHash),
     promotionVerdictAtInstall: stringOrNull(value.promotionVerdictAtInstall),
+    lane: normalizeGeneratedAlgoLane(value.lane),
+    evidenceStatus: normalizeGeneratedAlgoEvidenceStatus(value.evidenceStatus),
+    promotionEligibility: normalizeGeneratedAlgoPromotionEligibility(value.promotionEligibility),
+    paperOnly: value.paperOnly === true,
+    exactLinked: value.exactLinked === true,
+    seed: stringOrNull(value.seed),
+    metricsVersion: stringOrNull(value.metricsVersion),
+    executionVersion: stringOrNull(value.executionVersion),
+    lineageHash: stringOrNull(value.lineageHash),
     name,
     family,
     params: isRecord(value.params) ? { ...value.params } : {},
@@ -10852,6 +10952,29 @@ function normalizeGeneratedPaperAlgoArchive(value: unknown): GeneratedPaperAlgoA
 
 function normalizeArenaEntryPolicy(value: unknown): ArenaEntryPolicy {
   return value === "single-entry" || value === "repeat-entry" || value === "legacy" || value === "top-traders-dry-run" ? value : "legacy";
+}
+
+function normalizeGeneratedAlgoLane(value: unknown): GeneratedPaperAlgo["lane"] {
+  return value === "research_validated" || value === "telemetry_watchlist" || value === "exact_linked_evidence_probe" ? value : null;
+}
+
+function normalizeGeneratedAlgoEvidenceStatus(value: unknown): GeneratedPaperAlgo["evidenceStatus"] {
+  return value === "research_validated"
+    || value === "telemetry_only"
+    || value === "evidence_probe_only"
+    || value === "rejected"
+    || value === "insufficient_data"
+    ? value
+    : null;
+}
+
+function normalizeGeneratedAlgoPromotionEligibility(value: unknown): GeneratedPaperAlgo["promotionEligibility"] {
+  return value === "not_promotion_eligible"
+    || value === "paper_candidate"
+    || value === "tiny_live_eligible"
+    || value === "research_validated"
+    ? value
+    : null;
 }
 
 function normalizeGeneratedSourceMetrics(value: unknown): GeneratedPaperAlgo["sourceMetrics"] {

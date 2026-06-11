@@ -4,17 +4,21 @@ import { gunzipSync } from "node:zlib";
 import { roundMoney, roundRatio } from "./utils.mjs";
 
 export async function loadSnapshotHistory({ snapshotsRoot, hours = 48 } = {}) {
-  const cutoffMs = Date.now() - hours * 60 * 60_000;
-  const snapshots = [];
+  const loaded = [];
   for (const dir of await readdir(snapshotsRoot).catch(() => [])) {
     const fullDir = path.join(snapshotsRoot, dir);
     const file = path.join(fullDir, `${dir}.json.gz`);
     const snapshot = await readSnapshot(file);
     if (!snapshot) continue;
     const generatedMs = Date.parse(snapshot.generatedAt ?? "");
-    if (Number.isFinite(generatedMs) && generatedMs >= cutoffMs) snapshots.push(compactSnapshot(snapshot));
+    if (Number.isFinite(generatedMs)) loaded.push({ generatedMs, snapshot: compactSnapshot(snapshot) });
   }
-  return snapshots.sort((left, right) => Date.parse(left.generatedAt) - Date.parse(right.generatedAt));
+  const referenceMs = loaded.length ? Math.max(...loaded.map((row) => row.generatedMs)) : Date.now();
+  const cutoffMs = referenceMs - hours * 60 * 60_000;
+  return loaded
+    .filter((row) => row.generatedMs >= cutoffMs)
+    .map((row) => row.snapshot)
+    .sort((left, right) => Date.parse(left.generatedAt) - Date.parse(right.generatedAt));
 }
 
 export async function writeSnapshotHistory({ snapshotsRoot, outRoot, hours = 48 } = {}) {
@@ -79,6 +83,14 @@ function compactSnapshot(snapshot) {
     safetyAlertCount: (snapshot.alerts ?? []).filter((alert) => alert.severity === "critical").length,
     warningCount: (snapshot.warnings ?? []).length,
     dataQualityErrorCount: snapshot.dataQuality?.errorCount ?? 0,
+    readinessHeadlineState: snapshot.readinessKpis?.headlineState ?? snapshot.executableReadinessGate?.state ?? null,
+    officialSettlementCoverage: numberOrZero(snapshot.readinessKpis?.officialSettlementCoverage ?? snapshot.executableReadinessGate?.officialSettlementCoverage),
+    replayGradeTargetMarketCoverage: numberOrZero(snapshot.readinessKpis?.replayGradeTargetMarketCoverage ?? snapshot.executableReadinessGate?.replayGradeTargetMarketCoverage),
+    exactLinkedSupportedLiveRows: numberOrZero(snapshot.readinessKpis?.exactLinkedSupportedLiveRows ?? snapshot.executableReadinessGate?.exactLinkedSupportedLiveRows),
+    exactLinkedEvidenceProbeCount: numberOrZero(snapshot.readinessKpis?.exactLinkedEvidenceProbeCount ?? snapshot.executableReadinessGate?.exactLinkedEvidenceProbeCount),
+    calibrationLabelKnownCount: numberOrZero(snapshot.readinessKpis?.calibrationLabelKnownCount ?? snapshot.executableReadinessGate?.calibrationLabelKnownCount),
+    seedCompleteness: numberOrZero(snapshot.readinessKpis?.seedCompleteness ?? snapshot.executableReadinessGate?.seedCompleteness),
+    researchValidatedRosterCount: numberOrZero(snapshot.readinessKpis?.researchValidatedRosterCount ?? snapshot.executableReadinessGate?.researchValidatedRosterCount),
   };
 }
 

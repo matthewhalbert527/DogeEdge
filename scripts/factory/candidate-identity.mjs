@@ -18,7 +18,10 @@ export function researchCandidateIdentity(metric = {}, context = {}) {
     costModelVersion: metric.costModelVersion ?? context.costModelHash ?? "UNAVAILABLE",
     riskModelVersion: metric.riskModelVersion ?? context.riskModelHash ?? "UNAVAILABLE",
     seed: metric.seed ?? context.seed ?? "dogeedge-factory-v2",
+    metricsVersion: metric.metricsVersion ?? context.metricsVersion ?? "dogeedge.factory.metrics.v1",
     sourceRunId: metric.sourceRunId ?? context.sourceRunId ?? "",
+    sourceSnapshotHash: metric.sourceSnapshotHash ?? context.sourceSnapshotHash ?? "",
+    promotionVerdictAtInstall: metric.promotionVerdictAtInstall ?? metric.promotionVerdict ?? context.promotionVerdictAtInstall ?? "",
     configHash: metric.configHash ?? context.configHash ?? "UNAVAILABLE",
   };
   const candidateConfigHash = hashJson(material);
@@ -38,7 +41,9 @@ export function researchCandidateIdentityContext({ primaryRun = {}, registry = {
     costModelHash: registry.costModelHash ?? hashJson(costModels),
     riskModelHash: registry.riskModelHash ?? hashJson(riskModel),
     seed: registry.randomSeed ?? primaryRun.randomSeed ?? "dogeedge-factory-v2",
+    metricsVersion: registry.metricsVersion ?? "dogeedge.factory.metrics.v1",
     sourceRunId: primaryRun.runId ?? "",
+    sourceSnapshotHash: registry.inputManifestHash ?? registry.dataHash ?? primaryRun.sourceSnapshotHash ?? "",
     configHash: registry.configHash ?? primaryRun.configHash ?? "UNAVAILABLE",
   };
 }

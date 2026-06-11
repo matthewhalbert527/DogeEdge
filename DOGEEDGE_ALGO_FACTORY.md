@@ -17,6 +17,8 @@ D:\DogeEdge\data\local-worker
 D:\DogeEdge\data\events
 D:\DogeEdge\data\features\decision-frames
 D:\DogeEdge\data\raw\snapshots
+D:\DogeEdge\data\replay
+D:\DogeEdge\data\official_settlements.jsonl
 D:\DogeEdge\data\backtests
 D:\DogeEdge\algos
 ```
@@ -29,6 +31,7 @@ D:\DogeEdge\algos
 - `shadow-trades.jsonl` legacy filename for background test trades
 - `latest.json`
 - `summary.md`
+- `evidence-probes.json` paper-only exact-linked evidence probes
 
 `features\decision-frames` is the backtest input. It records one normalized decision frame per local worker ingest, including target, estimate, DOGE spot, one-minute move, top-of-book YES/NO prices, spreads, model action, edge, confidence, and seconds to close.
 
@@ -81,7 +84,7 @@ The sweep mode generates a broad grid of model-window, distance, spread-scalp, m
 
 When evidence is weak, the factory no longer slices the first N generated sweep algos. Generator v3 sets low-evidence unattended executable minting to zero. `sweep-scalp` and `sweep-liquidity-imbalance` remain the executable-linked families once the evidence substrate is green, but they receive no unattended executable minting budget while official settlement, exact linkage, or replay coverage is missing. `sweep-model` remains research-supported but is lab-only until it has a true executable adapter and exact linkage; low-evidence sweeps may allocate a tiny manual/advisory lab budget to it. Unsupported executable families receive zero normal minting budget by default and stay telemetry-only until a research adapter and replay-equivalence definition exist. The run output records this in `searchBudget.familyBudget`, including `executableMintingAllowed`, `labResearchAllowed`, `budgetLane`, `budgetBucket`, and lab-only status.
 
-Backtests read official contract outcome truth from `D:\DogeEdge\data\official_settlements.jsonl` by default, or from `--official-settlements <path>` / `DOGEEDGE_OFFICIAL_SETTLEMENTS`. Rows use the `dogeedge.official-settlement.v1` shape produced from Kalshi historical-market data: market ticker, status, official YES/NO outcome, settlement value if supplied, determination timestamp, settlement timestamp, source endpoint, and finalized/provisional flags. This labels yes/no backtests from official contract outcomes without claiming the UI has official CF RTI benchmark prints. If the file is missing or contains no finalized matching markets, coverage remains zero and promotion-grade scoring stays blocked.
+Backtests read official contract outcome truth from `D:\DogeEdge\data\official_settlements.jsonl` by default, or from `--official-settlements <path>` / `DOGEEDGE_OFFICIAL_SETTLEMENTS`. Rows use the `dogeedge.official-settlement.v1` shape produced from Kalshi historical-market data or the local mock/manual format: market ticker, optional event ticker, status, finalized/provisional flags, official YES/NO outcome, settlement value if supplied, close/determination/label/settlement timestamps, source endpoint, verification source, provider, provider version, and source payload SHA-256. This labels yes/no backtests from official contract outcomes without claiming the UI has official CF RTI benchmark prints. If the file is missing or contains no finalized matching markets, coverage remains zero and promotion-grade scoring stays blocked.
 
 Additional research commands:
 
@@ -93,6 +96,22 @@ npm run factory:promote-check
 npm run factory:audit-exports -- --input review_exports
 npm run factory:gate-report -- --input review_exports
 npm run factory:reconcile-top-roster -- --input review_exports
+npm run factory:evidence-preflight -- --mock --mock-settlements test/fixtures/official-settlements.mock.jsonl --mock-replay-raw test/fixtures/replay-raw/KXDOGE15M-FIXTURE.jsonl
+npm run factory:select-target-markets -- --out artifacts/evidence/target-markets
+npm run factory:evidence-bootstrap -- --mock --mock-settlements test/fixtures/official-settlements.mock.jsonl --mock-replay-raw test/fixtures/replay-raw/KXDOGE15M-FIXTURE.jsonl --target-markets-file test/fixtures/target-markets.json --probe-source test/fixtures/evidence-lane-sweep.json --force-reseed-probes
+npm run factory:evidence-loop -- --once --mock --mock-settlements test/fixtures/official-settlements.mock.jsonl --mock-replay-raw test/fixtures/replay-raw/KXDOGE15M-FIXTURE.jsonl --target-markets-file test/fixtures/target-markets.json --probe-source test/fixtures/evidence-lane-sweep.json
+npm run factory:fetch-settlements -- --mock-input test/fixtures/official-settlements.mock.jsonl
+npm run factory:fetch-settlements -- --since 2026-06-01 --until 2026-06-10
+npm run factory:fetch-settlements -- --tickers-file target-markets.txt
+npm run factory:fetch-settlements -- --missing-only
+npm run factory:fetch-candles -- --tickers-file test/fixtures/target-markets.json --period 1
+npm run factory:capture-replay -- --markets-file test/fixtures/target-markets.json --mode polling
+npm run factory:build-replay -- --input test/fixtures/replay-raw --markets-file test/fixtures/target-markets.json
+npm run factory:replay-coverage -- --input D:\DogeEdge\data\replay\final
+npm run factory:backfill-linkage -- --input review_exports
+npm run factory:linkage-audit -- --input review_exports
+npm run factory:archive-legacy-telemetry -- --out D:\DogeEdge\data\archives\legacy-telemetry
+npm run factory:reseed-evidence-lane -- --from test/fixtures/evidence-lane-sweep.json --max-probes 3
 npm run eval:snapshot
 npm run eval:bundle
 npm run eval:loop
@@ -102,6 +121,20 @@ npm run merge:safety
 ```
 
 `factory:validate` runs the full integrity, split, holdout, and reporting pipeline without installing sweep output. `factory:replay-run -- --config <run>\config.json` reruns the saved deterministic config and fails if the decision-frame input manifest no longer matches, unless `--permissive-debug` is explicitly used. `factory:promote-check` emits promotion-ready and non-promotable sets in the saved config and terminal output. `factory:compare` is read-only and compares saved result files. These commands write only local research outputs and never place orders.
+
+`factory:evidence-preflight` checks whether the local branch contains the evidence-plane modules, whether evidence directories are writable, whether Kalshi auth material is parseable, whether target-market selection finds closed or active markets, whether exact-linked probe candidates exist, and whether seed metadata is complete. With `--online`, it also attempts historical REST, provider clock, and signed WebSocket handshake smoke checks. It writes `artifacts\evidence-preflight\report.json`, `report.md`, and `artifacts\evidence\evidence_status.json`; it never places orders.
+
+`factory:select-target-markets` builds deterministic closed-target and active-target lists from local decision frames, paper trades, current local-worker state, and exact-linkable supported research output. It writes `target_markets.json`, text ticker lists, and JSON market lists under `artifacts\evidence\target-markets` by default. Unsupported and telemetry-only rows are not part of the normal evidence-capture budget.
+
+`factory:evidence-bootstrap` is the one-shot orchestration path: preflight, target selection, settlement fetch, replay capture, replay build, replay coverage, exact-link audit, optional legacy telemetry archive, optional exact-linked probe reseed, optional backtest/promote-check, and optional bundle refresh. Offline runs use `--mock-settlements`, `--mock-replay-raw`, and `--probe-source`; online provider smoke requires Kalshi credentials and `--online`. `factory:evidence-loop` repeats the same bootstrap path on a 30-minute cadence by default, or runs once with `--once`.
+
+`factory:fetch-settlements` normalizes official contract labels into `official_settlements.jsonl`. It supports provider fetches (`--provider kalshi --base-url <url>`), ticker subsets (`--tickers-file <path>`), missing-only backfills, and offline fixtures (`--mock-input <file>`). Offline fixtures can be JSONL rows with `schemaVersion: "dogeedge.official-settlement.v1"` or schema-shaped manual rows. The command writes `settlement_fetch_report.json` plus coverage TSVs and never places orders.
+
+`factory:capture-replay`, `factory:build-replay`, and `factory:replay-coverage` are the replay evidence path. Replay-grade input is sequence-preserving snapshot+delta JSONL with checksums and continuity checks; the builder writes `data\replay\final\<marketTicker>\replay.jsonl.gz`, `replay.index.json`, `manifest.json`, and `replay_manifest_summary.json`. Polling and candles are allowed only as diagnostics and are marked `fallbackKind = polling_diagnostic_only` or `candlestick_diagnostic_only`, with `executionSensitivePromotionAllowed = false`.
+
+`factory:backfill-linkage` backfills exact research lineage only for deterministic one-to-one legacy matches. `factory:linkage-audit` emits unresolved/ambiguous rows without mutating state. `factory:archive-legacy-telemetry` archives local-worker telemetry with a manifest and SHA-256 checksums; `--reset-unlinked-supported` must be explicit before any unlinked supported executable state is cleared.
+
+`factory:reseed-evidence-lane` installs a small paper-only exact-linked evidence-probe set from a sweep file or run id. Probes must be supported-family, exact-linked, deterministic, non-leaky, and minimally evidenced. They are not promotion eligible and do not enter the Research Validated Roster.
 
 `factory:audit-exports` validates a local review packet such as `review_exports/`, accepts split `latest.json`/`metrics.json` manifests, recomputes split/fold/holdout evidence from the frame sample, and writes:
 
@@ -121,6 +154,8 @@ artifacts\factory-audit\promotion-stages.mmd
 The bundle manifest includes `bundleCompleteness`. Every file advertised by the snapshot `filesManifest` must physically exist under `snapshots/` in the bundle, and every bundle-indexed file must be present on disk. If the repo is dirty, `repo/UNCOMMITTED_DIFF.patch` is included; otherwise reproducibility-sensitive review fails closed with `dirty_repo_without_patch`. A full-row packet is marked `full_row_promotion_grade` only when row export is complete and the bundle-completeness contract passes.
 
 `eval:loop` leaves a foreground terminal process running. It writes a bundle immediately, then keeps writing snapshots every 30 minutes and bundles every 2 hours. Use `Ctrl+C` to stop it. For a Windows restart-proof setup, run this command from Task Scheduler at logon; the command itself stays local-only and paper-safe.
+
+Generated evidence reports and capture outputs under `artifacts\evidence\`, `artifacts\evidence-*\`, and `artifacts\cli-audit-latest\` are local runtime artifacts and are ignored by Git. Commit only narrow fixtures under `test\fixtures\` and source changes needed to reproduce the evidence path.
 
 `codex:auto-loop` is the unattended two-hour Codex improvement runner. It writes a fresh review bundle, creates a temporary `auto/codex-*` branch, runs `codex exec` with a local-only hardening prompt, verifies the patch with tests/lint/build/factory checks, and fast-forwards `main` only if the hard safety scan passes. It blocks auto-merge for live-sensitive paths, dependency changes, live-trading defaults, dry-run disabling, or manual-approval removal. Failed or blocked attempts are preserved under `review_exports\codex-automation\<cycle>\` with reports and diffs instead of being merged.
 
@@ -146,7 +181,7 @@ npm run eval:bundle -- --out D:\DogeEdge\data\gpt-review-packets
 
 The row-level decision/trade extracts are capped by `--max-row-lines` so the packet does not accidentally include the full paper-trade log. Routine two-hour reviews should stay capped. Promotion-review audits should use `--full-rows`, which marks `rowExport.promotionReviewComplete = true` in the snapshot and bundle manifest. `factory:audit-exports -- --promotion-review` fails closed when it sees capped rows.
 
-`--raw-tick-format jsonl` writes compact per-market raw-tick samples from `raw\snapshots` under `snapshots\raw_market_ticks\jsonl\`. This is the current lightweight replay-calibration export. The manifest also writes `snapshots\raw_market_ticks\coverage.tsv.gz`, `replayGradeAvailable`, and `executionSensitivePromotionAllowed`. Compact JSONL samples are diagnostic-only: `executionSensitivePromotionAllowed` remains false until replay-grade target-market data has complete target coverage and sequence-gap checks. The manifest still emits `raw_market_tick_parquet_absent` and `sequence_gap_check_absent` until true per-market replay files with sequencing exist, so execution-realism scoring remains explicitly limited.
+`--raw-tick-format jsonl` writes compact per-market raw-tick samples from `raw\snapshots` under `snapshots\raw_market_ticks\jsonl\`. This is a lightweight replay-calibration export. The canonical replay evidence path is `factory:capture-replay` plus `factory:build-replay`, which emits indexed replay JSONL with sequence checks. Compact JSONL samples, polling, and candles are diagnostic-only: `executionSensitivePromotionAllowed` remains false until replay-grade target-market data has complete target coverage and no unresolved gaps. The manifest still emits `raw_market_tick_parquet_absent` and/or `sequence_gap_check_absent` until true per-market replay files with sequencing exist, so execution-realism scoring remains explicitly limited.
 
 `factory:gate-report` runs the export audit with the research gate report enabled. It says whether arena batch loading is allowed or whether DogeEdge should stay in `hold_gather_evidence`. `factory:reconcile-top-roster` compares Top Traders aggregate P/L with exported trade rows and flags unreconciled telemetry.
 
@@ -173,8 +208,8 @@ The review bundle includes:
 - capped `decisionRows.tsv.gz` and `tradeRows.tsv.gz` unless `--no-rows` is used;
 - exact review files `snapshots/decision_frames.jsonl`, `snapshots/trades.csv`, `snapshots/paper_decision_ledger.csv`, `snapshots/official_settlements.tsv.gz`, and `snapshots/official_settlements.jsonl`;
 - leakage, identity, and roster-alignment artifacts: `snapshots/leakage_audit.json`, `snapshots/post_close_frame_audit.tsv.gz`, `snapshots/research_live_alignment.json`, `snapshots/research_live_identity_alignment.json`, `snapshots/exact_link_summary.json`, `snapshots/candidate_lineage_audit.tsv.gz`, `snapshots/supported_live_linkage.tsv.gz`, `snapshots/unlinked_live_rows.tsv.gz`, `snapshots/roster_alignment.tsv.gz`, `snapshots/research_coverage_by_family.tsv.gz`, `snapshots/live_coverage_by_family.tsv.gz`, `snapshots/unsupported_live_families.tsv.gz`, `snapshots/promotion_gate_results.tsv.gz`, `snapshots/family_allocation_report.json`, `snapshots/scheduler_budget_report.json`, `snapshots/evidence_allocation_by_family.tsv.gz`, `snapshots/evidence_allocation_by_candidate.tsv.gz`, `snapshots/provenance_completeness_report.json`, `snapshots/missing_provenance_rows.tsv.gz`, and `snapshots/top_roster_default_sort_audit.json`;
-- settlement and execution-realism artifacts: `snapshots/settlement_coverage_report.json`, `snapshots/official_settlement_coverage_by_family.tsv.gz`, `snapshots/official_settlement_coverage_by_candidate.tsv.gz`, `snapshots/simulator_calibration_by_regime.tsv.gz`, `snapshots/calibration_by_bucket.tsv.gz`, `snapshots/simulator_calibration_report.json`, `snapshots/calibration_report.json`, and `snapshots/simulator_calibration_report.md`;
-- generator-v3 readiness artifacts: `snapshots/reject_stream_summary.json`, `snapshots/replay_parity_report.json`, `snapshots/executable_readiness_gate.json`, and `snapshots/readiness_kpis.json`;
+- settlement and execution-realism artifacts: `snapshots/settlement_coverage_report.json`, `snapshots/settlement_fetch_report.json`, `snapshots/official_settlement_coverage_by_family.tsv.gz`, `snapshots/official_settlement_coverage_by_candidate.tsv.gz`, `snapshots/forecast_calibration_by_candidate.tsv.gz`, `snapshots/trade_calibration_by_candidate.tsv.gz`, `snapshots/simulator_calibration_by_regime.tsv.gz`, `snapshots/calibration_by_bucket.tsv.gz`, `snapshots/simulator_calibration_report.json`, `snapshots/calibration_report.json`, and `snapshots/simulator_calibration_report.md`;
+- generator-v3 readiness artifacts: `snapshots/reject_stream_summary.json`, `snapshots/evidence_probe_lane.json`, `snapshots/evidence_probe_lane.tsv.gz`, `snapshots/evidence_status.json`, `snapshots/evidence_preflight_report.json`, `snapshots/replay_parity_report.json`, `snapshots/replay_manifest_summary.json`, `snapshots/replay_gap_report.tsv.gz`, `snapshots/executable_readiness_gate.json`, `snapshots/readiness_kpis.json`, `snapshots/readiness_trend_48h.tsv.gz`, `snapshots/improvement_scorecard.json`, and `snapshots/improvement_regression_alerts.json`;
 - `snapshots/raw_market_ticks/manifest.json`, `snapshots/raw_market_ticks/schema.json`, and `snapshots/raw_market_ticks/coverage.tsv.gz`. When replayable per-market parquet ticks are unavailable, the manifest must say so explicitly with `raw_market_tick_parquet_absent`;
 - `snapshots/snapshot-history-48h.json` and `snapshots/snapshot-history-48h.md` with latest-vs-previous and latest-vs-baseline trend deltas;
 - `repo/` files needed to interpret the packet against the exact local code snapshot;
@@ -199,10 +234,13 @@ Sweep breadth is also governed by the available evidence. If the event count is 
 
 Post-close feature rows are fail-closed by default. If `featureTimestamp >= marketCloseTimestamp`, `readFactoryDecisionFrames` excludes the frame unless the caller explicitly enables a debug-only post-close mode. The loader and data-quality summaries publish `excludedFrames` and `postCloseFramesExcluded`, and review bundles repeat those counts in the leakage audit artifacts.
 
-The app now keeps Top Traders in two explicit lanes:
+The app now keeps Top Traders and paper evidence in three explicit lanes:
 
 - `Research Validated Roster`: only rows whose executable family is research-supported and whose latest research evidence passes `researchPromotionGate`. This is the only lane that can supply Champion, Prospect, or active ranked roster rows.
 - `Telemetry Watchlist`: unsupported families, missing-evidence rows, rejected rows, and insufficient-data rows. These rows remain visible for hypothesis generation and dry-run evidence collection, but they cannot become the default ranked winner surface.
+- `Exact-Linked Evidence Probe Lane`: paper-only rows installed by `factory:reseed-evidence-lane`. These rows must be exact-linked and from supported executable families. They collect fill-rate, slippage, reject, calibration, and linkage-continuity evidence, but are badged `Evidence Probe`, `Paper Only`, `Not Promotion Eligible`, and `Exact Linked`. They are excluded from Champion/Prospect ranking and from the Research Validated Roster.
+
+Readiness KPIs are trendable but not promotion claims. Diagnostic thresholds are 80% official settlement coverage, 80% replay sample coverage, at least one replay-grade target market, at least one exact-linked probe, at least one exact-linked supported live/probe row, 10 label-known calibration rows, seven represented days, 50 independent markets, and 100% seed completeness. Promotion thresholds are 95% official settlement coverage, 100% replay-grade target coverage with zero unresolved sequence gaps, at least three exact-linked probes/live rows, 50 label-known calibration rows, seven-plus represented days, 50-plus independent markets, 100% seed completeness, and at least one Research Validated Roster row after all other gates pass.
 
 Dry-run executable stats remain visible as operational telemetry, but large arena batch churn is held when exact-linked supported live coverage is zero, official settlement coverage is below threshold, replay-grade target-market ticks are absent, the latest review bundle is incomplete, or the latest research sweep has no candidate passing official settlement, holdout, walk-forward, CPCV, conservative/stress cost, and multiple-testing gates. The automation decision records `hold_gather_evidence` plus specific statuses such as `missing_exact_linkage`, `missing_official_settlement`, `missing_replay_grade_ticks`, `incomplete_review_bundle`, and `no_gate_passing_candidates`. In that state DogeEdge shows "No research-validated algos yet" instead of backfilling the ranked roster with telemetry winners. Executable families must be listed in the family registry before they can become Champion or Prospect rows; unsupported families remain Watch-only and are exported through the research/live alignment artifacts until a research adapter exists.
 

@@ -1,0 +1,22 @@
+{
+  "schemaVersion": "dogeedge.backtest.run.v1",
+  "runId": "fixture-evidence-lane",
+  "candidates": [
+    {
+      "algoId": "fixture-probe-1",
+      "algoName": "Fixture Probe 1",
+      "family": "sweep-model",
+      "params": { "minEdge": 0.01, "maxAsk": 0.58 },
+      "researchCandidateId": "rcid-fixtureprobe000000000001",
+      "candidateConfigHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "sourceRunId": "fixture-evidence-lane",
+      "sourceSnapshotHash": "fixture-snapshot-hash",
+      "promotionVerdict": "paper_only",
+      "seed": "fixture-seed-1",
+      "closed": 3,
+      "independentClosedMarkets": 3,
+      "conservativeTotalPnl": 0.01,
+      "robustScore": 1
+    }
+  ]
+}

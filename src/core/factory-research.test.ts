@@ -22,11 +22,20 @@ import { researchLiveAlignment } from "../../scripts/factory/family-registry.mjs
 import { researchCandidateIdentity } from "../../scripts/factory/candidate-identity.mjs";
 import { sampleSufficiency } from "../../scripts/factory/sample-gates.mjs";
 import { applyFamilySearchBudget, searchBudgetDecision } from "../../scripts/factory/search-budget.mjs";
-import { normalizeKalshiHistoricalMarket, officialOutcomeMap, officialSettlementCoverageForEvents } from "../../scripts/factory/official-settlement.mjs";
-import { compactReplayTickRow, rawTickReplayManifest } from "../../scripts/factory/raw-tick-extract.mjs";
+import {
+  normalizeKalshiHistoricalMarket,
+  normalizeOfficialSettlementRow,
+  officialOutcomeMap,
+  officialSettlementCoverageForEvents,
+} from "../../scripts/factory/official-settlement.mjs";
+import { compactReplayTickRow, normalizeReplayRawEvent, rawTickReplayManifest, replaySequenceReport } from "../../scripts/factory/raw-tick-extract.mjs";
 import { replayParityReportFromManifest } from "../../scripts/factory/replay-coverage.mjs";
 import { buildExecutableReadinessGate } from "../../scripts/factory/readiness-gate.mjs";
-import { probabilityCalibrationForTrades } from "../../scripts/factory/probability-calibration.mjs";
+import { forecastCalibrationForDecisionRows, probabilityCalibrationForTrades, tradeCalibrationByCandidate } from "../../scripts/factory/probability-calibration.mjs";
+import { deterministicLinkageBackfill } from "../../scripts/factory/backfill-linkage.mjs";
+import { selectEvidenceProbes } from "../../scripts/factory/evidence-lane.mjs";
+import { runEvidencePreflight } from "../../scripts/factory/evidence-preflight.mjs";
+import { selectTargetMarkets } from "../../scripts/factory/target-markets.mjs";
 import {
   hasResearchPromotionCandidate,
   researchEvidenceCanMature,
@@ -1091,6 +1100,318 @@ describe("factory research safeguards", () => {
       expectedCalibrationError: expect.any(Number),
     });
     expect(calibration.reliabilityBuckets.reduce((sum, bucket) => sum + bucket.count, 0)).toBe(2);
+  });
+
+  it("prefers finalized official settlement rows over weaker duplicates", () => {
+    const provisional = normalizeOfficialSettlementRow({
+      marketTicker: "KXDOGE15M-DUPE",
+      status: "provisional",
+      finalized: false,
+      provisional: true,
+      outcomeSide: "YES",
+      closeTime: "2026-06-09T12:00:00.000Z",
+      settlementTimestamp: "2026-06-09T12:01:00.000Z",
+      sourceEndpoint: "mock",
+      verificationSource: "mock-provisional",
+    });
+    const finalized = normalizeOfficialSettlementRow({
+      marketTicker: "KXDOGE15M-DUPE",
+      status: "finalized",
+      finalized: true,
+      provisional: false,
+      outcomeSide: "NO",
+      closeTime: "2026-06-09T12:00:00.000Z",
+      settlementTimestamp: "2026-06-09T12:02:00.000Z",
+      sourceEndpoint: "mock",
+      verificationSource: "mock-final",
+    });
+
+    const outcomes = officialOutcomeMap([provisional, finalized]);
+
+    expect(outcomes.get("KXDOGE15M-DUPE")).toMatchObject({
+      outcomeSide: "NO",
+      officialResolutionAvailable: true,
+      verificationSource: "mock-final",
+    });
+  });
+
+  it("ingests mock official settlement fixtures offline", () => {
+    const tmp = mkdtempSync(path.join(tmpdir(), "dogeedge-settlement-test-"));
+    const fixture = path.join(tmp, "official-settlements.mock.jsonl");
+    const out = path.join(tmp, "official_settlements.jsonl");
+    writeFileSync(fixture, `${JSON.stringify({
+      marketTicker: "KXDOGE15M-MOCK",
+      status: "finalized",
+      finalized: true,
+      officialOutcome: "YES",
+      closeTime: "2026-06-09T12:00:00.000Z",
+      settlementTimestamp: "2026-06-09T12:02:00.000Z",
+      sourceEndpoint: "mock://settlements",
+      verificationSource: "unit-fixture",
+    })}\n`, "utf8");
+
+    execFileSync(process.execPath, [
+      "scripts/factory/fetch-official-settlements.mjs",
+      "--mock-input",
+      fixture,
+      "--out",
+      out,
+      "--data-root",
+      tmp,
+    ], { cwd: process.cwd(), stdio: "pipe" });
+
+    const stored = readFileSync(out, "utf8").trim().split(/\r?\n/).map((line) => JSON.parse(line));
+    const report = JSON.parse(readFileSync(path.join(tmp, "settlement_fetch_report.json"), "utf8"));
+    expect(stored).toHaveLength(1);
+    expect(stored[0]).toMatchObject({
+      schemaVersion: "dogeedge.official-settlement.v1",
+      marketTicker: "KXDOGE15M-MOCK",
+      officialResolutionAvailable: true,
+      provider: "mock",
+    });
+    expect(report).toMatchObject({
+      canPlaceOrders: false,
+      fetchedRows: 1,
+      storedRows: 1,
+    });
+  });
+
+  it("detects replay sequence gaps and keeps polling fallback diagnostic-only", () => {
+    const good = [
+      normalizeReplayRawEvent({ marketTicker: "KXDOGE15M-SEQ", messageType: "snapshot", seq: 10, receiveTs: "2026-06-09T12:00:00.000Z", bookSnapshot: { yes: [[0.5, 10]] } }),
+      normalizeReplayRawEvent({ marketTicker: "KXDOGE15M-SEQ", messageType: "delta", seq: 11, prevSeq: 10, receiveTs: "2026-06-09T12:00:00.100Z", side: "YES", price: 0.51, delta: 2 }),
+    ];
+    const gapped = [
+      ...good,
+      normalizeReplayRawEvent({ marketTicker: "KXDOGE15M-SEQ", messageType: "delta", seq: 13, prevSeq: 11, receiveTs: "2026-06-09T12:00:00.200Z", side: "YES", price: 0.52, delta: -1 }),
+      normalizeReplayRawEvent({ marketTicker: "KXDOGE15M-SEQ", messageType: "delta", seq: 13, prevSeq: 12, receiveTs: "2026-06-09T12:00:00.300Z", side: "YES", price: 0.52, delta: -1 }),
+    ];
+    const polling = [
+      normalizeReplayRawEvent({ marketTicker: "KXDOGE15M-POLL", captureMode: "polling", messageType: "snapshot", receiveTs: "2026-06-09T12:00:00.000Z" }),
+    ];
+
+    expect(replaySequenceReport(good)).toMatchObject({
+      replayGradeAvailable: true,
+      fallbackKind: "replay_grade",
+      gapCount: 0,
+      duplicateCount: 0,
+    });
+    expect(replaySequenceReport(gapped)).toMatchObject({
+      replayGradeAvailable: false,
+      gapCount: 1,
+      duplicateCount: 1,
+    });
+    expect(replaySequenceReport(polling)).toMatchObject({
+      replayGradeAvailable: false,
+      fallbackKind: "polling_diagnostic_only",
+    });
+  });
+
+  it("backfills exact linkage only when the match is deterministic", () => {
+    const report = deterministicLinkageBackfill({
+      researchRows: [
+        { algoId: "candidate-a", family: "sweep-model", researchCandidateId: "rcid-a", candidateConfigHash: "hash-a", sourceRunId: "run-1" },
+        { algoId: "candidate-b1", family: "sweep-model", researchCandidateId: "rcid-b1", candidateConfigHash: "hash-b1", sourceRunId: "run-1" },
+        { algoId: "candidate-b2", family: "sweep-model", researchCandidateId: "rcid-b2", candidateConfigHash: "hash-b2", sourceRunId: "run-1" },
+        { algoId: "candidate-dupe", family: "sweep-model", researchCandidateId: "rcid-dupe-1", candidateConfigHash: "hash-dupe-1", sourceRunId: "run-1" },
+        { algoId: "candidate-dupe", family: "sweep-model", researchCandidateId: "rcid-dupe-2", candidateConfigHash: "hash-dupe-2", sourceRunId: "run-2" },
+      ],
+      executableRows: [
+        { algoId: "generated:candidate-a", sourceAlgoId: "candidate-a", family: "sweep-model" },
+        { algoId: "generated:candidate-dupe", sourceAlgoId: "candidate-dupe", family: "sweep-model" },
+        { algoId: "generated:unsupported", sourceAlgoId: "candidate-x", family: "sweep-momentum-trail" },
+      ],
+    });
+
+    expect(report.linked.find((row) => row.sourceAlgoId === "candidate-a")).toMatchObject({
+      linkageStatus: "backfilled_exact_link",
+      researchCandidateId: "rcid-a",
+      candidateConfigHash: "hash-a",
+    });
+    expect(report.unresolved.find((row) => row.sourceAlgoId === "candidate-x")).toMatchObject({
+      linkageStatus: "unsupported_unlinked",
+    });
+    expect(report.unresolved.find((row) => row.sourceAlgoId === "candidate-dupe")).toMatchObject({
+      linkageStatus: "ambiguous_unresolved",
+      reasonCodes: ["ambiguous_candidate_match"],
+    });
+  });
+
+  it("installs evidence probes only for exact-linked supported paper candidates", () => {
+    const result = selectEvidenceProbes([
+      {
+        algoId: "probe-good",
+        algoName: "Probe Good",
+        family: "sweep-model",
+        params: { threshold: 0.1 },
+        researchCandidateId: "rcid-good",
+        candidateConfigHash: "hash-good",
+        sourceRunId: "run-1",
+        sourceSnapshotHash: "snapshot-hash",
+        promotionVerdict: "paper_only",
+        seed: "seed-good",
+        closed: 4,
+        conservativeTotalPnl: 0.01,
+      },
+      {
+        algoId: "probe-missing-link",
+        family: "sweep-model",
+        params: { threshold: 0.2 },
+        closed: 4,
+        conservativeTotalPnl: 1,
+      },
+      {
+        algoId: "probe-unsupported",
+        family: "sweep-momentum-trail",
+        params: { threshold: 0.3 },
+        researchCandidateId: "rcid-unsupported",
+        candidateConfigHash: "hash-unsupported",
+        closed: 4,
+        conservativeTotalPnl: 1,
+      },
+    ], { maxProbes: 3 });
+
+    expect(result.selected).toHaveLength(1);
+    expect(result.selected[0]).toMatchObject({
+      lane: "exact_linked_evidence_probe",
+      evidenceStatus: "evidence_probe_only",
+      promotionEligibility: "not_promotion_eligible",
+      paperOnly: true,
+      exactLinked: true,
+      researchCandidateId: "rcid-good",
+    });
+    expect(result.rejected.map((row) => row.reasonCodes).flat()).toEqual(expect.arrayContaining([
+      "research_candidate_id_required",
+      "unsupported_family",
+    ]));
+  });
+
+  it("selects closed and active target markets from local evidence", async () => {
+    const dataRoot = mkdtempSync(path.join(tmpdir(), "dogeedge-targets-test-"));
+    const storageDir = path.join(dataRoot, "local-worker");
+    const framesDir = path.join(dataRoot, "features", "decision-frames");
+    mkdirSync(framesDir, { recursive: true });
+    mkdirSync(storageDir, { recursive: true });
+    writeFileSync(path.join(framesDir, "records.jsonl"), [
+      JSON.stringify({
+        marketTicker: "KXDOGE15M-CLOSED",
+        marketCloseTime: "2026-06-09T12:00:00.000Z",
+        family: "sweep-model",
+      }),
+      JSON.stringify({
+        marketTicker: "KXDOGE15M-ACTIVE",
+        marketCloseTime: "2026-06-09T12:45:00.000Z",
+        family: "sweep-model",
+      }),
+    ].join("\n"));
+
+    const selection = await selectTargetMarkets({
+      dataRoot,
+      storageDir,
+      now: "2026-06-09T12:15:00.000Z",
+      activeHorizonMinutes: 60,
+    });
+
+    expect(selection).toMatchObject({
+      schemaVersion: "dogeedge.target-markets.v1",
+      closedTargetCount: 1,
+      activeTargetCount: 1,
+    });
+    expect(selection.closedTickers).toContain("KXDOGE15M-CLOSED");
+    expect(selection.activeTickers).toContain("KXDOGE15M-ACTIVE");
+  });
+
+  it("preflights evidence bootstrap offline without pretending provider auth is ready", async () => {
+    const oldKey = process.env.KALSHI_API_KEY_ID;
+    const oldPrivateKey = process.env.KALSHI_PRIVATE_KEY_PEM;
+    delete process.env.KALSHI_API_KEY_ID;
+    delete process.env.KALSHI_PRIVATE_KEY_PEM;
+    try {
+      const dataRoot = mkdtempSync(path.join(tmpdir(), "dogeedge-preflight-test-"));
+      const storageDir = path.join(dataRoot, "local-worker");
+      const framesDir = path.join(dataRoot, "features", "decision-frames");
+      const backtestsDir = path.join(dataRoot, "backtests");
+      const outDir = path.join(dataRoot, "preflight");
+      mkdirSync(framesDir, { recursive: true });
+      mkdirSync(backtestsDir, { recursive: true });
+      mkdirSync(storageDir, { recursive: true });
+      writeFileSync(path.join(framesDir, "records.jsonl"), `${JSON.stringify({
+        marketTicker: "KXDOGE15M-PREFLIGHT",
+        marketCloseTime: "2026-06-09T12:00:00.000Z",
+        family: "sweep-model",
+      })}\n`);
+      const sweep = {
+        runId: "preflight-run",
+        randomSeed: "preflight-seed",
+        candidates: [{
+          algoId: "preflight-probe",
+          family: "sweep-model",
+          params: { threshold: 0.1 },
+          researchCandidateId: "rcid-preflight",
+          candidateConfigHash: "hash-preflight",
+          seed: "seed-preflight",
+          closed: 2,
+          conservativeTotalPnl: 0.01,
+        }],
+      };
+      const sweepPath = path.join(backtestsDir, "latest-sweep.json");
+      writeFileSync(sweepPath, `${JSON.stringify(sweep)}\n`);
+
+      const report = await runEvidencePreflight({
+        dataRoot,
+        storageDir,
+        out: outDir,
+        mock: true,
+        mockSettlements: "fixture-settlements.jsonl",
+        mockReplayRaw: "fixture-replay.jsonl",
+        probeSource: sweepPath,
+        evidenceOut: path.join(dataRoot, "evidence"),
+      });
+
+      expect(report).toMatchObject({
+        schemaVersion: "dogeedge.evidence-preflight.v1",
+        mockMode: true,
+        readyForOfflineBootstrap: true,
+        canPlaceOrders: false,
+      });
+      expect(report.checks.find((check) => check.name === "kalshi_auth_material")).toMatchObject({
+        status: "blocked",
+        reason: "KALSHI_API_KEY_ID_or_KALSHI_PRIVATE_KEY_PEM_missing",
+      });
+      expect(JSON.parse(readFileSync(path.join(outDir, "report.json"), "utf8"))).toMatchObject({
+        schemaVersion: "dogeedge.evidence-preflight.v1",
+      });
+    } finally {
+      if (oldKey === undefined) delete process.env.KALSHI_API_KEY_ID;
+      else process.env.KALSHI_API_KEY_ID = oldKey;
+      if (oldPrivateKey === undefined) delete process.env.KALSHI_PRIVATE_KEY_PEM;
+      else process.env.KALSHI_PRIVATE_KEY_PEM = oldPrivateKey;
+    }
+  });
+
+  it("separates official forecast calibration from realized trade calibration", () => {
+    const forecastRows = forecastCalibrationForDecisionRows([
+      { algoId: "cal-a", family: "sweep-model", researchCandidateId: "rcid-cal", candidateConfigHash: "hash-cal", side: "YES", fairProbability: 0.8, officialResolutionAvailable: true, settlementSource: "official_resolution", outcomeSide: "YES" },
+      { algoId: "cal-a", family: "sweep-model", researchCandidateId: "rcid-cal", candidateConfigHash: "hash-cal", side: "NO", fairProbability: 0.7, officialResolutionAvailable: true, settlementSource: "official_resolution", outcomeSide: "YES" },
+      { algoId: "cal-a", family: "sweep-model", researchCandidateId: "rcid-cal", candidateConfigHash: "hash-cal", side: "YES", fairProbability: 0.99, officialResolutionAvailable: false, settlementSource: "estimated", outcomeSide: "YES" },
+    ], { bucketCount: 2 });
+    const tradeRows = tradeCalibrationByCandidate([
+      { algoId: "cal-a", family: "sweep-model", researchCandidateId: "rcid-cal", candidateConfigHash: "hash-cal", status: "closed", side: "YES", fairProbability: 0.8, pnl: 1 },
+      { algoId: "cal-a", family: "sweep-model", researchCandidateId: "rcid-cal", candidateConfigHash: "hash-cal", status: "closed", side: "YES", fairProbability: 0.8, pnl: -1 },
+    ], { bucketCount: 2 });
+
+    expect(forecastRows[0]).toMatchObject({
+      calibrationKind: "official_forecast",
+      labelKnownCount: 2,
+      researchCandidateId: "rcid-cal",
+      brierScore: expect.any(Number),
+    });
+    expect(tradeRows[0]).toMatchObject({
+      calibrationKind: "trade_outcome",
+      labelKnownCount: 2,
+      researchCandidateId: "rcid-cal",
+      brierScore: expect.any(Number),
+    });
   });
 });
 

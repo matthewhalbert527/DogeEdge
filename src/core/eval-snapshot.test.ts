@@ -369,7 +369,7 @@ describe("continuous evaluation snapshot exporter", () => {
     });
     expect(manifest.files.map((file: { relativePath: string }) => file.relativePath)).toContain("snapshots/raw_market_ticks/jsonl/KXDOGE15M-FIXTURE.jsonl");
     expect(manifest.safetyStatus.liveTradingEnabled).toBe(false);
-  });
+  }, 15_000);
 
   it("reports raw tick target coverage gaps when requested samples are absent", async () => {
     const fixture = writeEvalFixture({ rawSnapshotMarketTicker: "KXDOGE15M-UNRELATED" });

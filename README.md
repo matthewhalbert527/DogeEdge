@@ -9,7 +9,8 @@ DogeEdge is a Windows PC-first, standalone Tauri-ready desktop workstation for D
 - Strategy decision module for YES/NO/skip evaluation after fee and spread penalties.
 - Risk gate with paper-only, dry-run, live enablement, spread, latency, confidence, edge, expiration, and per-trade cap checks.
 - Strategy promotion helper with backtest, walk-forward, paper, and tiny-live states.
-- Review-bundle exports for exact research/live linkage, official-settlement coverage, raw target-market tick coverage, and simulator calibration from paper evidence.
+- Review-bundle exports for exact research/live linkage, official-settlement coverage, replay target-market coverage, official forecast calibration, trade-outcome calibration, and simulator calibration from paper evidence.
+- Local evidence-plane commands for official settlement mock/provider ingest, replay capture/build/coverage, exact-link audits, safe legacy telemetry archives, and exact-linked paper evidence probes.
 - AI Observer UI for proposed parameter/code changes, evidence, risk note, and paper/backtest actions.
 - Backend-only Kalshi order router that keeps private keys out of the browser and enforces selected-algo, DOGE-series, max-order, account-balance, and same-ticker position/order checks.
 - Tauri v2 shell files for the desktop app.
@@ -26,7 +27,13 @@ The UI must not display settlement as official until a CF Benchmarks RTI adapter
 
 Promotion and roster surfaces fail closed when official settlement coverage, exact research identity, replay-grade target-market coverage, or review-bundle completeness is missing. Scheduled arena loading records `hold_gather_evidence` instead of rotating new research batches under those conditions. Telemetry-only rows remain visible for diagnosis, but they are separated from the Research Validated Roster.
 
-Generator v3 keeps low-evidence unattended executable minting at zero. Weak-evidence sweeps may still run a tiny lab-only research lane, but lab output cannot populate the Research Validated Roster or executable arena. Backtests can read official contract outcomes from `official_settlements.jsonl`; compact JSONL raw-tick exports are diagnostic-only until replay-grade sequencing is available.
+DogeEdge now uses three evidence lanes:
+
+- `Research Validated Roster`: only gate-passing, promotion-eligible, research-backed rows.
+- `Telemetry Watchlist`: unsupported, missing-link, rejected, insufficient-data, or legacy rows for diagnosis only.
+- `Exact-Linked Evidence Probe Lane`: paper-only exact-linked supported candidates used to collect fills, slippage, rejects, calibration, and linkage continuity. Evidence probes are not promotion eligible and cannot become Champion/Prospect rows merely because they are running.
+
+Generator v3 keeps low-evidence unattended executable minting at zero. Weak-evidence sweeps may still run a tiny lab-only research lane, but lab output cannot populate the Research Validated Roster or executable arena. Backtests can read official contract outcomes from `official_settlements.jsonl`; compact JSONL, polling, and candle raw-market exports are diagnostic-only until sequence-preserving replay-grade data is available.
 
 ## Development
 
@@ -49,6 +56,12 @@ npm run local-worker
 npm test
 npm run lint
 npm run build
+npm run factory:evidence-preflight -- --mock --mock-settlements test/fixtures/official-settlements.mock.jsonl --mock-replay-raw test/fixtures/replay-raw/KXDOGE15M-FIXTURE.jsonl
+npm run factory:select-target-markets
+npm run factory:evidence-bootstrap -- --mock --mock-settlements test/fixtures/official-settlements.mock.jsonl --mock-replay-raw test/fixtures/replay-raw/KXDOGE15M-FIXTURE.jsonl --target-markets-file test/fixtures/target-markets.json --probe-source test/fixtures/evidence-lane-sweep.json --force-reseed-probes
+npm run factory:fetch-settlements -- --mock-input test/fixtures/official-settlements.mock.jsonl
+npm run factory:build-replay -- --input test/fixtures/replay-raw --markets-file test/fixtures/target-markets.json
+npm run factory:reseed-evidence-lane -- --from test/fixtures/evidence-lane-sweep.json --max-probes 3
 ```
 
 The Vite app runs on `http://127.0.0.1:1420`. Local development proxies `/api` requests to `https://dogeedge.vercel.app` so the browser can use the same backend data path as production. Newly added API routes require a Vercel redeploy before the local preview can see them through that proxy.
@@ -64,9 +77,11 @@ DOGEEDGE_LIVE_TRADING_ENABLED=0
 DOGEEDGE_LIVE_MAX_ORDER_DOLLARS=10
 ```
 
-For actual live orders, set `DOGEEDGE_LIVE_TRADING_ENABLED=1` and `DOGEEDGE_LIVE_DRY_RUN=0` on the backend, then redeploy.
+For actual live orders, set `DOGEEDGE_LIVE_TRADING_ENABLED=1` and `DOGEEDGE_LIVE_DRY_RUN=0` on the backend, then redeploy. Research, replay, settlement-ingest, bundle-export, and evidence-probe commands are local evidence jobs only; they do not place orders.
 
 For local learning data files, run `npm run local-worker`. On Windows with a `D:` drive, the worker writes analysis-ready JSON/JSONL files under `D:\DogeEdge\data`; otherwise it falls back to `data/local-worker`.
+
+Evidence bootstrap commands are local-only. `factory:evidence-preflight` writes `artifacts/evidence-preflight/report.json` and a compact `artifacts/evidence/evidence_status.json`; it fails closed when provider auth, target markets, exact-linked probes, or seed metadata are missing. `factory:evidence-bootstrap` runs preflight, target selection, settlement fetch, replay capture/build/coverage, linkage audit, and optional probe reseeding in order. Runtime evidence reports under `artifacts/evidence*` are ignored by Git; keep only small fixtures under `test/fixtures/`.
 
 ## Tauri
 
@@ -82,8 +97,8 @@ On Windows, `Build DogeEdge Windows Desktop.bat` is the intended installer build
 
 ## Next Implementation Steps
 
-1. Run durable official-settlement backfill from exchange/historical settlement sources into `official_settlements.jsonl`.
-2. Add replay-grade Kalshi target-market orderbook/trade recording with sequence-gap checks.
+1. Populate durable official-settlement backfill from exchange/historical settlement sources into `official_settlements.jsonl`.
+2. Run replay-grade Kalshi target-market orderbook/trade recording with sequence-gap checks.
 3. Add Kalshi WebSocket user fills/order updates and cancel/reduce-only sell handling.
 4. Add SQLite journaling from the Rust core instead of in-memory UI snapshots.
 5. Add paid/imported tick-data replay formats in the Backtest Lab.
