@@ -3090,6 +3090,7 @@ async function writeRawMarketTicksManifest({
     supplementalScanPassesPlanned: jsonlFiles.supplementalScanPassesPlanned ?? null,
     supplementalScanPasses: jsonlFiles.supplementalScanPasses,
     supplementalScanBytes: jsonlFiles.supplementalScanBytes,
+    supplementalScanBudgetBytes: numberOrNull(jsonlFiles.supplementalScanBudgetBytes),
   },
     warningCodes: [
       "raw_market_tick_parquet_absent",
@@ -3155,6 +3156,7 @@ async function writeRawTickJsonlSamples({
       sourceScanBytes: resolvedSourceScanBytes,
       sourceHeadScanBytes: resolvedSourceHeadScanBytes,
       supplementalScanPasses: 0,
+      supplementalScanBudgetBytes: resolvedSourceScanBytes,
       supplementalScanBytes: 0,
       supplementalWindowBytes: 0,
     };
@@ -3192,6 +3194,7 @@ async function writeRawTickJsonlSamples({
   const compactScanMaxBytes = Math.min(16 * 1024 * 1024, resolvedSourceScanBytes * 4);
   let maxSupplementalPassesPlanned = 0;
   let supplementalWindowBytes = Math.max(512 * 1024, Math.floor(resolvedSourceScanBytes / 4));
+  let supplementalScanBudgetBytes = 0;
   let supplementalScanPasses = 0;
   for (const file of rawSnapshotFiles) {
     const lines = await readTailLines(file, resolvedSourceLineLimit, resolvedSourceScanBytes);
@@ -3216,11 +3219,17 @@ async function writeRawTickJsonlSamples({
         supplementalScanPasses += 1;
       }
       if (targets.size > 0 && missingMarketCount() > 0) {
-        const supplementalPasses = supplementalScanPassesForTargets(missingMarketCount());
-        maxSupplementalPassesPlanned = Math.max(maxSupplementalPassesPlanned, supplementalPasses);
-        const fileWindowBytes = Math.max(256 * 1024, Math.floor(resolvedSourceScanBytes / Math.max(1, supplementalPasses)));
+        const missingCount = missingMarketCount();
+        const supplementalPasses = supplementalScanPassesForTargets(missingCount, fileSize);
+        const supplementalBudgetBytes = Math.min(
+          128 * 1024 * 1024,
+          Math.max(resolvedSourceScanBytes, resolvedSourceScanBytes + missingCount * 4 * 1024 * 1024),
+        );
+        const fileWindowBytes = Math.max(256 * 1024, Math.floor(supplementalBudgetBytes / Math.max(1, supplementalPasses)));
         const supplementalOffsets = supplementalLineScanOffsets(fileSize, fileWindowBytes, supplementalPasses);
+        maxSupplementalPassesPlanned = Math.max(maxSupplementalPassesPlanned, supplementalOffsets.length);
         supplementalWindowBytes = Math.max(supplementalWindowBytes, fileWindowBytes);
+        supplementalScanBudgetBytes = Math.max(supplementalScanBudgetBytes, supplementalBudgetBytes);
         for (const byteOffset of supplementalOffsets) {
           const fallbackSampleLines = await readByteRangeLines(file, resolvedSourceLineLimit, fileWindowBytes, byteOffset);
           for (const line of fallbackSampleLines) {
@@ -3250,15 +3259,21 @@ async function writeRawTickJsonlSamples({
     supplementalScanPassesPlanned: maxSupplementalPassesPlanned,
     compactScanLineLimit,
     compactScanMaxBytes,
+    supplementalScanBudgetBytes,
     supplementalScanBytes: supplementalWindowBytes,
     supplementalWindowBytes,
   };
 }
 
-function supplementalScanPassesForTargets(missingMarketCount) {
+function supplementalScanPassesForTargets(missingMarketCount, fileSizeBytes = 0) {
   const safeCount = Number(missingMarketCount);
   if (!Number.isFinite(safeCount) || safeCount <= 0) return 0;
-  return Math.min(12, Math.max(3, Math.ceil(safeCount * 0.75)));
+  const targetBasedPasses = Math.min(24, Math.max(3, Math.ceil(safeCount * 0.75)));
+  const parsedFileSize = Number(fileSizeBytes);
+  const sizeBasedPasses = Number.isFinite(parsedFileSize) && parsedFileSize > 0
+    ? Math.max(0, Math.min(12, Math.floor(Math.log2(Math.max(1, parsedFileSize / (64 * 1024 * 1024))))))
+    : 0;
+  return Math.max(targetBasedPasses, sizeBasedPasses);
 }
 
 function supplementalLineScanOffsets(fileSize, windowBytes, passCount) {
@@ -3271,8 +3286,9 @@ function supplementalLineScanOffsets(fileSize, windowBytes, passCount) {
   if (maxStart <= 0) return [];
   const values = [];
   for (let index = 1; index <= effectivePasses; index += 1) {
-    const start = Math.floor((maxStart * index) / (effectivePasses + 1));
-    values.push(start);
+    const baseStart = Math.floor((maxStart * index) / (effectivePasses + 1));
+    const shiftedStart = Math.floor((maxStart * (index - 0.5)) / (effectivePasses + 1));
+    values.push(baseStart, shiftedStart);
   }
   return [...new Set(values)].sort((left, right) => left - right);
 }
