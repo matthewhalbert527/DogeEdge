@@ -1,5 +1,5 @@
 import { gunzipSync } from "node:zlib";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -168,6 +168,7 @@ describe("continuous evaluation snapshot exporter", () => {
       officialSettlementCoverage: 0,
       exactLinkedSupportedLiveRows: 0,
       replayGradeReady: false,
+      seedCompleteness: 1,
       blockers: expect.arrayContaining(["replay_grade_target_market_ticks_absent"]),
     });
     const schedulerBudget = JSON.parse(readFileSync(path.join(result.snapshotDir, "scheduler_budget_report.json"), "utf8"));
@@ -369,6 +370,107 @@ describe("continuous evaluation snapshot exporter", () => {
     });
     expect(manifest.files.map((file: { relativePath: string }) => file.relativePath)).toContain("snapshots/raw_market_ticks/jsonl/KXDOGE15M-FIXTURE.jsonl");
     expect(manifest.safetyStatus.liveTradingEnabled).toBe(false);
+  }, 15_000);
+
+  it("uses a wider raw-tick search policy for review bundles to recover more target markets", async () => {
+    const fixture = writeEvalFixture({ rawSnapshotMarketTicker: null });
+    const framesPath = path.join(fixture.dataRoot, "features", "decision-frames", "records.jsonl");
+    const rawSnapshotsDir = path.join(fixture.dataRoot, "raw", "snapshots");
+    const targetMarkets = [
+      "KXDOGE15M-FIXTURE",
+      "KXDOGE15M-BETA",
+      "KXDOGE15M-CHAR",
+      "KXDOGE15M-DELTA",
+      "KXDOGE15M-EPSILON",
+      "KXDOGE15M-FI",
+      "KXDOGE15M-GAMMA",
+      "KXDOGE15M-HELIX",
+      "KXDOGE15M-IRIS",
+      "KXDOGE15M-JULIET",
+      "KXDOGE15M-KILO",
+      "KXDOGE15M-LIMA",
+      "KXDOGE15M-MIKE",
+      "KXDOGE15M-NEON",
+    ];
+    const baseNow = new Date("2026-06-07T20:30:00.000Z").getTime();
+    const formatDecisionFrame = (marketTicker: string, observedAt: string, idSuffix: string) => `${JSON.stringify({
+      id: `frame-${idSuffix}`,
+      marketTicker,
+      observedAt,
+      capturedAt: observedAt,
+      featureTimestamp: observedAt,
+      labelTimestamp: "2026-06-07T21:00:00.000Z",
+      settlementTimestamp: "2026-06-07T21:00:00.000Z",
+      labelSource: "pre_close_frame_proxy",
+      settlementSource: "estimated",
+      marketCloseTimestamp: "2026-06-07T21:00:00.000Z",
+      secondsToClose: 300,
+      targetPrice: 0.25,
+      estimate: 0.251,
+      spotPrice: 0.251,
+      modelAction: "buy_yes",
+      yesBid: 0.4,
+      yesAsk: 0.41,
+      noBid: 0.58,
+      noAsk: 0.59,
+    })}\n`;
+    const formatRawSnapshot = (marketTicker: string, capturedAt: string) => `${JSON.stringify({
+      capturedAt,
+      runtimeSnapshot: { generatedAt: capturedAt, feed: { status: "ok" } },
+      paperInput: {
+        ticker: marketTicker,
+        observedAt: capturedAt,
+        action: "buy_yes",
+        selectedAsk: 0.41,
+        sizeContracts: 2,
+        yesBid: 0.4,
+        yesAsk: 0.41,
+        noBid: 0.58,
+        noAsk: 0.59,
+        marketStatus: "open",
+      },
+    })}\n`;
+
+    for (let index = 0; index < 10; index += 1) {
+      const noiseFile = path.join(rawSnapshotsDir, `noise-${index}.jsonl`);
+      writeFileSync(noiseFile, `${JSON.stringify({ capturedAt: `2026-06-07T20:10:00.${String(index).padStart(3, "0")}Z`, runtimeSnapshot: { generatedAt: "2026-06-07T20:10:00Z", feed: { status: "ok" } }, note: `noise-${index}` })}\n`);
+      utimesSync(noiseFile, new Date(baseNow - index * 1_000), new Date(baseNow - index * 1_000));
+    }
+
+    for (let index = 0; index < targetMarkets.length; index += 1) {
+      const marketTicker = targetMarkets[index];
+      const observedAt = `2026-06-07T20:${String(10 + index).padStart(2, "0")}:00.000Z`;
+      writeFileSync(framesPath, formatDecisionFrame(marketTicker, observedAt, `bundle-${index}`), { flag: "a" });
+      const rawFile = path.join(rawSnapshotsDir, `${marketTicker.toLowerCase()}.jsonl`);
+      writeFileSync(rawFile, formatRawSnapshot(marketTicker, observedAt));
+      utimesSync(rawFile, new Date(baseNow - 60_000 - index * 1_000), new Date(baseNow - 60_000 - index * 1_000));
+    }
+
+    const result = await buildReviewBundle({
+      dataRoot: fixture.dataRoot,
+      storageDir: fixture.storageDir,
+      backtestsDir: fixture.backtestsDir,
+      outDir: fixture.outDir,
+      now: "2026-06-07T20:30:00.000Z",
+      maxRowLines: 20,
+      maxMetrics: 1,
+    });
+    const manifest = JSON.parse(readFileSync(path.join(result.bundleRoot, "manifest.json"), "utf8"));
+    const rawTickManifest = JSON.parse(readFileSync(path.join(result.snapshotDir, "raw_market_ticks", "manifest.json"), "utf8"));
+
+    expect(manifest.rawMarketTickExport).toMatchObject({
+      targetMarketCoverage: {
+        covered: 14,
+        uncovered: 0,
+        ratio: 1,
+      },
+      targetMarketCount: 14,
+    });
+    expect(manifest.rawMarketTickExport.warningCodes).not.toContain("raw_market_tick_target_coverage_gap");
+    expect(manifest.rawMarketTickExport.extractionPolicy.sourceFileDiscoveryLimit).toBe(30);
+    expect(rawTickManifest.targetMarketCount).toBe(14);
+    expect(rawTickManifest.coveredTargetMarketCount).toBe(14);
+    expect(rawTickManifest.uncoveredTargetMarketCount).toBe(0);
   }, 15_000);
 
   it("reports raw tick target coverage gaps when requested samples are absent", async () => {

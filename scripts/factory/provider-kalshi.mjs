@@ -3,7 +3,7 @@ import {
   defaultOfficialSettlementProviderVersion,
   kalshiHistoricalMarketUrl,
   kalshiHistoricalMarketsUrl,
-  normalizeKalshiHistoricalMarket,
+  normalizeOfficialSettlementRow,
 } from "./official-settlement.mjs";
 
 export const kalshiProviderName = "kalshi";
@@ -24,8 +24,25 @@ export async function fetchKalshiHistoricalSettlements({
   const rawRows = [];
   if (Array.isArray(tickers) && tickers.length) {
     for (const ticker of tickers) {
-      const response = await fetchImpl(kalshiHistoricalMarketUrl(ticker, baseUrl));
-      if (!response.ok) throw new Error(`Kalshi historical market fetch failed for ${ticker}: HTTP ${response.status}`);
+      const url = kalshiHistoricalMarketUrl(ticker, baseUrl);
+      const response = await fetchImpl(url);
+      if (!response.ok) {
+        rawRows.push({
+          marketTicker: ticker,
+          status: response.status === 404 ? "not_found_or_not_archived" : `http_${response.status}`,
+          finalized: false,
+          provisional: true,
+          officialResolutionAvailable: false,
+          officialOutcome: null,
+          outcomeSide: null,
+          sourceEndpoint: "kalshi_historical_market",
+          verificationSource: `kalshi_historical_market_http_${response.status}`,
+          providerFetchStatus: response.status,
+          providerFetchStatusText: response.statusText,
+          providerFetchUrl: url,
+        });
+        continue;
+      }
       rawRows.push(await response.json());
     }
   } else {
@@ -43,7 +60,7 @@ export async function fetchKalshiHistoricalSettlements({
   const sinceMs = since ? Date.parse(since) : Number.NEGATIVE_INFINITY;
   const untilMs = until ? Date.parse(until) : Number.POSITIVE_INFINITY;
   const rows = rawRows
-    .map((row) => normalizeKalshiHistoricalMarket(row, {
+    .map((row) => normalizeOfficialSettlementRow(row, {
       fetchedAt,
       provider: kalshiProviderName,
       providerVersion: kalshiProviderVersion,

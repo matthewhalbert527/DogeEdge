@@ -48,6 +48,10 @@ function numeric(value) {
 
 async function replayCoverageCli() {
   const args = parseArgs(process.argv.slice(2));
+  if (args.help) {
+    console.log("Usage: node scripts/factory/replay-coverage.mjs --input replay-final-root [--markets-file file] [--out file]");
+    return;
+  }
   const inputRoot = path.resolve(args.input ?? args["replay-root"] ?? "data/replay/final");
   const manifests = await readReplayMarketManifests(inputRoot);
   const targetMarkets = args["markets-file"] ? await readMarketsFile(path.resolve(String(args["markets-file"]))) : manifests.map((row) => row.marketTicker);
@@ -126,9 +130,30 @@ async function readMarketsFile(filePath) {
   const text = await readFile(filePath, "utf8");
   if (filePath.endsWith(".json")) {
     const parsed = JSON.parse(text);
-    return uniqueStrings(Array.isArray(parsed) ? parsed : Array.isArray(parsed.markets) ? parsed.markets : Array.isArray(parsed.tickers) ? parsed.tickers : []);
+    return uniqueStrings(targetMarketValues(parsed, { preferActive: true }));
   }
   return uniqueStrings(text.split(/\r?\n|,/));
+}
+
+function targetMarketValues(parsed, { preferActive = false } = {}) {
+  if (Array.isArray(parsed)) return parsed.map(tickerFromTarget).filter(Boolean);
+  if (!parsed || typeof parsed !== "object") return [];
+  const primary = preferActive && Array.isArray(parsed.activeTargets) ? parsed.activeTargets : [];
+  if (primary.length) return primary.map(tickerFromTarget).filter(Boolean);
+  const fallback = [
+    ...(Array.isArray(parsed.targets) ? parsed.targets : []),
+    ...(Array.isArray(parsed.markets) ? parsed.markets : []),
+    ...(Array.isArray(parsed.tickers) ? parsed.tickers : []),
+    ...(!preferActive && Array.isArray(parsed.closedTargets) ? parsed.closedTargets : []),
+    ...(preferActive && Array.isArray(parsed.closedTargets) ? parsed.closedTargets : []),
+  ];
+  return [...primary, ...fallback].map(tickerFromTarget).filter(Boolean);
+}
+
+function tickerFromTarget(value) {
+  if (typeof value === "string") return value;
+  if (!value || typeof value !== "object") return null;
+  return value.marketTicker ?? value.ticker ?? value.id ?? null;
 }
 
 function tsv(columns, rows) {

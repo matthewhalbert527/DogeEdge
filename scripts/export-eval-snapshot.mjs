@@ -707,7 +707,9 @@ export async function exportEvaluationSnapshot(options = {}) {
   const evidenceProbesPath = path.join(storageDir, "evidence-probes.json");
   const latestBacktestPath = path.join(backtestsDir, "latest.json");
   const latestSweepPath = path.join(backtestsDir, "latest-sweep.json");
+  const defaultOfficialSettlementsStorePath = path.join(dataRoot, "official_settlements.jsonl");
   const settlementFetchReportPath = path.join(dataRoot, "settlement_fetch_report.json");
+  const artifactSettlementFetchReportPath = path.resolve("artifacts", "evidence", "settlement_fetch_report.json");
   const replayManifestSummaryPath = path.join(dataRoot, "replay", "final", "replay_manifest_summary.json");
   const evidenceStatusPath = path.resolve("artifacts", "evidence", "evidence_status.json");
   const evidencePreflightReportPath = path.resolve("artifacts", "evidence-preflight", "report.json");
@@ -720,7 +722,8 @@ export async function exportEvaluationSnapshot(options = {}) {
     evidenceProbesFile,
     latestBacktest,
     latestSweep,
-    settlementFetchReport,
+    dataRootSettlementFetchReport,
+    artifactSettlementFetchReport,
     replayManifestSummary,
     evidenceStatus,
     evidencePreflightReport,
@@ -734,13 +737,20 @@ export async function exportEvaluationSnapshot(options = {}) {
     readJsonMaybe(latestBacktestPath),
     readJsonMaybe(latestSweepPath),
     readJsonMaybe(settlementFetchReportPath),
+    readJsonMaybe(artifactSettlementFetchReportPath),
     readJsonMaybe(replayManifestSummaryPath),
     readJsonMaybe(evidenceStatusPath),
     readJsonMaybe(evidencePreflightReportPath),
     repoInfo(),
   ]);
 
+  const settlementFetchReport = newestTimestampedRecord([
+    dataRootSettlementFetchReport,
+    artifactSettlementFetchReport,
+  ]);
   const primaryRun = choosePrimaryRun(latestSweep, latestBacktest);
+  const officialSettlementStorePath = stringOrNull(settlementFetchReport?.storePath) ?? defaultOfficialSettlementsStorePath;
+  const officialSettlementStoreRows = await readJsonlMaybe(officialSettlementStorePath);
   const runDir = stringOrNull(primaryRun?.runDir);
   const registry = primaryRun?.registry ?? await readJsonMaybe(runDir ? path.join(runDir, "experiment-registry.json") : null) ?? {};
   const metrics = await selectPrimaryRunMetrics(primaryRun, maxMetrics);
@@ -776,7 +786,7 @@ export async function exportEvaluationSnapshot(options = {}) {
   const foldMetrics = foldMetricRows({ snapshotId, metrics, registry, primaryRun });
   const alignment = researchLiveAlignment({ researchMetrics: metrics, liveStats: topStats });
   const leakageAudit = leakageAuditSummary({ snapshotId, dataQuality, metrics });
-  const seedCompleteness = seedCompletenessForMetrics(metrics, primaryRun);
+  const seedCompleteness = seedCompletenessForMetrics(metrics, { ...primaryRun, registry });
   const alignmentArtifacts = alignmentRows({ snapshotId, metrics, topStats, primaryRun, alignment, leakageAudit, identityByAlgoId });
   let decisionRows = [];
   let tradeRows = [];
@@ -907,9 +917,13 @@ export async function exportEvaluationSnapshot(options = {}) {
     rawTickFormat: options.rawTickFormat ?? "jsonl",
     maxRawTickMarkets: numberOption(options.maxRawTickMarkets, 20),
     maxRawTickRowsPerMarket: numberOption(options.maxRawTickRowsPerMarket, 50_000),
+    sourceFileDiscoveryLimit: options.sourceFileDiscoveryLimit,
+    sourceLineLimit: options.sourceLineLimit,
+    sourceScanBytes: options.sourceScanBytes,
+    sourceHeadScanBytes: options.sourceHeadScanBytes,
     sourceRunId: primaryRun?.runId ?? null,
     sourceSnapshotHash,
-    officialSettlements: settlementArtifacts.settlements,
+    officialSettlements: officialSettlementStoreRows.length ? officialSettlementStoreRows : settlementArtifacts.settlements,
   });
   fileManifest.push(...exactExportFiles);
   const rawTickManifest = await readJsonMaybe(path.join(snapshotDir, "raw_market_ticks", "manifest.json"));
@@ -1141,7 +1155,13 @@ export async function exportEvaluationSnapshot(options = {}) {
 }
 
 export async function buildReviewBundle(options = {}) {
-  const snapshotResult = await exportEvaluationSnapshot(options);
+  const snapshotResult = await exportEvaluationSnapshot({
+    ...options,
+    sourceFileDiscoveryLimit: numberOption(options.sourceFileDiscoveryLimit, 30),
+    sourceLineLimit: numberOption(options.sourceLineLimit, 75_000),
+    sourceScanBytes: numberOption(options.sourceScanBytes, 128 * 1024 * 1024),
+    sourceHeadScanBytes: numberOption(options.sourceHeadScanBytes, 4 * 1024 * 1024),
+  });
   const outRoot = path.resolve(options.outDir ?? path.join(path.resolve(options.dataRoot ?? defaultDataRoot()), "gpt-review-packets"));
   const generatedAt = snapshotResult.snapshot.generatedAt;
   const bundleId = `dogeedge-review-bundle-${compactIso(new Date(generatedAt))}`;
@@ -1438,6 +1458,7 @@ function rawMarketTickBundleSummary(manifest, manifestPresent) {
     ...(manifestPresent && !parseOk ? ["raw_market_tick_manifest_parse_failed"] : []),
     ...(Array.isArray(manifest?.warningCodes) ? manifest.warningCodes : []),
   ]);
+  const extractionPolicy = isRecord(manifest?.extractionPolicy) ? manifest.extractionPolicy : {};
   return {
     manifestPresent,
     parseOk,
@@ -1475,6 +1496,16 @@ function rawMarketTickBundleSummary(manifest, manifestPresent) {
       hashSkippedByteRatio: sourceHashPolicy.hashSkippedByteRatio,
       skippedLargeFileSample,
       omittedSkippedLargeFileCount: Math.max(0, hashSkippedSourceSnapshotFileCount - skippedLargeFileSample.length),
+    },
+    extractionPolicy: {
+      maxTargetMarkets: numberOrNull(extractionPolicy.maxTargetMarkets),
+      maxRowsPerMarket: numberOrNull(extractionPolicy.maxRowsPerMarket),
+      sourceFileDiscoveryLimit: numberOrNull(extractionPolicy.sourceFileDiscoveryLimit),
+      sourceLineLimit: numberOrNull(extractionPolicy.sourceLineLimit),
+      sourceScanBytes: numberOrNull(extractionPolicy.sourceScanBytes),
+      sourceHeadScanBytes: numberOrNull(extractionPolicy.sourceHeadScanBytes),
+      scannedSourceFileCount: numberOrNull(extractionPolicy.scannedSourceFileCount),
+      scannedSourceBytes: numberOrNull(extractionPolicy.scannedSourceBytes),
     },
     warningCodes,
   };
@@ -2191,6 +2222,10 @@ async function writeExactReviewFiles({
   rawTickFormat = "jsonl",
   maxRawTickMarkets = 20,
   maxRawTickRowsPerMarket = 50_000,
+  sourceFileDiscoveryLimit,
+  sourceLineLimit,
+  sourceScanBytes,
+  sourceHeadScanBytes,
   sourceRunId,
   sourceSnapshotHash,
   officialSettlements = [],
@@ -2247,6 +2282,10 @@ async function writeExactReviewFiles({
     rawTickFormat,
     maxRawTickMarkets,
     maxRawTickRowsPerMarket,
+    sourceFileDiscoveryLimit,
+    sourceLineLimit,
+    sourceScanBytes,
+    sourceHeadScanBytes,
   }));
   return files;
 }
@@ -3053,6 +3092,7 @@ function officialSettlementArtifacts({ snapshotId, generatedAt, metrics, decisio
 }
 
 function officialSettlementJsonLine(row) {
+  if (row?.schemaVersion === "dogeedge.official-settlement.v1") return row;
   return {
     snapshot_id: row.snapshotId,
     market_ticker: row.marketTicker,
@@ -3362,6 +3402,7 @@ function executableReadinessGateReport({
   topRosterDefaultSortAudit,
   dataQuality = {},
   evidenceProbeSummary = {},
+  seedCompleteness = 0,
 }) {
   return buildExecutableReadinessGate({
     snapshotId,
@@ -3374,6 +3415,7 @@ function executableReadinessGateReport({
     topRosterDefaultSortAudit,
     dataQuality,
     evidenceProbeSummary,
+    seedCompleteness,
   });
 }
 
@@ -3743,6 +3785,10 @@ async function writeRawMarketTicksManifest({
   rawTickFormat = "jsonl",
   maxRawTickMarkets = 20,
   maxRawTickRowsPerMarket = 50_000,
+  sourceFileDiscoveryLimit = 10,
+  sourceLineLimit,
+  sourceScanBytes,
+  sourceHeadScanBytes,
 }) {
   const dir = path.join(snapshotDir, "raw_market_ticks");
   await mkdir(dir, { recursive: true });
@@ -3773,11 +3819,27 @@ async function writeRawMarketTicksManifest({
       "git_commit",
     ],
   };
-  const rawSnapshotFiles = await latestFilesRecursive(path.join(dataRoot, "raw", "snapshots"), [".jsonl", ".ndjson", ".json", ".csv"], 10);
-  const targetMarkets = uniqueStrings([
+  const resolvedSourceFileDiscoveryLimit = Math.max(1, Math.floor(numberOption(sourceFileDiscoveryLimit, 10)));
+  const rawSnapshotFiles = await latestFilesRecursive(path.join(dataRoot, "raw", "snapshots"), [".jsonl", ".ndjson", ".json", ".csv"], resolvedSourceFileDiscoveryLimit);
+  const allTargetMarkets = uniqueStrings([
     ...decisionRows.map((row) => row.marketTicker),
     ...tradeRows.map((row) => row.marketTicker),
-  ]).slice(0, Math.max(1, maxRawTickMarkets));
+  ]);
+  const targetMarketLimit = Math.max(1, maxRawTickMarkets);
+  const targetMarkets = allTargetMarkets.slice(0, targetMarketLimit);
+  const targetMarketRequestedCount = allTargetMarkets.length;
+  const targetMarketOmittedCount = Math.max(0, targetMarketRequestedCount - targetMarkets.length);
+  const targetBasedSourceLineLimit = Math.max(2_000, Math.min(50_000, targetMarkets.length * 2_000));
+  const targetBasedSourceScanBytes = Math.min(
+    64 * 1024 * 1024,
+    Math.max(4 * 1024 * 1024, targetMarkets.length * 4 * 1024 * 1024),
+  );
+  const resolvedSourceLineLimit = Math.max(1, numberOption(sourceLineLimit, targetBasedSourceLineLimit));
+  const resolvedSourceScanBytes = Math.max(1, numberOption(sourceScanBytes, targetBasedSourceScanBytes));
+  const resolvedSourceHeadScanBytes = Math.max(
+    1,
+    numberOption(sourceHeadScanBytes, Math.max(256 * 1024, Math.min(2 * 1024 * 1024, resolvedSourceScanBytes))),
+  );
   const jsonlFiles = requestedFormat === "jsonl"
     ? await writeRawTickJsonlSamples({
       dir,
@@ -3786,6 +3848,9 @@ async function writeRawMarketTicksManifest({
       gitInfo,
       targetMarkets,
       maxRowsPerMarket: maxRawTickRowsPerMarket,
+      sourceLineLimit: resolvedSourceLineLimit,
+      sourceScanBytes: resolvedSourceScanBytes,
+      sourceHeadScanBytes: resolvedSourceHeadScanBytes,
     })
     : [];
   const sources = [];
@@ -3836,6 +3901,8 @@ async function writeRawMarketTicksManifest({
     jsonlDirectory: "raw_market_ticks/jsonl/<market_ticker>.jsonl",
     targetMarkets,
     targetMarketCount: targetMarkets.length,
+    targetMarketRequestedCount,
+    targetMarketOmittedCount,
     coveredTargetMarkets,
     uncoveredTargetMarkets,
     coveredTargetMarketCount: coveredTargetMarkets.length,
@@ -3850,6 +3917,16 @@ async function writeRawMarketTicksManifest({
     hashedSourceSnapshotFileCount,
     hashSkippedSourceSnapshotFileCount,
     sequenceGapCheckAvailable,
+    extractionPolicy: {
+      maxTargetMarkets: targetMarketLimit,
+      maxRowsPerMarket: maxRawTickRowsPerMarket,
+      sourceFileDiscoveryLimit: resolvedSourceFileDiscoveryLimit,
+      sourceLineLimit: jsonlFiles.sourceLineLimit ?? null,
+      sourceScanBytes: jsonlFiles.sourceScanBytes ?? null,
+      sourceHeadScanBytes: jsonlFiles.sourceHeadScanBytes ?? null,
+      scannedSourceFileCount: jsonlFiles.scannedSourceFileCount ?? 0,
+      scannedSourceBytes: jsonlFiles.scannedSourceBytes ?? 0,
+    },
     sourceHashPolicy: {
       sha256MaxBytes: sourceHashPolicy.sha256MaxBytes,
       hashedFileCount: hashedSourceSnapshotFileCount,
@@ -3865,6 +3942,7 @@ async function writeRawMarketTicksManifest({
       ...(requestedFormat === "jsonl" && !available ? ["raw_market_tick_jsonl_absent"] : []),
       ...(jsonlFiles.length > 0 ? ["raw_market_tick_jsonl_sample"] : []),
       ...(uncoveredTargetMarkets.length > 0 ? ["raw_market_tick_target_coverage_gap"] : []),
+      ...(targetMarketOmittedCount > 0 ? ["raw_market_tick_target_market_truncated"] : []),
       "sequence_gap_check_absent",
       ...(sources.length === 0 ? ["raw_snapshot_source_absent"] : []),
       ...(sources.some((source) => source.hashSkipped) ? ["raw_snapshot_hash_skipped_large_file"] : []),
@@ -3925,15 +4003,39 @@ function rawTickAvailabilityReason({ availabilityStatus, requestedFormat }) {
   return "Replayable per-market parquet tick export is not present in current local artifacts; schema and source manifest are exported so calibration gaps remain explicit.";
 }
 
-async function writeRawTickJsonlSamples({ dir, rawSnapshotFiles, snapshotId, gitInfo, targetMarkets, maxRowsPerMarket }) {
-  if (!rawSnapshotFiles.length) return [];
+async function writeRawTickJsonlSamples({
+  dir,
+  rawSnapshotFiles,
+  snapshotId,
+  gitInfo,
+  targetMarkets,
+  maxRowsPerMarket,
+  sourceLineLimit,
+  sourceScanBytes,
+  sourceHeadScanBytes,
+}) {
+  if (!rawSnapshotFiles.length) return rawTickSampleResult([], {
+    sourceLineLimit,
+    sourceScanBytes,
+    sourceHeadScanBytes,
+    scannedSourceFileCount: 0,
+    scannedSourceBytes: 0,
+  });
   const jsonlDir = path.join(dir, "jsonl");
   await mkdir(jsonlDir, { recursive: true });
   const targets = new Set(targetMarkets);
   const rowsByMarket = new Map();
-  const sourceLineLimit = Math.min(10_000, Math.max(1_000, targetMarkets.length * 500));
-  for (const file of rawSnapshotFiles.slice(0, 3)) {
-    const lines = await readTailLines(file, sourceLineLimit);
+  let scannedSourceFileCount = 0;
+  let scannedSourceBytes = 0;
+  for (const file of rawSnapshotFiles) {
+    const scan = await readRawTickScanLines(file, {
+      maxLines: sourceLineLimit,
+      maxBytes: sourceScanBytes,
+      headBytes: sourceHeadScanBytes,
+    });
+    scannedSourceFileCount += 1;
+    scannedSourceBytes += scan.bytesRead;
+    const lines = scan.lines;
     for (const line of lines) {
       const raw = parseJsonLine(line);
       const marketTicker = stringOrNull(raw?.marketTicker ?? raw?.paperInput?.ticker);
@@ -3953,11 +4055,26 @@ async function writeRawTickJsonlSamples({ dir, rawSnapshotFiles, snapshotId, git
     await writeFile(filePath, `${rows.join("\n")}${rows.length ? "\n" : ""}`, "utf8");
     files.push({ marketTicker, rows: rows.length, path: filePath });
   }
-  return files;
+  return rawTickSampleResult(files, {
+    sourceLineLimit,
+    sourceScanBytes,
+    sourceHeadScanBytes,
+    scannedSourceFileCount,
+    scannedSourceBytes,
+  });
 }
 
 function compactRawTickRow(raw, sourceLine, context) {
   return compactReplayTickRow(raw, sourceLine, context);
+}
+
+function rawTickSampleResult(files, policy) {
+  files.sourceLineLimit = numberOrNull(policy.sourceLineLimit);
+  files.sourceScanBytes = numberOrNull(policy.sourceScanBytes);
+  files.sourceHeadScanBytes = numberOrNull(policy.sourceHeadScanBytes);
+  files.scannedSourceFileCount = numberOrZero(policy.scannedSourceFileCount);
+  files.scannedSourceBytes = numberOrZero(policy.scannedSourceBytes);
+  return files;
 }
 
 function warningRows({ snapshotId, generatedAt, safety, localStoredAt, dataQuality, gitInfo, registry, topStats, includeRows, rowExportMode }) {
@@ -4036,7 +4153,12 @@ function seedCompletenessForMetrics(metrics = [], primaryRun = null) {
       ? primaryRun.topMetrics
       : Array.isArray(primaryRun?.candidates) ? primaryRun.candidates : [];
   if (!rows.length) return 0;
-  const runSeed = primaryRun?.seed ?? primaryRun?.randomSeed ?? primaryRun?.registry?.seed ?? primaryRun?.config?.seed;
+  const runSeed = primaryRun?.seed
+    ?? primaryRun?.randomSeed
+    ?? primaryRun?.registry?.seed
+    ?? primaryRun?.registry?.randomSeed
+    ?? primaryRun?.registry?.seedPlan?.rootSeed
+    ?? primaryRun?.config?.seed;
   const complete = rows.filter((metric) => metric?.seed || metric?.bootstrapSeed || metric?.reproducibility?.seed || runSeed).length;
   if (complete > 0) return roundDisplayRatio(complete / rows.length);
   const fallbackRows = Array.isArray(primaryRun?.topMetrics) && primaryRun.topMetrics.length ? primaryRun.topMetrics : [];
@@ -4279,6 +4401,42 @@ async function readTailLines(filePath, maxLines) {
   return text.split(/\r?\n/).filter(Boolean).slice(-maxLines);
 }
 
+async function readRawTickScanLines(filePath, { maxLines, maxBytes, headBytes }) {
+  if (!filePath || !(await exists(filePath))) return { lines: [], bytesRead: 0 };
+  const info = await stat(filePath);
+  const resolvedMaxBytes = Math.max(1, Math.min(info.size, numberOption(maxBytes, 8 * 1024 * 1024)));
+  const resolvedHeadBytes = Math.max(0, Math.min(info.size, resolvedMaxBytes, numberOption(headBytes, 0)));
+  const tailBytes = Math.max(0, Math.min(info.size - resolvedHeadBytes, resolvedMaxBytes - resolvedHeadBytes));
+  const chunks = [];
+  if (resolvedHeadBytes > 0) chunks.push(await readFileSegment(filePath, 0, resolvedHeadBytes));
+  if (tailBytes > 0) {
+    const tailStart = Math.max(resolvedHeadBytes, info.size - tailBytes);
+    if (tailStart > resolvedHeadBytes && chunks.length) chunks.push(Buffer.from("\n"));
+    chunks.push(await readFileSegment(filePath, tailStart, info.size - tailStart));
+  }
+  if (!chunks.length) return { lines: [], bytesRead: 0 };
+  const limit = Math.max(1, Math.floor(numberOption(maxLines, 10_000)));
+  const lines = Buffer.concat(chunks).toString("utf8").split(/\r?\n/).filter(Boolean);
+  if (lines.length <= limit) return { lines, bytesRead: chunks.reduce((total, chunk) => total + chunk.length, 0) };
+  const headLineCount = Math.max(1, Math.floor(limit / 2));
+  const tailLineCount = Math.max(1, limit - headLineCount);
+  return {
+    lines: [...lines.slice(0, headLineCount), ...lines.slice(-tailLineCount)],
+    bytesRead: chunks.reduce((total, chunk) => total + chunk.length, 0),
+  };
+}
+
+async function readFileSegment(filePath, position, length) {
+  const buffer = Buffer.alloc(length);
+  const handle = await import("node:fs/promises").then((mod) => mod.open(filePath, "r"));
+  try {
+    await handle.read(buffer, 0, length, position);
+  } finally {
+    await handle.close();
+  }
+  return buffer;
+}
+
 function countLines(text) {
   return (text.match(/\n/g) ?? []).length;
 }
@@ -4297,6 +4455,20 @@ async function readJsonMaybe(filePath) {
     return JSON.parse(await readFile(filePath, "utf8"));
   } catch {
     return null;
+  }
+}
+
+async function readJsonlMaybe(filePath) {
+  if (!filePath) return [];
+  try {
+    return (await readFile(filePath, "utf8"))
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map(parseJsonLine)
+      .filter(Boolean);
+  } catch {
+    return [];
   }
 }
 
@@ -4435,6 +4607,12 @@ function parseTime(value) {
   return Number.isFinite(time) ? time : null;
 }
 
+function newestTimestampedRecord(records = []) {
+  return records
+    .filter((record) => record && typeof record === "object")
+    .sort((left, right) => (parseTime(right.generatedAt) ?? 0) - (parseTime(left.generatedAt) ?? 0))[0] ?? null;
+}
+
 function defaultDataRoot() {
   if (process.env.DOGEEDGE_DATA_ROOT) return process.env.DOGEEDGE_DATA_ROOT;
   if (process.platform === "win32") return "D:\\DogeEdge\\data";
@@ -4535,6 +4713,10 @@ function parseArgs(argv) {
     rawTickFormat: result["raw-tick-format"],
     maxRawTickMarkets: result["max-raw-tick-markets"],
     maxRawTickRowsPerMarket: result["max-raw-tick-rows-per-market"],
+    sourceFileDiscoveryLimit: result["source-file-discovery-limit"],
+    sourceLineLimit: result["source-line-limit"],
+    sourceScanBytes: result["source-scan-bytes"],
+    sourceHeadScanBytes: result["source-head-scan-bytes"],
     sourceTimezone: result.timezone,
   };
 }

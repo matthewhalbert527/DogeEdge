@@ -201,6 +201,7 @@ export function officialSettlementCoverageReport({
     },
     reasonCodes: [
       ...(settlementRows.length === 0 ? ["official_settlement_rows_absent"] : []),
+      ...(officialCount === 0 ? ["official_resolution_rows_absent"] : []),
       ...(coverage < scoringThreshold ? ["official_coverage_below_scoring_threshold"] : []),
       ...(coverage < promotionThreshold ? ["official_coverage_below_promotion_threshold"] : []),
     ],

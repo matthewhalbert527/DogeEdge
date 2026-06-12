@@ -7,6 +7,11 @@ import kalshiDogeMarketHandler from "../api/kalshi/doge-market.js";
 import kalshiOrderRouterHandler, { routerStatus } from "../api/kalshi/order-router.js";
 import kalshiPortfolioHandler from "../api/kalshi/portfolio.js";
 
+if (process.argv.includes("--help")) {
+  console.log("Usage: node scripts/dogeedge-local-worker.mjs [--help]\nEnvironment: DOGEEDGE_DATA_DIR, DOGEEDGE_DATA_ROOT, DOGEEDGE_WORKER_PORT, DOGEEDGE_WORKER_HOST, DOGEEDGE_RAW_SNAPSHOT_MS, DOGEEDGE_AUTO_SWEEP");
+  process.exit(0);
+}
+
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const storageDir = path.resolve(process.env.DOGEEDGE_DATA_DIR ?? await defaultStorageDir());
 const dataRoot = path.resolve(process.env.DOGEEDGE_DATA_ROOT ?? path.dirname(storageDir));

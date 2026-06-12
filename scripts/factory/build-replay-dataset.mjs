@@ -8,6 +8,10 @@ import { normalizeReplayRawEvent, replaySequenceReport } from "./raw-tick-extrac
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const args = parseArgs(process.argv.slice(2));
+if (args.help) {
+  console.log("Usage: node scripts/factory/build-replay-dataset.mjs --input raw-root --markets-file file [--out replay-final-root] [--data-root dir] [--provider kalshi] [--mode websocket|polling] [--capture-run-id id]");
+  process.exit(0);
+}
 const dataRoot = path.resolve(args["data-root"] ?? process.env.DOGEEDGE_DATA_ROOT ?? await defaultDataRoot());
 const inputRoot = path.resolve(args.input ?? path.join(dataRoot, "replay", "raw"));
 const outputRoot = path.resolve(args.out ?? path.join(dataRoot, "replay", "final"));
@@ -122,9 +126,30 @@ async function readMarketsFile(filePath) {
   const text = await readFile(filePath, "utf8");
   if (filePath.endsWith(".json")) {
     const parsed = JSON.parse(text);
-    return uniqueStrings(Array.isArray(parsed) ? parsed : Array.isArray(parsed.markets) ? parsed.markets : Array.isArray(parsed.tickers) ? parsed.tickers : []);
+    return uniqueStrings(targetMarketValues(parsed, { preferActive: true }));
   }
   return uniqueStrings(text.split(/\r?\n|,/));
+}
+
+function targetMarketValues(parsed, { preferActive = false } = {}) {
+  if (Array.isArray(parsed)) return parsed.map(tickerFromTarget).filter(Boolean);
+  if (!parsed || typeof parsed !== "object") return [];
+  const primary = preferActive && Array.isArray(parsed.activeTargets) ? parsed.activeTargets : [];
+  if (primary.length) return primary.map(tickerFromTarget).filter(Boolean);
+  const fallback = [
+    ...(Array.isArray(parsed.targets) ? parsed.targets : []),
+    ...(Array.isArray(parsed.markets) ? parsed.markets : []),
+    ...(Array.isArray(parsed.tickers) ? parsed.tickers : []),
+    ...(!preferActive && Array.isArray(parsed.closedTargets) ? parsed.closedTargets : []),
+    ...(preferActive && Array.isArray(parsed.closedTargets) ? parsed.closedTargets : []),
+  ];
+  return [...primary, ...fallback].map(tickerFromTarget).filter(Boolean);
+}
+
+function tickerFromTarget(value) {
+  if (typeof value === "string") return value;
+  if (!value || typeof value !== "object") return null;
+  return value.marketTicker ?? value.ticker ?? value.id ?? null;
 }
 
 async function listFiles(root, extensions) {

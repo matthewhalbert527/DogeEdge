@@ -90,6 +90,10 @@ export function evidenceProbeFromCandidate(candidate) {
 
 async function evidenceLaneCli() {
   const args = parseArgs(process.argv.slice(2));
+  if (args.help) {
+    console.log("Usage: node scripts/factory/evidence-lane.mjs [--from latest-sweep|file] [--run-id id] [--max-probes n] [--data-root dir] [--storage-dir dir] [--allow-insufficient-data-probe]");
+    return;
+  }
   const dataRoot = path.resolve(args["data-root"] ?? process.env.DOGEEDGE_DATA_ROOT ?? await defaultDataRoot());
   const storageDir = path.resolve(args["storage-dir"] ?? process.env.DOGEEDGE_DATA_DIR ?? path.join(dataRoot, "local-worker"));
   const source = await loadSourceSweep(args, dataRoot);

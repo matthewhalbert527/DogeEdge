@@ -63,6 +63,10 @@ export function deterministicLinkageBackfill({ researchRows = [], executableRows
 
 async function linkageCli() {
   const args = parseArgs(process.argv.slice(2));
+  if (args.help) {
+    console.log("Usage: node scripts/factory/backfill-linkage.mjs --input path [--out dir] [--audit-only]");
+    return;
+  }
   const input = path.resolve(args.input ?? "review_exports");
   const outDir = path.resolve(args.out ?? path.join(input, "linkage-audit"));
   const auditOnly = Boolean(args["audit-only"]);

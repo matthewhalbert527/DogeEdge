@@ -14,6 +14,10 @@ import {
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const args = parseArgs(process.argv.slice(2));
+if (args.help) {
+  console.log("Usage: node scripts/factory/fetch-official-settlements.mjs [--mock-input file] [--tickers-file file] [--missing-only] [--provider kalshi] [--base-url url] [--since date] [--until date] [--data-root dir] [--out file] [--report-out file]");
+  process.exit(0);
+}
 const dataRoot = path.resolve(args["data-root"] ?? process.env.DOGEEDGE_DATA_ROOT ?? await defaultDataRoot());
 const storePath = path.resolve(args.out ?? args.store ?? process.env.DOGEEDGE_OFFICIAL_SETTLEMENTS ?? path.join(dataRoot, "official_settlements.jsonl"));
 const provider = String(args.provider ?? (args["mock-input"] ? "mock" : "kalshi"));
