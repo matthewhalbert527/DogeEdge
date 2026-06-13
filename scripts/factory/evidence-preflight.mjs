@@ -8,7 +8,7 @@ import { defaultKalshiHistoricalBaseUrl, kalshiHistoricalMarketsUrl } from "./of
 import { selectTargetMarkets, writeTargetMarketSelection } from "./target-markets.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-const defaultKalshiWsUrl = "wss://api.elections.kalshi.com/trade-api/ws/v2";
+const defaultKalshiWsUrl = "wss://external-api-ws.kalshi.com/trade-api/ws/v2";
 
 export async function runEvidencePreflight(options = {}) {
   const generatedAt = new Date().toISOString();

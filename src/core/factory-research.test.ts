@@ -35,6 +35,7 @@ import { forecastCalibrationForDecisionRows, probabilityCalibrationForTrades, tr
 import { deterministicLinkageBackfill } from "../../scripts/factory/backfill-linkage.mjs";
 import { selectEvidenceProbes } from "../../scripts/factory/evidence-lane.mjs";
 import { runEvidencePreflight } from "../../scripts/factory/evidence-preflight.mjs";
+import { fetchKalshiHistoricalSettlements } from "../../scripts/factory/provider-kalshi.mjs";
 import { selectTargetMarkets } from "../../scripts/factory/target-markets.mjs";
 import {
   hasResearchPromotionCandidate,
@@ -71,6 +72,16 @@ const baseFrame = {
   yesTopDepth: { bidSize: 20, askSize: 20 },
   noTopDepth: { bidSize: 20, askSize: 20 },
 };
+
+function responseJson(payload: unknown, { ok = true, status = 200, statusText = "OK" } = {}) {
+  return {
+    ok,
+    status,
+    statusText,
+    json: async () => payload,
+    headers: { get: () => null },
+  };
+}
 
 const alwaysYesAlgo = {
   id: "always-yes",
@@ -1174,6 +1185,46 @@ describe("factory research safeguards", () => {
       fetchedRows: 1,
       storedRows: 1,
     });
+  });
+
+  it("routes Kalshi ticker settlement fetches through live markets before historical archives", async () => {
+    const calls: string[] = [];
+    const fetchImpl = async (url: string) => {
+      calls.push(url);
+      if (url.endsWith("/historical/cutoff")) {
+        return responseJson({ cutoff_time: "2026-06-01T00:00:00.000Z" });
+      }
+      if (url.endsWith("/markets/KXDOGE15M-ROUTE")) {
+        return responseJson({
+          market: {
+            ticker: "KXDOGE15M-ROUTE",
+            status: "settled",
+            result: "YES",
+            close_time: "2026-06-12T16:45:00.000Z",
+            settlement_ts: "2026-06-12T16:46:00.000Z",
+            settlement_value_dollars: 1,
+          },
+        });
+      }
+      return responseJson({ error: "not found" }, { ok: false, status: 404, statusText: "Not Found" });
+    };
+
+    const result = await fetchKalshiHistoricalSettlements({
+      baseUrl: "https://kalshi.test/trade-api/v2",
+      tickers: ["KXDOGE15M-ROUTE"],
+      fetchImpl,
+    });
+
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0]).toMatchObject({
+      marketTicker: "KXDOGE15M-ROUTE",
+      officialResolutionAvailable: true,
+      outcomeSide: "YES",
+      sourceEndpoint: "kalshi_live_market",
+      routeChosen: "live_market",
+      settled: true,
+    });
+    expect(calls.some((url) => url.includes("/historical/markets/KXDOGE15M-ROUTE"))).toBe(false);
   });
 
   it("detects replay sequence gaps and keeps polling fallback diagnostic-only", () => {

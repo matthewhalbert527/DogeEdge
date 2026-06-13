@@ -1,12 +1,14 @@
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
+import crypto from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { normalizeReplayRawEvent } from "./raw-tick-extract.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+const defaultKalshiWsUrl = "wss://external-api-ws.kalshi.com/trade-api/ws/v2";
 const args = parseArgs(process.argv.slice(2));
 if (args.help) {
-  console.log("Usage: node scripts/factory/capture-replay.mjs --markets-file file [--provider kalshi] [--mode websocket|polling|live] [--mock-input file] [--data-root dir] [--out dir] [--capture-run-id id]");
+  console.log("Usage: node scripts/factory/capture-replay.mjs --markets-file file [--provider kalshi] [--mode provider|websocket|polling|live] [--mock-input file] [--data-root dir] [--out dir] [--capture-run-id id]");
   process.exit(0);
 }
 const dataRoot = path.resolve(args["data-root"] ?? process.env.DOGEEDGE_DATA_ROOT ?? await defaultDataRoot());
@@ -39,6 +41,7 @@ if (args["mock-input"]) {
   console.log(`Replay capture mock ingest complete: ${[...byMarket.keys()].length} markets -> ${outRoot}`);
 } else {
   await mkdir(outRoot, { recursive: true });
+  const providerBlocker = await providerCaptureBlocker({ outRoot, provider, mode, markets });
   await writeManifest({
     outRoot,
     markets,
@@ -48,15 +51,17 @@ if (args["mock-input"]) {
     captureRunId,
     gitCommit,
     mockInput: null,
-    unavailableReason: mode === "websocket"
+    unavailableReason: providerBlocker?.reasonCode ?? (mode === "websocket"
       ? "provider_websocket_capture_not_configured_in_local_environment"
-      : "provider_polling_capture_not_configured_in_local_environment",
+      : "provider_polling_capture_not_configured_in_local_environment"),
+    blockerArtifact: providerBlocker?.relativePath ?? null,
   });
   console.log(`Replay capture manifest written, but no provider capture ran in this environment.`);
   console.log(`Use --mock-input <jsonl> for offline fixture ingest or configure provider credentials/adapters.`);
 }
 
-async function writeManifest({ outRoot, markets, capturedMarkets, provider, mode, captureRunId, gitCommit, mockInput, unavailableReason = null }) {
+async function writeManifest({ outRoot, markets, capturedMarkets, provider, mode, captureRunId, gitCommit, mockInput, unavailableReason = null, blockerArtifact = null }) {
+  const replayGradeIntended = mode === "websocket" || mode === "provider";
   const manifest = {
     schemaVersion: "dogeedge.replay-capture-run.v1",
     generatedAt: new Date().toISOString(),
@@ -68,14 +73,43 @@ async function writeManifest({ outRoot, markets, capturedMarkets, provider, mode
     capturedMarketCount: capturedMarkets.length,
     markets,
     capturedMarkets,
-    replayGradeIntended: mode === "websocket",
-    fallbackKind: mode === "websocket" ? "replay_grade" : "polling_diagnostic_only",
+    replayGradeIntended,
+    fallbackKind: replayGradeIntended ? "absent" : "polling_diagnostic_only",
     executionSensitivePromotionAllowed: false,
     canPlaceOrders: false,
     mockInput,
     unavailableReason,
+    blockerArtifact,
   };
   await writeFile(path.join(outRoot, "capture-run-manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+}
+
+async function providerCaptureBlocker({ outRoot, provider, mode, markets }) {
+  if (!(mode === "provider" || mode === "websocket")) return null;
+  const auth = kalshiAuthFromEnv(process.env);
+  const wsUrl = process.env.KALSHI_WS_URL ?? defaultKalshiWsUrl;
+  const artifactName = auth.ok ? "replay_provider_capture_blocked.json" : "replay_auth_blocked.json";
+  const reasonCode = auth.ok ? "provider_websocket_capture_adapter_not_implemented" : auth.reason;
+  const artifact = {
+    schemaVersion: "dogeedge.replay-provider-blocker.v1",
+    generatedAt: new Date().toISOString(),
+    provider,
+    mode,
+    wsUrl,
+    marketCount: markets.length,
+    markets,
+    authMaterialPresent: auth.ok,
+    keyIdPresent: Boolean(auth.keyId),
+    privateKeyPresent: Boolean(auth.privateKeyPem),
+    reasonCode,
+    requiredChannels: ["orderbook_delta", "trade", "market_lifecycle_v2"],
+    requiredReplayGradeEvents: ["orderbook_snapshot", "orderbook_delta"],
+    replayGradeAvailable: false,
+    executionSensitivePromotionAllowed: false,
+    canPlaceOrders: false,
+  };
+  await writeFile(path.join(outRoot, artifactName), `${JSON.stringify(artifact, null, 2)}\n`, "utf8");
+  return { relativePath: artifactName, reasonCode };
 }
 
 async function readRows(filePath) {
@@ -123,6 +157,27 @@ function safeSegment(value) {
 
 function uniqueStrings(values) {
   return [...new Set(values.map((value) => typeof value === "string" ? value.trim() : "").filter(Boolean))].sort();
+}
+
+function kalshiAuthFromEnv(env) {
+  const keyId = stringOrNull(env.KALSHI_API_KEY_ID);
+  const privateKeyPem = normalizePrivateKey(env.KALSHI_PRIVATE_KEY_PEM);
+  if (!keyId || !privateKeyPem) return { ok: false, keyId, privateKeyPem, reason: "KALSHI_API_KEY_ID_or_KALSHI_PRIVATE_KEY_PEM_missing" };
+  try {
+    crypto.createPrivateKey(privateKeyPem);
+    return { ok: true, keyId, privateKeyPem };
+  } catch {
+    return { ok: false, keyId, privateKeyPem, reason: "kalshi_private_key_not_parseable" };
+  }
+}
+
+function normalizePrivateKey(value) {
+  if (!value) return null;
+  return String(value).replace(/\\n/g, "\n");
+}
+
+function stringOrNull(value) {
+  return typeof value === "string" && value.trim().length ? value.trim() : null;
 }
 
 async function gitCommitMaybe() {

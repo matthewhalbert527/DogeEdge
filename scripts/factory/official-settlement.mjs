@@ -4,7 +4,7 @@ import path from "node:path";
 import { dayKey, isRecord, numberOrNull, parseTime, roundRatio, stableStringify, stringOrNull } from "./utils.mjs";
 
 export const officialSettlementSchemaVersion = "dogeedge.official-settlement.v1";
-export const defaultKalshiHistoricalBaseUrl = "https://api.elections.kalshi.com/trade-api/v2";
+export const defaultKalshiHistoricalBaseUrl = "https://external-api.kalshi.com/trade-api/v2";
 export const defaultOfficialSettlementProvider = "kalshi";
 export const defaultOfficialSettlementProviderVersion = "kalshi-historical-v1";
 
@@ -23,6 +23,10 @@ export function kalshiHistoricalMarketsUrl({ baseUrl = defaultKalshiHistoricalBa
 
 export function kalshiHistoricalMarketUrl(ticker, baseUrl = defaultKalshiHistoricalBaseUrl) {
   return `${trimSlash(baseUrl)}/historical/markets/${encodeURIComponent(String(ticker))}`;
+}
+
+export function kalshiLiveMarketUrl(ticker, baseUrl = defaultKalshiHistoricalBaseUrl) {
+  return `${trimSlash(baseUrl)}/markets/${encodeURIComponent(String(ticker))}`;
 }
 
 export function normalizeKalshiHistoricalMarket(
@@ -56,6 +60,8 @@ export function normalizeKalshiHistoricalMarket(
     ?? market.winning_side
     ?? market.winningSide
     ?? market.resolution
+    ?? market.expiration_value
+    ?? market.expirationValue
   );
   const settlementValueDollars = numberFromAny(market.settlement_value_dollars ?? market.settlementValueDollars ?? market.settlement_value);
   const closeMs = timeFromAny(market.close_time ?? market.closeTime ?? market.expiration_time ?? market.expirationTime);
@@ -71,7 +77,7 @@ export function normalizeKalshiHistoricalMarket(
     schemaVersion: officialSettlementSchemaVersion,
     marketTicker,
     eventTicker,
-    sourceEndpoint,
+    sourceEndpoint: stringOrNull(value.sourceEndpoint) ?? sourceEndpoint,
     fetchedAt,
     status,
     finalized,
@@ -90,10 +96,17 @@ export function normalizeKalshiHistoricalMarket(
     verificationSource: stringOrNull(market.rules_primary_source)
       ?? stringOrNull(market.rulesPrimarySource)
       ?? stringOrNull(market.settlement_source)
-      ?? "kalshi_historical_market",
+      ?? stringOrNull(value.sourceEndpoint)
+      ?? sourceEndpoint,
     sourcePayloadSha256: sha256(stableStringify(value)),
     provider,
     providerVersion,
+    routeChosen: stringOrNull(value.routeChosen),
+    endpointAttempted: stringOrNull(value.endpointAttempted),
+    endpointsAttempted: arrayOfStrings(value.endpointsAttempted),
+    httpStatus: numberFromAny(value.httpStatus ?? value.providerFetchStatus),
+    reasonCode: stringOrNull(value.reasonCode),
+    settled: typeof value.settled === "boolean" ? value.settled : officialResolutionAvailable,
   };
 }
 
@@ -103,6 +116,7 @@ export function normalizeOfficialSettlementRow(value, options = {}) {
     const normalized = normalizeCanonicalSettlementRow(value, options);
     return normalized?.marketTicker ? normalized : null;
   }
+  if (isRecord(value.market)) return normalizeKalshiHistoricalMarket(value, options);
   if (value.marketTicker || value.outcomeSide || value.officialOutcome || value.settlementTimestamp || value.verificationSource) {
     const normalized = normalizeCanonicalSettlementRow(value, options);
     return normalized?.marketTicker ? normalized : null;
@@ -270,6 +284,12 @@ function normalizeCanonicalSettlementRow(value, options = {}) {
     providerVersion: stringOrNull(value.providerVersion) ?? options.providerVersion ?? defaultOfficialSettlementProviderVersion,
     labelSource: officialResolutionAvailable ? "official_resolution" : "official_contract_outcome_unavailable",
     settlementSource: officialResolutionAvailable ? "official_resolution" : "official_contract_outcome_unavailable",
+    routeChosen: stringOrNull(value.routeChosen),
+    endpointAttempted: stringOrNull(value.endpointAttempted),
+    endpointsAttempted: arrayOfStrings(value.endpointsAttempted),
+    httpStatus: numberFromAny(value.httpStatus ?? value.providerFetchStatus),
+    reasonCode: stringOrNull(value.reasonCode),
+    settled: typeof value.settled === "boolean" ? value.settled : officialResolutionAvailable,
   };
 }
 
@@ -287,6 +307,11 @@ function numberFromAny(value) {
     return Number.isFinite(parsed) ? parsed : null;
   }
   return numberOrNull(value);
+}
+
+function arrayOfStrings(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => String(item ?? "").trim()).filter(Boolean);
 }
 
 function timeFromAny(value) {

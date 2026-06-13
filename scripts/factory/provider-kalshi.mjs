@@ -1,8 +1,10 @@
 import {
   defaultKalshiHistoricalBaseUrl,
   defaultOfficialSettlementProviderVersion,
+  kalshiHistoricalCutoffUrl,
   kalshiHistoricalMarketUrl,
   kalshiHistoricalMarketsUrl,
+  kalshiLiveMarketUrl,
   normalizeOfficialSettlementRow,
 } from "./official-settlement.mjs";
 
@@ -22,28 +24,10 @@ export async function fetchKalshiHistoricalSettlements({
   }
   const fetchedAt = new Date().toISOString();
   const rawRows = [];
+  const cutoff = await fetchHistoricalCutoff({ baseUrl, fetchImpl });
   if (Array.isArray(tickers) && tickers.length) {
     for (const ticker of tickers) {
-      const url = kalshiHistoricalMarketUrl(ticker, baseUrl);
-      const response = await fetchImpl(url);
-      if (!response.ok) {
-        rawRows.push({
-          marketTicker: ticker,
-          status: response.status === 404 ? "not_found_or_not_archived" : `http_${response.status}`,
-          finalized: false,
-          provisional: true,
-          officialResolutionAvailable: false,
-          officialOutcome: null,
-          outcomeSide: null,
-          sourceEndpoint: "kalshi_historical_market",
-          verificationSource: `kalshi_historical_market_http_${response.status}`,
-          providerFetchStatus: response.status,
-          providerFetchStatusText: response.statusText,
-          providerFetchUrl: url,
-        });
-        continue;
-      }
-      rawRows.push(await response.json());
+      rawRows.push(await fetchTickerSettlementRoute({ ticker, baseUrl, fetchImpl, fetchedAt, cutoff }));
     }
   } else {
     let cursor = null;
@@ -76,7 +60,125 @@ export async function fetchKalshiHistoricalSettlements({
     provider: kalshiProviderName,
     providerVersion: kalshiProviderVersion,
     fetchedAt,
+    historicalCutoff: cutoff,
     rawCount: rawRows.length,
     rows,
   };
+}
+
+async function fetchTickerSettlementRoute({ ticker, baseUrl, fetchImpl, fetchedAt, cutoff }) {
+  const attempts = [];
+  const live = await fetchJsonAttempt({
+    fetchImpl,
+    url: kalshiLiveMarketUrl(ticker, baseUrl),
+    endpoint: "kalshi_live_market",
+  });
+  attempts.push(live);
+  if (live.ok) {
+    const liveRow = routePayload(live.payload, {
+      ticker,
+      fetchedAt,
+      cutoff,
+      routeChosen: "live_market",
+      sourceEndpoint: "kalshi_live_market",
+      attempts,
+    });
+    const normalized = normalizeOfficialSettlementRow(liveRow, {
+      fetchedAt,
+      provider: kalshiProviderName,
+      providerVersion: kalshiProviderVersion,
+      sourceEndpoint: "kalshi_live_market",
+    });
+    if (normalized?.officialResolutionAvailable === true) return liveRow;
+  }
+
+  const historical = await fetchJsonAttempt({
+    fetchImpl,
+    url: kalshiHistoricalMarketUrl(ticker, baseUrl),
+    endpoint: "kalshi_historical_market",
+  });
+  attempts.push(historical);
+  if (historical.ok) {
+    return routePayload(historical.payload, {
+      ticker,
+      fetchedAt,
+      cutoff,
+      routeChosen: "historical_market",
+      sourceEndpoint: "kalshi_historical_market",
+      attempts,
+    });
+  }
+
+  if (live.ok) {
+    return routePayload(live.payload, {
+      ticker,
+      fetchedAt,
+      cutoff,
+      routeChosen: "live_market_unsettled",
+      sourceEndpoint: "kalshi_live_market",
+      attempts,
+      reasonCode: "live_market_present_but_official_resolution_unavailable",
+    });
+  }
+
+  const last = attempts.at(-1) ?? {};
+  return {
+    marketTicker: ticker,
+    status: "not_found_live_or_historical",
+    finalized: false,
+    provisional: true,
+    officialResolutionAvailable: false,
+    officialOutcome: null,
+    outcomeSide: null,
+    sourceEndpoint: "kalshi_market_route",
+    verificationSource: "kalshi_market_route_unresolved",
+    fetchedAt,
+    routeChosen: "unresolved",
+    endpointAttempted: last.url ?? null,
+    endpointsAttempted: attempts.map((attempt) => `${attempt.endpoint}:${attempt.status ?? "error"}`),
+    httpStatus: last.status ?? null,
+    reasonCode: "market_not_found_live_or_historical",
+    settled: false,
+    provider: kalshiProviderName,
+    providerVersion: kalshiProviderVersion,
+    historicalCutoff: cutoff,
+  };
+}
+
+async function fetchJsonAttempt({ fetchImpl, url, endpoint }) {
+  try {
+    const response = await fetchImpl(url, { cache: "no-store" });
+    if (!response.ok) {
+      return { endpoint, url, ok: false, status: response.status, statusText: response.statusText };
+    }
+    return { endpoint, url, ok: true, status: response.status, payload: await response.json() };
+  } catch (error) {
+    return { endpoint, url, ok: false, status: null, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+function routePayload(payload, { ticker, fetchedAt, cutoff, routeChosen, sourceEndpoint, attempts, reasonCode = null }) {
+  const latestAttempt = attempts.at(-1) ?? {};
+  return {
+    ...(payload && typeof payload === "object" ? payload : {}),
+    marketTicker: payload?.marketTicker ?? payload?.market_ticker ?? payload?.ticker ?? payload?.market?.ticker ?? ticker,
+    sourceEndpoint,
+    fetchedAt,
+    routeChosen,
+    endpointAttempted: latestAttempt.url ?? null,
+    endpointsAttempted: attempts.map((attempt) => `${attempt.endpoint}:${attempt.status ?? "error"}`),
+    httpStatus: latestAttempt.status ?? null,
+    reasonCode,
+    historicalCutoff: cutoff,
+  };
+}
+
+async function fetchHistoricalCutoff({ baseUrl, fetchImpl }) {
+  const attempt = await fetchJsonAttempt({
+    fetchImpl,
+    url: kalshiHistoricalCutoffUrl(baseUrl),
+    endpoint: "kalshi_historical_cutoff",
+  });
+  if (!attempt.ok) return { available: false, endpointAttempted: attempt.url, httpStatus: attempt.status, reasonCode: "historical_cutoff_unavailable" };
+  return { available: true, endpointAttempted: attempt.url, httpStatus: attempt.status, payload: attempt.payload };
 }
