@@ -1,5 +1,5 @@
 import { roundRatio } from "./utils.mjs";
-import { readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -93,6 +93,7 @@ async function replayCoverageCli() {
     rows,
   };
   const outPath = path.resolve(args.out ?? path.join(inputRoot, "replay_coverage_report.json"));
+  await mkdir(path.dirname(outPath), { recursive: true });
   await writeFile(outPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
   await writeFile(path.join(path.dirname(outPath), "replay_coverage.tsv"), tsv(["marketTicker", "rowCount", "replayGradeAvailable", "fallbackKind", "executionSensitivePromotionAllowed"], rows), "utf8");
   console.log(`Replay coverage: ${replayGrade}/${targetMarkets.length} replay-grade, ${covered}/${targetMarkets.length} covered`);

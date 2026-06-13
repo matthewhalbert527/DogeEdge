@@ -111,7 +111,7 @@ export function rawTickReplayCoverageRows({ snapshotId, targetMarkets = [], json
 
 export function normalizeReplayRawEvent(raw, context = {}) {
   if (!isRecord(raw)) return null;
-  const payloadSha256 = sha256(JSON.stringify(raw));
+  const payloadSha256 = stringOrNull(raw.payloadSha256) ?? sha256(JSON.stringify(raw.rawProviderMessage ?? raw));
   const marketTicker = stringOrNull(raw.marketTicker)
     ?? stringOrNull(raw.market_ticker)
     ?? stringOrNull(raw.ticker)
@@ -160,6 +160,8 @@ export function normalizeReplayRawEvent(raw, context = {}) {
     captureRunId: stringOrNull(raw.captureRunId) ?? context.captureRunId ?? "manual",
     gitCommit: stringOrNull(raw.gitCommit) ?? context.gitCommit ?? "UNAVAILABLE",
     sourceFileOrdinal: Number.isInteger(raw.sourceFileOrdinal) ? raw.sourceFileOrdinal : context.sourceFileOrdinal ?? 0,
+    useYesPrice: raw.useYesPrice === true || context.useYesPrice === true,
+    priceScale: stringOrNull(raw.priceScale) ?? (raw.useYesPrice === true || context.useYesPrice === true ? "yes_leg" : "provider_default"),
   };
 }
 
@@ -170,13 +172,18 @@ export function replaySequenceReport(events = []) {
     if (leftSeq !== null && rightSeq !== null && leftSeq !== rightSeq) return leftSeq - rightSeq;
     return Date.parse(left.receiveTs ?? "") - Date.parse(right.receiveTs ?? "");
   });
+  const orderbookSequenced = sorted.filter((event) => (
+    event.channel === "orderbook"
+    && (event.messageType === "snapshot" || event.messageType === "delta")
+    && numberOrNull(event.seq) !== null
+  ));
   const seen = new Set();
   const gaps = [];
   const duplicates = [];
   const outOfOrder = [];
   let previousSeq = null;
   let previousSourceOrdinal = -1;
-  for (const event of sorted) {
+  for (const event of orderbookSequenced) {
     const seq = numberOrNull(event.seq);
     if (seq !== null) {
       if (seen.has(seq)) duplicates.push({ marketTicker: event.marketTicker, seq });
@@ -190,8 +197,8 @@ export function replaySequenceReport(events = []) {
     if (ordinal < previousSourceOrdinal) outOfOrder.push({ marketTicker: event.marketTicker, seq, sourceFileOrdinal: ordinal });
     previousSourceOrdinal = Math.max(previousSourceOrdinal, ordinal);
   }
-  const snapshotCount = sorted.filter((event) => event.messageType === "snapshot").length;
-  const deltaCount = sorted.filter((event) => event.messageType === "delta").length;
+  const snapshotCount = sorted.filter((event) => event.channel === "orderbook" && event.messageType === "snapshot").length;
+  const deltaCount = sorted.filter((event) => event.channel === "orderbook" && event.messageType === "delta").length;
   return {
     marketTicker: sorted[0]?.marketTicker ?? null,
     rowCount: sorted.length,

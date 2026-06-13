@@ -31,12 +31,19 @@ import {
 import { compactReplayTickRow, normalizeReplayRawEvent, rawTickReplayManifest, replaySequenceReport } from "../../scripts/factory/raw-tick-extract.mjs";
 import { replayParityReportFromManifest } from "../../scripts/factory/replay-coverage.mjs";
 import { buildExecutableReadinessGate } from "../../scripts/factory/readiness-gate.mjs";
-import { forecastCalibrationForDecisionRows, probabilityCalibrationForTrades, tradeCalibrationByCandidate } from "../../scripts/factory/probability-calibration.mjs";
+import { forecastCalibrationForDecisionRows, officialForecastCalibrationReport, probabilityCalibrationForTrades, tradeCalibrationByCandidate } from "../../scripts/factory/probability-calibration.mjs";
 import { deterministicLinkageBackfill } from "../../scripts/factory/backfill-linkage.mjs";
 import { selectEvidenceProbes } from "../../scripts/factory/evidence-lane.mjs";
 import { runEvidencePreflight } from "../../scripts/factory/evidence-preflight.mjs";
 import { fetchKalshiHistoricalSettlements } from "../../scripts/factory/provider-kalshi.mjs";
 import { selectTargetMarkets } from "../../scripts/factory/target-markets.mjs";
+import { officialSettlementJoinArtifacts } from "../../scripts/export-eval-snapshot.mjs";
+import {
+  decodeServerWebSocketFrames,
+  encodeClientWebSocketFrame,
+  kalshiReplaySubscription,
+  normalizeKalshiWsReplayMessage,
+} from "../../scripts/factory/kalshi-ws-replay.mjs";
 import {
   hasResearchPromotionCandidate,
   researchEvidenceCanMature,
@@ -1240,11 +1247,20 @@ describe("factory research safeguards", () => {
     const polling = [
       normalizeReplayRawEvent({ marketTicker: "KXDOGE15M-POLL", captureMode: "polling", messageType: "snapshot", receiveTs: "2026-06-09T12:00:00.000Z" }),
     ];
+    const withTrades = [
+      ...good,
+      normalizeReplayRawEvent({ marketTicker: "KXDOGE15M-SEQ", channel: "trade", messageType: "trade", seq: 10, receiveTs: "2026-06-09T12:00:00.050Z", price: 0.51 }),
+    ];
 
     expect(replaySequenceReport(good)).toMatchObject({
       replayGradeAvailable: true,
       fallbackKind: "replay_grade",
       gapCount: 0,
+      duplicateCount: 0,
+    });
+    expect(replaySequenceReport(withTrades)).toMatchObject({
+      replayGradeAvailable: true,
+      tradeCount: 1,
       duplicateCount: 0,
     });
     expect(replaySequenceReport(gapped)).toMatchObject({
@@ -1255,6 +1271,132 @@ describe("factory research safeguards", () => {
     expect(replaySequenceReport(polling)).toMatchObject({
       replayGradeAvailable: false,
       fallbackKind: "polling_diagnostic_only",
+    });
+  });
+
+  it("normalizes Kalshi websocket replay messages with explicit yes-leg price scale", () => {
+    const subscription = kalshiReplaySubscription({
+      marketTickers: ["KXDOGE15M-WS"],
+      channels: ["orderbook_delta", "trade", "market_lifecycle_v2"],
+      useYesPrice: true,
+    });
+    expect(subscription).toMatchObject({
+      cmd: "subscribe",
+      params: {
+        market_tickers: ["KXDOGE15M-WS"],
+        use_yes_price: true,
+      },
+    });
+
+    const encoded = encodeClientWebSocketFrame(JSON.stringify({ ok: true }), { maskKey: Buffer.from([1, 2, 3, 4]) });
+    const decoded = decodeServerWebSocketFrames(encoded);
+    expect(JSON.parse(decoded.frames[0].payload.toString("utf8"))).toEqual({ ok: true });
+
+    const snapshot = normalizeKalshiWsReplayMessage({
+      type: "orderbook_snapshot",
+      sid: 11,
+      seq: 100,
+      msg: {
+        market_ticker: "KXDOGE15M-WS",
+        yes: [[51, 10]],
+        no: [[49, 7]],
+        ts_ms: 1781360000000,
+      },
+    }, {
+      receiveTs: "2026-06-13T18:00:00.000Z",
+      wsSessionId: "session-1",
+      captureRunId: "capture-1",
+      gitCommit: "abc",
+      sourceFileOrdinal: 1,
+      useYesPrice: true,
+    });
+    const delta = normalizeKalshiWsReplayMessage({
+      type: "orderbook_delta",
+      sid: 11,
+      seq: 101,
+      msg: {
+        market_ticker: "KXDOGE15M-WS",
+        side: "yes",
+        price: 52,
+        delta: 3,
+      },
+    }, {
+      receiveTs: "2026-06-13T18:00:01.000Z",
+      wsSessionId: "session-1",
+      captureRunId: "capture-1",
+      gitCommit: "abc",
+      sourceFileOrdinal: 2,
+      useYesPrice: true,
+    });
+
+    expect(snapshot).toMatchObject({
+      marketTicker: "KXDOGE15M-WS",
+      channel: "orderbook",
+      messageType: "snapshot",
+      seq: 100,
+      useYesPrice: true,
+      priceScale: "yes_leg",
+      bestYesBid: 0.51,
+    });
+    expect(delta).toMatchObject({
+      messageType: "delta",
+      side: "YES",
+      priceDollars: 0.52,
+      deltaContracts: 3,
+    });
+    expect(replaySequenceReport([snapshot, delta]).replayGradeAvailable).toBe(true);
+  });
+
+  it("joins finalized settlement-store rows into forecast calibration inputs", () => {
+    const joined = officialSettlementJoinArtifacts({
+      snapshotId: "snap-join",
+      decisionRows: [{
+        rowId: "decision-1",
+        marketTicker: "KXDOGE15M-JOIN",
+        algoId: "algo-join",
+        family: "sweep-model",
+        researchCandidateId: "rcid-join",
+        candidateConfigHash: "hash-join",
+        side: "YES",
+        fairProbability: 0.72,
+        labelSource: "estimated",
+        settlementSource: "estimated",
+        officialResolutionAvailable: false,
+      }],
+      tradeRows: [],
+      settlementRows: [{
+        schemaVersion: "dogeedge.official-settlement.v1",
+        marketTicker: "KXDOGE15M-JOIN",
+        status: "finalized",
+        finalized: true,
+        provisional: false,
+        officialResolutionAvailable: true,
+        officialOutcome: "YES",
+        outcomeSide: "YES",
+        labelTimestamp: "2026-06-13T18:15:00.000Z",
+        settlementTimestamp: "2026-06-13T18:16:00.000Z",
+        sourceEndpoint: "kalshi_live_market",
+        verificationSource: "kalshi_live_market",
+        fetchedAt: "2026-06-13T18:20:00.000Z",
+        sourcePayloadSha256: "abc",
+        provider: "kalshi",
+        providerVersion: "test",
+      }],
+    });
+    expect(joined.decisionRows[0]).toMatchObject({
+      labelSource: "official_resolution",
+      settlementSource: "official_resolution",
+      officialResolutionAvailable: true,
+      outcomeSide: "YES",
+    });
+    expect(joined.auditRows[0]).toMatchObject({
+      officialRowPresent: true,
+      officialResolutionAvailable: true,
+      reasonCodes: expect.stringContaining("official_join_available"),
+    });
+    expect(officialForecastCalibrationReport(joined.decisionRows, { bucketCount: 1 })).toMatchObject({
+      calibrationKind: "official_forecast",
+      labelKnownCount: 1,
     });
   });
 
@@ -1289,7 +1431,7 @@ describe("factory research safeguards", () => {
   });
 
   it("installs evidence probes only for exact-linked supported paper candidates", () => {
-    const result = selectEvidenceProbes([
+    const rows = [
       {
         algoId: "probe-good",
         algoName: "Probe Good",
@@ -1320,9 +1462,19 @@ describe("factory research safeguards", () => {
         closed: 4,
         conservativeTotalPnl: 1,
       },
-    ], { maxProbes: 3 });
+      {
+        algoId: "probe-scalp",
+        family: "sweep-scalp",
+        params: { threshold: 0.3 },
+        researchCandidateId: "rcid-scalp",
+        candidateConfigHash: "hash-scalp",
+        closed: 4,
+        conservativeTotalPnl: 1,
+      },
+    ];
+    const result = selectEvidenceProbes(rows, { maxProbes: 3 });
 
-    expect(result.selected).toHaveLength(1);
+    expect(result.selected).toHaveLength(2);
     expect(result.selected[0]).toMatchObject({
       lane: "exact_linked_evidence_probe",
       evidenceStatus: "evidence_probe_only",
@@ -1331,10 +1483,21 @@ describe("factory research safeguards", () => {
       exactLinked: true,
       researchCandidateId: "rcid-good",
     });
+    const canaryResult = selectEvidenceProbes(rows, { maxProbes: 3, executableOnly: true });
+    expect(canaryResult.selected).toHaveLength(1);
+    expect(canaryResult.selected[0]).toMatchObject({
+      lane: "exact_linked_execution_canary",
+      evidenceStatus: "execution_canary_only",
+      paperOnly: true,
+      exactLinked: true,
+      family: "sweep-scalp",
+      promotionEligibility: "not_promotion_eligible",
+    });
     expect(result.rejected.map((row) => row.reasonCodes).flat()).toEqual(expect.arrayContaining([
       "research_candidate_id_required",
       "unsupported_family",
     ]));
+    expect(canaryResult.rejected.find((row) => row.algoId === "probe-good")?.reasonCodes).toContain("not_supported_execution_canary_family");
   });
 
   it("selects closed and active target markets from local evidence", async () => {

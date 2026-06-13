@@ -70,6 +70,8 @@ for (const marketTicker of targetMarkets) {
     generatedAt: new Date().toISOString(),
     provider: events[0]?.provider ?? args.provider ?? "kalshi",
     captureMode: events[0]?.captureMode ?? args.mode ?? "absent",
+    useYesPrice: events.some((event) => event.useYesPrice === true),
+    priceScale: events.some((event) => event.useYesPrice === true) ? "yes_leg" : "provider_default",
     replayGradeAvailable: sequence.replayGradeAvailable,
     executionSensitivePromotionAllowed: sequence.replayGradeAvailable,
     fallbackKind: sequence.fallbackKind,

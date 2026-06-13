@@ -13,6 +13,7 @@ import { researchCandidateIdentity, researchCandidateIdentityContext } from "./f
 import { compactReplayTickRow } from "./factory/raw-tick-extract.mjs";
 import { replayParityReportFromManifest } from "./factory/replay-coverage.mjs";
 import { buildExecutableReadinessGate, readinessKpisFromGate } from "./factory/readiness-gate.mjs";
+import { normalizeOfficialSettlementRow, officialOutcomeMap } from "./factory/official-settlement.mjs";
 import {
   forecastCalibrationForDecisionRows,
   officialForecastCalibrationReport,
@@ -228,6 +229,7 @@ const decisionRowsColumns = [
   "labelSource",
   "settlementSource",
   "officialResolutionAvailable",
+  "outcomeSide",
   "marketCloseTimestamp",
   "side",
   "decisionAction",
@@ -675,6 +677,25 @@ const forecastCalibrationByCandidateColumns = [
   "expectedCalibrationError",
 ];
 
+const settlementJoinAuditColumns = [
+  "snapshotId",
+  "source",
+  "rowId",
+  "marketTicker",
+  "algoId",
+  "researchCandidateId",
+  "candidateConfigHash",
+  "officialRowPresent",
+  "officialResolutionAvailable",
+  "labelSource",
+  "settlementSource",
+  "outcomeSide",
+  "reasonCodes",
+  "provider",
+  "sourceEndpoint",
+  "settlementTimestamp",
+];
+
 const officialScoringCoverageThreshold = 0.8;
 const officialPromotionCoverageThreshold = 0.95;
 
@@ -705,12 +726,13 @@ export async function exportEvaluationSnapshot(options = {}) {
   const factoryAutomationPath = path.join(storageDir, "factory-automation.json");
   const topTradersPath = path.join(storageDir, "top-traders-executable.json");
   const evidenceProbesPath = path.join(storageDir, "evidence-probes.json");
+  const executionCanariesPath = path.join(storageDir, "execution-canaries.json");
   const latestBacktestPath = path.join(backtestsDir, "latest.json");
   const latestSweepPath = path.join(backtestsDir, "latest-sweep.json");
   const defaultOfficialSettlementsStorePath = path.join(dataRoot, "official_settlements.jsonl");
   const settlementFetchReportPath = path.join(dataRoot, "settlement_fetch_report.json");
   const artifactSettlementFetchReportPath = path.resolve("artifacts", "evidence", "settlement_fetch_report.json");
-  const replayManifestSummaryPath = path.join(dataRoot, "replay", "final", "replay_manifest_summary.json");
+  const replayManifestSummaryPath = await latestReplayManifestSummaryPath(dataRoot);
   const evidenceStatusPath = path.resolve("artifacts", "evidence", "evidence_status.json");
   const evidencePreflightReportPath = path.resolve("artifacts", "evidence-preflight", "report.json");
 
@@ -720,6 +742,7 @@ export async function exportEvaluationSnapshot(options = {}) {
     factoryAutomationFile,
     topTradersFile,
     evidenceProbesFile,
+    executionCanariesFile,
     latestBacktest,
     latestSweep,
     dataRootSettlementFetchReport,
@@ -734,6 +757,7 @@ export async function exportEvaluationSnapshot(options = {}) {
     readJsonMaybe(factoryAutomationPath),
     readJsonMaybe(topTradersPath),
     readJsonMaybe(evidenceProbesPath),
+    readJsonMaybe(executionCanariesPath),
     readJsonMaybe(latestBacktestPath),
     readJsonMaybe(latestSweepPath),
     readJsonMaybe(settlementFetchReportPath),
@@ -770,6 +794,7 @@ export async function exportEvaluationSnapshot(options = {}) {
   const dataQuality = dataQualitySummary(primaryRun, metrics);
   const safety = liveSafetyState(liveSwitch);
   const evidenceProbeArtifacts = evidenceProbeLaneArtifacts({ snapshotId, evidenceProbesFile });
+  const executionCanaryArtifacts = evidenceProbeLaneArtifacts({ snapshotId, evidenceProbesFile: executionCanariesFile });
 
   const algoRollup = metrics.map((metric) => algoRollupRow(metric, {
     snapshotId,
@@ -830,6 +855,16 @@ export async function exportEvaluationSnapshot(options = {}) {
     });
     decisionRows = enrichRowsWithCandidateIdentity(decisionRows, identityByAlgoId);
     tradeRows = enrichRowsWithCandidateIdentity(tradeRows, identityByAlgoId);
+  }
+  const settlementJoinArtifacts = officialSettlementJoinArtifacts({
+    snapshotId,
+    decisionRows,
+    tradeRows,
+    settlementRows: officialSettlementStoreRows,
+  });
+  decisionRows = settlementJoinArtifacts.decisionRows;
+  tradeRows = settlementJoinArtifacts.tradeRows;
+  if (includeRows) {
     filesToWrite.push(
       { logicalName: "decisionRows.tsv.gz", relativePath: "decisionRows.tsv.gz", content: tsv(decisionRowsColumns, decisionRows) },
       { logicalName: "tradeRows.tsv.gz", relativePath: "tradeRows.tsv.gz", content: tsv(tradeRowsColumns, tradeRows) },
@@ -852,6 +887,7 @@ export async function exportEvaluationSnapshot(options = {}) {
     decisionRows,
     tradeRows,
     dataQuality,
+    settlementRows: officialSettlementStoreRows,
   });
   const simulatorCalibration = simulatorCalibrationArtifacts({
     snapshotId,
@@ -874,6 +910,10 @@ export async function exportEvaluationSnapshot(options = {}) {
     officialLabelsOnlyForForecast: true,
     tradeOutcomeCalibrationUsesRealizedClosedTrades: true,
   };
+  const readinessCalibrationReport = {
+    ...simulatorCalibration.report,
+    officialLabelKnownCount: calibrationReport.forecastCalibration.labelKnownCount,
+  };
   filesToWrite.push(
     { logicalName: "candidate_lineage_audit.tsv.gz", relativePath: "candidate_lineage_audit.tsv.gz", content: tsv(candidateLineageAuditColumns, identityArtifacts.candidateLineageAudit) },
     { logicalName: "unlinked_live_rows.tsv.gz", relativePath: "unlinked_live_rows.tsv.gz", content: tsv(unlinkedLiveRowsColumns, identityArtifacts.unlinkedLiveRows) },
@@ -883,8 +923,10 @@ export async function exportEvaluationSnapshot(options = {}) {
     { logicalName: "supported_live_linkage.tsv.gz", relativePath: "supported_live_linkage.tsv.gz", content: tsv(supportedLiveLinkageColumns, identityArtifacts.supportedLiveLinkage) },
     { logicalName: "supported_live_exact_links.tsv.gz", relativePath: "supported_live_exact_links.tsv.gz", content: tsv(supportedLiveLinkageColumns, identityArtifacts.supportedLiveExactLinks) },
     { logicalName: "evidence_probe_lane.tsv.gz", relativePath: "evidence_probe_lane.tsv.gz", content: tsv(evidenceProbeColumns, evidenceProbeArtifacts.rows) },
+    { logicalName: "execution_canary_lane.tsv.gz", relativePath: "execution_canary_lane.tsv.gz", content: tsv(evidenceProbeColumns, executionCanaryArtifacts.rows) },
     { logicalName: "replay_gap_report.tsv.gz", relativePath: "replay_gap_report.tsv.gz", content: tsv(replayGapReportColumns, replayGapRows({ snapshotId, replayManifestSummary })) },
     { logicalName: "official_settlements.tsv.gz", relativePath: "official_settlements.tsv.gz", content: tsv(officialSettlementColumns, settlementArtifacts.settlements) },
+    { logicalName: "settlement_join_audit.tsv.gz", relativePath: "settlement_join_audit.tsv.gz", content: tsv(settlementJoinAuditColumns, settlementJoinArtifacts.auditRows) },
     { logicalName: "official_settlement_coverage_by_family.tsv.gz", relativePath: "official_settlement_coverage_by_family.tsv.gz", content: tsv(officialSettlementCoverageByFamilyColumns, settlementArtifacts.coverageByFamily) },
     { logicalName: "official_settlement_coverage_by_candidate.tsv.gz", relativePath: "official_settlement_coverage_by_candidate.tsv.gz", content: tsv(officialSettlementCoverageByCandidateColumns, settlementArtifacts.coverageByCandidate) },
     { logicalName: "forecast_calibration_by_candidate.tsv.gz", relativePath: "forecast_calibration_by_candidate.tsv.gz", content: tsv(forecastCalibrationByCandidateColumns, forecastCalibrationByCandidate) },
@@ -937,7 +979,7 @@ export async function exportEvaluationSnapshot(options = {}) {
     settlementCoverageReport: settlementArtifacts.coverageReport,
     rawTickManifest,
     replayParityReport,
-    simulatorCalibrationReport: simulatorCalibration.report,
+    simulatorCalibrationReport: readinessCalibrationReport,
     topRosterDefaultSortAudit: topRosterAudit,
     dataQuality,
     evidenceProbeSummary: evidenceProbeArtifacts.summary,
@@ -967,6 +1009,7 @@ export async function exportEvaluationSnapshot(options = {}) {
     replayManifestSummary,
     rejectStreamSummary,
     evidenceProbeLane: evidenceProbeArtifacts.summary,
+    executionCanaryLane: executionCanaryArtifacts.summary,
     evidenceStatus,
     evidencePreflightReport,
     executableReadinessGate,
@@ -1199,6 +1242,7 @@ export async function buildReviewBundle(options = {}) {
     "paper_decision_ledger.csv",
     "official_settlements.tsv.gz",
     "official_settlements.jsonl",
+    "settlement_join_audit.tsv.gz",
     "leakage_audit.json",
     "research_live_alignment.json",
     "research_live_identity_alignment.json",
@@ -1216,6 +1260,7 @@ export async function buildReviewBundle(options = {}) {
     "simulator_calibration_report.md",
     "reject_stream_summary.json",
     "evidence_probe_lane.json",
+    "execution_canary_lane.json",
     "evidence_status.json",
     "evidence_preflight_report.json",
     "replay_parity_report.json",
@@ -1242,6 +1287,7 @@ export async function buildReviewBundle(options = {}) {
     "supported_live_linkage.tsv.gz",
     "supported_live_exact_links.tsv.gz",
     "evidence_probe_lane.tsv.gz",
+    "execution_canary_lane.tsv.gz",
     "missing_provenance_rows.tsv.gz",
     "post_close_frame_audit.tsv.gz",
   ]) {
@@ -2097,6 +2143,7 @@ function decisionRowFromFrame(frame, context) {
     labelSource: frame.labelSource ?? frame.label_source ?? "unknown",
     settlementSource: frame.settlementSource ?? "estimated",
     officialResolutionAvailable: frame.officialResolutionAvailable === true || frame.settlementSource === "official_resolution",
+    outcomeSide: frame.outcomeSide ?? frame.officialOutcome ?? frame.winningSide ?? "",
     marketCloseTimestamp: marketClose,
     side: sideFromAction(frame.modelAction ?? frame.decisionAction),
     decisionAction: frame.modelAction ?? frame.decisionAction ?? "",
@@ -2304,6 +2351,7 @@ async function writeAuditReviewFiles({
   replayManifestSummary,
   rejectStreamSummary,
   evidenceProbeLane,
+  executionCanaryLane,
   evidenceStatus,
   evidencePreflightReport,
   executableReadinessGate,
@@ -2330,6 +2378,7 @@ async function writeAuditReviewFiles({
     ["replay_manifest_summary.json", replayManifestSummary ?? { schemaVersion: "dogeedge.replay-manifest-summary.v1", status: "absent" }],
     ["reject_stream_summary.json", rejectStreamSummary],
     ["evidence_probe_lane.json", evidenceProbeLane],
+    ["execution_canary_lane.json", executionCanaryLane],
     ["evidence_status.json", evidenceStatus ?? { schemaVersion: "dogeedge.evidence-status.v1", status: "absent" }],
     ["evidence_preflight_report.json", evidencePreflightReport ?? { schemaVersion: "dogeedge.evidence-preflight.v1", status: "absent" }],
     ["executable_readiness_gate.json", executableReadinessGate],
@@ -2833,6 +2882,7 @@ function topRosterDefaultSortAudit({ snapshotId, alignmentArtifacts }) {
 
 function evidenceProbeLaneArtifacts({ snapshotId, evidenceProbesFile }) {
   const probes = Array.isArray(evidenceProbesFile?.probes) ? evidenceProbesFile.probes : [];
+  const laneName = evidenceProbesFile?.lane ?? "exact_linked_evidence_probe";
   const rows = probes.map((probe) => ({
     snapshotId,
     probeId: probe.id ?? probe.sourceAlgoId ?? "",
@@ -2856,7 +2906,7 @@ function evidenceProbeLaneArtifacts({ snapshotId, evidenceProbesFile }) {
     schemaVersion: "dogeedge.evidence-probe-lane.summary.v1",
     snapshotId,
     generatedAt: evidenceProbesFile?.generatedAt ?? null,
-    lane: "exact_linked_evidence_probe",
+    lane: laneName,
     installedProbeCount: rows.length,
     enabledProbeCount: rows.filter((row) => row.enabled).length,
     exactLinkedProbeCount,
@@ -2864,8 +2914,8 @@ function evidenceProbeLaneArtifacts({ snapshotId, evidenceProbesFile }) {
     promotionEligible: false,
     researchValidatedRosterImpact: 0,
     reasonCodes: [
-      ...(rows.length === 0 ? ["evidence_probe_lane_empty"] : []),
-      ...(exactLinkedProbeCount === 0 ? ["exact_linked_evidence_probe_count_zero"] : []),
+      ...(rows.length === 0 ? [laneName === "exact_linked_execution_canary" ? "execution_canary_lane_empty" : "evidence_probe_lane_empty"] : []),
+      ...(exactLinkedProbeCount === 0 ? [laneName === "exact_linked_execution_canary" ? "exact_linked_execution_canary_count_zero" : "exact_linked_evidence_probe_count_zero"] : []),
     ],
   };
   return { rows, summary };
@@ -2975,8 +3025,92 @@ function improvementRegressionAlertsFromScorecard(scorecard) {
   };
 }
 
-function officialSettlementArtifacts({ snapshotId, generatedAt, metrics, decisionRows, tradeRows, dataQuality }) {
+export function officialSettlementJoinArtifacts({ snapshotId, decisionRows = [], tradeRows = [], settlementRows = [] } = {}) {
+  const officialOutcomes = officialOutcomeMap(settlementRows);
+  const normalizedByMarket = new Map();
+  for (const row of settlementRows) {
+    const normalized = normalizeOfficialSettlementRow(row, { fetchedAt: row?.fetchedAt ?? new Date(0).toISOString() });
+    if (normalized?.marketTicker) normalizedByMarket.set(normalized.marketTicker, normalized);
+  }
+  const auditRows = [];
+  const enrich = (row, source, rowIdField) => {
+    const marketTicker = stringOrNull(row.marketTicker);
+    const official = marketTicker ? officialOutcomes.get(marketTicker) : null;
+    const providerRow = marketTicker ? normalizedByMarket.get(marketTicker) : null;
+    const reasonCodes = [];
+    if (!marketTicker) reasonCodes.push("row_market_ticker_missing");
+    if (!row.researchCandidateId) reasonCodes.push("row_missing_research_candidate_id");
+    if (official) reasonCodes.push("official_join_available");
+    else if (!providerRow) reasonCodes.push("missing_provider_row");
+    else if (!providerRow.finalized) reasonCodes.push("provider_row_not_finalized");
+    else if (!providerRow.outcomeSide) reasonCodes.push("result_missing");
+    else if (!providerRow.settlementTimestamp) reasonCodes.push("settlement_ts_missing");
+    else reasonCodes.push("official_resolution_unavailable");
+
+    const enriched = official ? {
+      ...row,
+      labelTimestamp: row.labelTimestamp || official.labelTimestamp || official.resolvedAt || "",
+      settlementTimestamp: row.settlementTimestamp || official.settlementTimestamp || official.resolvedAt || "",
+      labelSource: "official_resolution",
+      settlementSource: "official_resolution",
+      officialResolutionAvailable: true,
+      outcomeSide: row.outcomeSide || official.outcomeSide || "",
+      officialOutcome: row.officialOutcome || official.outcomeSide || "",
+      winningSide: row.winningSide || official.outcomeSide || "",
+    } : row;
+
+    auditRows.push({
+      snapshotId,
+      source,
+      rowId: row[rowIdField] ?? "",
+      marketTicker: marketTicker ?? "",
+      algoId: row.algoId ?? "",
+      researchCandidateId: row.researchCandidateId ?? "",
+      candidateConfigHash: row.candidateConfigHash ?? "",
+      officialRowPresent: Boolean(providerRow),
+      officialResolutionAvailable: Boolean(official),
+      labelSource: enriched.labelSource ?? "",
+      settlementSource: enriched.settlementSource ?? "",
+      outcomeSide: enriched.outcomeSide ?? "",
+      reasonCodes: reasonCodes.join(","),
+      provider: providerRow?.provider ?? official?.provider ?? "",
+      sourceEndpoint: providerRow?.sourceEndpoint ?? official?.sourceEndpoint ?? "",
+      settlementTimestamp: official?.settlementTimestamp ?? providerRow?.settlementTimestamp ?? "",
+    });
+    return enriched;
+  };
+  return {
+    decisionRows: decisionRows.map((row) => enrich(row, "decision_rows", "rowId")),
+    tradeRows: tradeRows.map((row) => enrich(row, "trade_rows", "tradeId")),
+    auditRows: auditRows.sort((left, right) => String(left.marketTicker).localeCompare(String(right.marketTicker)) || String(left.source).localeCompare(String(right.source))),
+    summary: {
+      checkedRows: auditRows.length,
+      officialJoinedRows: auditRows.filter((row) => row.officialResolutionAvailable).length,
+      missingProviderRows: auditRows.filter((row) => String(row.reasonCodes).includes("missing_provider_row")).length,
+      missingResearchCandidateIdRows: auditRows.filter((row) => String(row.reasonCodes).includes("row_missing_research_candidate_id")).length,
+    },
+  };
+}
+
+function officialSettlementArtifacts({ snapshotId, generatedAt, metrics, decisionRows, tradeRows, dataQuality, settlementRows = [] }) {
   const officialByMarket = new Map();
+  for (const row of settlementRows) {
+    const normalized = normalizeOfficialSettlementRow(row, { fetchedAt: row?.fetchedAt ?? new Date(0).toISOString() });
+    if (!normalized?.marketTicker || normalized.officialResolutionAvailable !== true) continue;
+    officialByMarket.set(normalized.marketTicker, {
+      snapshotId,
+      marketTicker: normalized.marketTicker,
+      closeTime: normalized.closeTime ?? "",
+      resolutionTime: normalized.labelTimestamp ?? normalized.determinationTimestamp ?? "",
+      settlementTime: normalized.settlementTimestamp ?? "",
+      settledOutcome: normalized.outcomeSide ?? "",
+      labelSource: normalized.labelSource,
+      settlementSource: normalized.settlementSource,
+      officialResolutionAvailable: true,
+      source: normalized.sourceEndpoint ?? "official_settlement_store",
+      sourceRowCount: 0,
+    });
+  }
   const ingest = (row, source) => {
     const marketTicker = stringOrNull(row.marketTicker);
     if (!marketTicker) return;
@@ -3015,15 +3149,19 @@ function officialSettlementArtifacts({ snapshotId, generatedAt, metrics, decisio
   const averageMetricCoverage = metricCoverageValues.length
     ? metricCoverageValues.reduce((total, value) => total + value, 0) / metricCoverageValues.length
     : 0;
-  const officialCoverage = numberOrNull(dataQualityEvidence.officialSettlementCoverage) ?? averageMetricCoverage;
+  const targetMarketTickers = uniqueStrings([
+    ...decisionRows.map((row) => row.marketTicker),
+    ...tradeRows.map((row) => row.marketTicker),
+  ]);
+  const targetMarketCount = targetMarketTickers.length;
+  const rowOfficialCoverage = targetMarketCount
+    ? targetMarketTickers.filter((marketTicker) => officialByMarket.has(marketTicker)).length / targetMarketCount
+    : null;
+  const officialCoverage = rowOfficialCoverage ?? numberOrNull(dataQualityEvidence.officialSettlementCoverage) ?? averageMetricCoverage;
   const officialMetricRows = metricRows.filter((row) => (
     (row.labelSource ?? row.settlementEvidence?.labelSource) === "official_resolution"
     && (row.settlementSource ?? row.settlementEvidence?.settlementSource) === "official_resolution"
   )).length;
-  const targetMarketCount = uniqueStrings([
-    ...decisionRows.map((row) => row.marketTicker),
-    ...tradeRows.map((row) => row.marketTicker),
-  ]).length;
   const reasonCodes = [
     ...(officialCoverage < officialScoringCoverageThreshold ? ["official_coverage_below_scoring_threshold"] : []),
     ...(officialCoverage < officialPromotionCoverageThreshold ? ["official_coverage_below_promotion_threshold"] : []),
@@ -3033,6 +3171,7 @@ function officialSettlementArtifacts({ snapshotId, generatedAt, metrics, decisio
     metricRows: metricRows.length,
     officialMetricRows,
     targetMarketCount,
+    officialRows: settlements.length,
     officialSettlementRows: settlements.length,
     officialSettlementCoverage: roundDisplayRatio(officialCoverage) ?? 0,
     minMetricCoverage: metricCoverageValues.length ? Math.min(...metricCoverageValues) : 0,
@@ -4373,6 +4512,20 @@ async function latestFilesRecursive(root, extensions, limit) {
   }
   await walk(root);
   return found.sort((left, right) => right.time - left.time).slice(0, limit).map((entry) => entry.absolutePath);
+}
+
+async function latestReplayManifestSummaryPath(dataRoot) {
+  const rootSummary = path.join(dataRoot, "replay", "final", "replay_manifest_summary.json");
+  const candidates = [
+    ...await latestFilesRecursive(path.join(dataRoot, "replay", "final"), ["replay_manifest_summary.json"], 20),
+    rootSummary,
+  ];
+  const existing = [];
+  for (const candidate of uniqueStrings(candidates)) {
+    const info = await stat(candidate).catch(() => null);
+    if (info) existing.push({ path: candidate, time: info.mtimeMs });
+  }
+  return existing.sort((left, right) => right.time - left.time)[0]?.path ?? rootSummary;
 }
 
 async function readTailLines(filePath, maxLines) {

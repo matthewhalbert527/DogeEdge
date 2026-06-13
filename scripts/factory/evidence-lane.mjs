@@ -6,29 +6,32 @@ import { hashJson } from "./utils.mjs";
 
 export const evidenceProbeLaneSchemaVersion = "dogeedge.evidence-probe-lane.v1";
 export const evidenceProbeLaneKind = "exact_linked_evidence_probe";
+export const executionCanaryLaneKind = "exact_linked_execution_canary";
+export const supportedExecutionCanaryFamilies = Object.freeze(["sweep-scalp", "sweep-liquidity-imbalance"]);
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
-export function selectEvidenceProbes(rows = [], { maxProbes = 5, allowInsufficientDataProbe = false } = {}) {
+export function selectEvidenceProbes(rows = [], { maxProbes = 5, allowInsufficientDataProbe = false, executableOnly = false } = {}) {
   const selected = [];
   const rejected = [];
   for (const row of rows) {
-    const check = evidenceProbeEligibility(row, { allowInsufficientDataProbe });
+    const check = evidenceProbeEligibility(row, { allowInsufficientDataProbe, executableOnly });
     if (!check.ok) {
       rejected.push({ algoId: row?.algoId ?? row?.id ?? "unknown", family: row?.family ?? "unknown", reasonCodes: check.reasonCodes });
       continue;
     }
-    selected.push(evidenceProbeFromCandidate(row));
+    selected.push(evidenceProbeFromCandidate(row, executableOnly ? { laneKind: executionCanaryLaneKind } : {}));
     if (selected.length >= maxProbes) break;
   }
   return { selected, rejected };
 }
 
-export function evidenceProbeEligibility(row = {}, { allowInsufficientDataProbe = false } = {}) {
+export function evidenceProbeEligibility(row = {}, { allowInsufficientDataProbe = false, executableOnly = false } = {}) {
   const reasonCodes = [];
   if (!row.researchCandidateId) reasonCodes.push("research_candidate_id_required");
   if (!row.candidateConfigHash) reasonCodes.push("candidate_config_hash_required");
   if (!familyResearchSupported(row.family)) reasonCodes.push("unsupported_family");
+  if (executableOnly && !supportedExecutionCanaryFamilies.includes(row.family)) reasonCodes.push("not_supported_execution_canary_family");
   if (!isRecord(row.params)) reasonCodes.push("deterministic_params_required");
   const warnings = [...(Array.isArray(row.warnings) ? row.warnings : []), ...(Array.isArray(row.reasonCodes) ? row.reasonCodes : [])];
   if (warnings.some((code) => String(code).includes("leak") || String(code).includes("post_close") || String(code).includes("permissive_debug"))) {
@@ -42,13 +45,14 @@ export function evidenceProbeEligibility(row = {}, { allowInsufficientDataProbe 
   return { ok: reasonCodes.length === 0, reasonCodes };
 }
 
-export function evidenceProbeFromCandidate(candidate) {
+export function evidenceProbeFromCandidate(candidate, { laneKind = evidenceProbeLaneKind } = {}) {
   const sourceAlgoId = String(candidate.algoId ?? candidate.id);
   const promotedAt = new Date().toISOString();
+  const executionCanary = laneKind === executionCanaryLaneKind;
   return {
     schemaVersion: evidenceProbeLaneSchemaVersion,
-    lane: evidenceProbeLaneKind,
-    evidenceStatus: "evidence_probe_only",
+    lane: laneKind,
+    evidenceStatus: executionCanary ? "execution_canary_only" : "evidence_probe_only",
     promotionEligibility: "not_promotion_eligible",
     paperOnly: true,
     exactLinked: true,
@@ -91,20 +95,23 @@ export function evidenceProbeFromCandidate(candidate) {
 async function evidenceLaneCli() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) {
-    console.log("Usage: node scripts/factory/evidence-lane.mjs [--from latest-sweep|file] [--run-id id] [--max-probes n] [--data-root dir] [--storage-dir dir] [--allow-insufficient-data-probe]");
+    console.log("Usage: node scripts/factory/evidence-lane.mjs [--from latest-sweep|file] [--run-id id] [--max-probes n] [--data-root dir] [--storage-dir dir] [--allow-insufficient-data-probe] [--executable-only]");
     return;
   }
   const dataRoot = path.resolve(args["data-root"] ?? process.env.DOGEEDGE_DATA_ROOT ?? await defaultDataRoot());
   const storageDir = path.resolve(args["storage-dir"] ?? process.env.DOGEEDGE_DATA_DIR ?? path.join(dataRoot, "local-worker"));
   const source = await loadSourceSweep(args, dataRoot);
   const maxProbes = Math.max(0, Number(args["max-probes"] ?? 5));
+  const executableOnly = Boolean(args["executable-only"] ?? args["execution-canary"] ?? args["execution-canaries"]);
   const rows = [...(Array.isArray(source?.candidates) ? source.candidates : []), ...(Array.isArray(source?.topMetrics) ? source.topMetrics : [])];
   const sorted = rows.sort((left, right) => numberOrDefault(right.robustScore, 0) - numberOrDefault(left.robustScore, 0));
   const result = selectEvidenceProbes(sorted, {
     maxProbes,
     allowInsufficientDataProbe: Boolean(args["allow-insufficient-data-probe"]),
+    executableOnly,
   });
   await mkdir(storageDir, { recursive: true });
+  const laneKind = executableOnly ? executionCanaryLaneKind : evidenceProbeLaneKind;
   const lane = {
     schemaVersion: evidenceProbeLaneSchemaVersion,
     generatedAt: new Date().toISOString(),
@@ -112,7 +119,9 @@ async function evidenceLaneCli() {
     maxProbes,
     paperOnly: true,
     canPlaceOrders: false,
-    lane: evidenceProbeLaneKind,
+    lane: laneKind,
+    executableOnly,
+    supportedExecutionCanaryFamilies: executableOnly ? supportedExecutionCanaryFamilies : [],
     probes: result.selected,
     rejected: result.rejected,
     summary: {
@@ -120,13 +129,17 @@ async function evidenceLaneCli() {
       rejectedCandidateCount: result.rejected.length,
       exactLinkedProbeCount: result.selected.filter((probe) => probe.exactLinked).length,
       supportedFamilyProbeCount: result.selected.filter((probe) => familyResearchSupported(probe.family)).length,
+      supportedExecutionCanaryCount: result.selected.filter((probe) => supportedExecutionCanaryFamilies.includes(probe.family)).length,
       researchValidatedRosterImpact: 0,
+      reasonCodes: result.selected.length === 0 && executableOnly ? ["no_supported_execution_canary_candidates"] : [],
     },
   };
-  await writeFile(path.join(storageDir, "evidence-probes.json"), `${JSON.stringify(lane, null, 2)}\n`, "utf8");
-  await writeFile(path.join(storageDir, "evidence-probe-report.json"), `${JSON.stringify(lane.summary, null, 2)}\n`, "utf8");
-  console.log(`Evidence probe lane reseed complete: ${lane.summary.installedProbeCount}/${maxProbes} probes`);
-  console.log(`Output: ${path.join(storageDir, "evidence-probes.json")}`);
+  const laneFile = executableOnly ? "execution-canaries.json" : "evidence-probes.json";
+  const reportFile = executableOnly ? "execution-canary-report.json" : "evidence-probe-report.json";
+  await writeFile(path.join(storageDir, laneFile), `${JSON.stringify(lane, null, 2)}\n`, "utf8");
+  await writeFile(path.join(storageDir, reportFile), `${JSON.stringify(lane.summary, null, 2)}\n`, "utf8");
+  console.log(`${executableOnly ? "Execution canary" : "Evidence probe"} lane reseed complete: ${lane.summary.installedProbeCount}/${maxProbes} probes`);
+  console.log(`Output: ${path.join(storageDir, laneFile)}`);
 }
 
 async function loadSourceSweep(args, dataRoot) {
