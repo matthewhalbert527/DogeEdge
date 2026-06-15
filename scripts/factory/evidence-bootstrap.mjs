@@ -97,6 +97,9 @@ async function evidenceBootstrapCli() {
     "--mode", args.mode ? String(args.mode) : "websocket",
     "--out", rawRoot,
   ];
+  if (args["duration-seconds"]) captureArgs.push("--duration-seconds", String(args["duration-seconds"]));
+  if (args.channels) captureArgs.push("--channels", String(args.channels));
+  if (args["use-yes-price"] !== undefined) captureArgs.push("--use-yes-price", String(args["use-yes-price"]));
   if (mockReplayRaw) captureArgs.push("--mock-input", mockReplayRaw);
   await runStep("capture-replay", captureArgs, { optional: !mockReplayRaw && !args.online });
 
