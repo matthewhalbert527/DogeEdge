@@ -180,6 +180,7 @@ async function evidenceBootstrapCli() {
   await writeFile(path.join(outDir, "report.json"), `${JSON.stringify(report, null, 2)}\n`, "utf8");
   await writeFile(path.join(outDir, "report.md"), bootstrapMarkdown(report), "utf8");
   await writeEvidenceStatus(report);
+  await writeReadinessPercent(report);
   console.log(`Evidence bootstrap ${report.status}: ${steps.length} steps`);
   console.log(`Report: ${path.join(outDir, "report.json")}`);
 }
@@ -226,6 +227,87 @@ async function writeEvidenceStatus(report) {
     canPlaceOrders: false,
   };
   await writeFile(path.join(evidenceDir, "evidence_status.json"), `${JSON.stringify(status, null, 2)}\n`, "utf8");
+}
+
+async function writeReadinessPercent(report) {
+  const evidenceDir = path.resolve(report.evidenceDir ?? "artifacts/evidence");
+  await mkdir(evidenceDir, { recursive: true });
+  const settlement = await readJsonMaybe(path.join(evidenceDir, "settlement_fetch_report.json"));
+  const replay = await readJsonMaybe(path.join(evidenceDir, "replay_coverage_report.json"));
+  const probes = await readJsonMaybe(path.join(report.storageDir, "evidence-probes.json"));
+  const latest = await readJsonMaybe(path.join(report.storageDir, "latest.json"));
+  const targetMarkets = await readJsonMaybe(path.join(report.outDir, "target-markets", "target_markets.json"));
+  const officialSettlementCoverage = Number(settlement?.coverage?.officialSettlementCoverage ?? 0);
+  const replayGradeTargetMarketCoverage = Number(replay?.replayGradeTargetMarketCoverage ?? 0);
+  const exactLinkedProbeCount = Array.isArray(probes?.probes) ? probes.probes.filter((probe) => probe?.exactLinked).length : 0;
+  const executionRows = latest?.topTradersExecutable?.stats && typeof latest.topTradersExecutable.stats === "object"
+    ? Object.values(latest.topTradersExecutable.stats)
+    : [];
+  const exactLinkedExecutionRows = executionRows.filter((row) => row?.researchCandidateId && row?.candidateConfigHash).length;
+  const activeTargetCount = Number(targetMarkets?.activeTargetCount ?? 0);
+  const components = [
+    readinessComponent("official settlement coverage", officialSettlementCoverage, 0.95, "coverage"),
+    readinessComponent("replay-grade target coverage", replayGradeTargetMarketCoverage, 1, "coverage"),
+    readinessComponent("exact-linked evidence probes", exactLinkedProbeCount, 3, "count"),
+    readinessComponent("active replay targets available", activeTargetCount, 1, "count"),
+    readinessComponent("exact-linked execution rows", exactLinkedExecutionRows, 3, "count"),
+  ];
+  const promotionReady = components.every((component) => component.status === "pass");
+  const evidenceProgress = components.length
+    ? components.reduce((sum, component) => sum + component.progress, 0) / components.length
+    : 0;
+  const readiness = {
+    schemaVersion: "dogeedge.readiness-percent.v1",
+    generatedAt: report.finishedAt ?? new Date().toISOString(),
+    headline: promotionReady ? "promotion_ready" : "hold_gather_evidence",
+    promotionReady,
+    promotionReadinessPercent: promotionReady ? 100 : 0,
+    evidenceCollectionProgressPercent: roundPercent(evidenceProgress),
+    components,
+    canPlaceOrders: false,
+    note: "Promotion readiness is fail-closed/all-or-nothing. Evidence collection progress is a monitoring score, not permission to trade.",
+  };
+  await writeFile(path.join(evidenceDir, "readiness_percent.json"), `${JSON.stringify(readiness, null, 2)}\n`, "utf8");
+  await writeFile(path.join(evidenceDir, "readiness_percent.md"), readinessMarkdown(readiness), "utf8");
+}
+
+function readinessComponent(kpi, value, target, kind) {
+  const numericValue = Number.isFinite(value) ? value : 0;
+  const numericTarget = Number.isFinite(target) && target > 0 ? target : 1;
+  const progress = Math.max(0, Math.min(1, numericValue / numericTarget));
+  return {
+    kpi,
+    value: kind === "coverage" ? roundPercent(numericValue) : numericValue,
+    target: kind === "coverage" ? roundPercent(numericTarget) : numericTarget,
+    unit: kind === "coverage" ? "percent" : "count",
+    progress,
+    status: progress >= 1 ? "pass" : "blocked",
+  };
+}
+
+function readinessMarkdown(readiness) {
+  return [
+    "# DogeEdge Readiness Percent",
+    "",
+    `Generated: ${readiness.generatedAt}`,
+    `Promotion readiness: ${readiness.promotionReadinessPercent}%`,
+    `Evidence collection progress: ${readiness.evidenceCollectionProgressPercent}%`,
+    `Headline: ${readiness.headline}`,
+    "",
+    "| KPI | Current | Target | Status |",
+    "|---|---:|---:|---|",
+    ...readiness.components.map((component) => {
+      const suffix = component.unit === "percent" ? "%" : "";
+      return `| ${component.kpi} | ${component.value}${suffix} | ${component.target}${suffix} | ${component.status} |`;
+    }),
+    "",
+    readiness.note,
+    "",
+  ].join("\n");
+}
+
+function roundPercent(value) {
+  return Math.round(Number(value ?? 0) * 1000) / 10;
 }
 
 async function readJsonMaybe(filePath) {
