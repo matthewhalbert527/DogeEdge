@@ -66,14 +66,19 @@ async function evidenceBootstrapCli() {
   if (probeSource) preflightArgs.push("--probe-source", probeSource);
   await runStep("evidence-preflight", preflightArgs);
 
-  await runStep("select-target-markets", [
+  const targetMarketArgs = [
     "scripts/factory/target-markets.mjs",
     "--data-root", dataRoot,
     "--storage-dir", storageDir,
     "--out", path.join(outDir, "target-markets"),
     "--max-closed", String(args["max-closed"] ?? 250),
     "--max-active", String(args["max-active"] ?? 25),
-  ]);
+  ];
+  if (args.online || args["provider-active"]) targetMarketArgs.push("--provider-active");
+  if (args["series-ticker"]) targetMarketArgs.push("--series-ticker", String(args["series-ticker"]));
+  if (args["base-url"]) targetMarketArgs.push("--base-url", String(args["base-url"]));
+  if (args["provider-active-horizon-minutes"]) targetMarketArgs.push("--provider-active-horizon-minutes", String(args["provider-active-horizon-minutes"]));
+  await runStep("select-target-markets", targetMarketArgs);
 
   const closedTargetsFile = targetMarketsFile ?? path.join(outDir, "target-markets", "closed-targets.json");
   const activeTargetsFile = targetMarketsFile ?? path.join(outDir, "target-markets", "active-targets.json");

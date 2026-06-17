@@ -4,6 +4,8 @@ import { fileURLToPath } from "node:url";
 import { familyResearchSupported } from "./family-registry.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+const defaultKalshiBaseUrl = "https://external-api.kalshi.com/trade-api/v2";
+const defaultProviderSeriesTicker = "KXDOGE15M";
 
 export const targetMarketSchemaVersion = "dogeedge.target-markets.v1";
 
@@ -15,6 +17,8 @@ export async function selectTargetMarkets(options = {}) {
   const maxActiveTargets = Math.max(0, Number(options.maxActiveTargets ?? 25));
   const activeHorizonMinutes = Math.max(1, Number(options.activeHorizonMinutes ?? 180));
   const activeHorizonMs = activeHorizonMinutes * 60_000;
+  const providerActive = Boolean(options.providerActive);
+  const providerActiveHorizonMinutes = Math.max(1, Number(options.providerActiveHorizonMinutes ?? 24 * 60));
   const closed = new Map();
   const active = new Map();
   const diagnostics = [];
@@ -81,6 +85,30 @@ export async function selectTargetMarkets(options = {}) {
   const latest = await readJsonMaybe(path.join(storageDir, "latest.json"));
   collectCurrentLocalMarkets(latest, { nowMs, activeHorizonMs, addTarget, active });
 
+  if (providerActive && active.size < maxActiveTargets && maxActiveTargets > 0) {
+    try {
+      const providerRows = await fetchProviderActiveMarkets({
+        provider: options.provider ?? "kalshi",
+        seriesTicker: options.seriesTicker ?? defaultProviderSeriesTicker,
+        baseUrl: options.baseUrl,
+        fetchImpl: options.fetchImpl,
+        nowMs,
+        horizonMs: providerActiveHorizonMinutes * 60_000,
+        limit: Math.max(maxActiveTargets * 4, 20),
+      });
+      for (const row of providerRows) {
+        addTarget(active, row.marketTicker, "kalshi_provider_open_market", {
+          closeTime: row.closeTime,
+          family: row.family,
+          priority: row.priority,
+        });
+      }
+      if (!providerRows.length) diagnostics.push("provider_active_target_markets_absent");
+    } catch (error) {
+      diagnostics.push(`provider_active_target_discovery_failed:${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   const closedTargets = sortTargets([...closed.values()]).slice(0, maxClosedTargets);
   const activeTargets = sortTargets([...active.values()]).slice(0, maxActiveTargets);
   if (!closedTargets.length) diagnostics.push("closed_target_markets_absent");
@@ -100,6 +128,8 @@ export async function selectTargetMarkets(options = {}) {
     activeTargetCount: activeTargets.length,
     closedTickers: closedTargets.map((row) => row.marketTicker),
     activeTickers: activeTargets.map((row) => row.marketTicker),
+    providerActiveEnabled: providerActive,
+    providerActiveSeriesTicker: providerActive ? String(options.seriesTicker ?? defaultProviderSeriesTicker) : null,
     reasonCodes: diagnostics,
   };
 }
@@ -129,6 +159,11 @@ async function targetMarketCli() {
     maxClosedTargets: args["max-closed"],
     maxActiveTargets: args["max-active"],
     activeHorizonMinutes: args["active-horizon-minutes"],
+    providerActive: args["provider-active"] === true || args.online === true,
+    providerActiveHorizonMinutes: args["provider-active-horizon-minutes"],
+    provider: args.provider,
+    seriesTicker: args["series-ticker"],
+    baseUrl: args["base-url"],
     maxFrameFiles: args["max-frame-files"],
   });
   const outDir = path.resolve(args.out ?? "artifacts/evidence/target-markets");
@@ -182,6 +217,50 @@ function collectCurrentLocalMarkets(latest, { nowMs, activeHorizonMs, addTarget,
       addTarget(active, marketTicker, "local_worker_current_market", { closeTime: closeMs, priority: 75 });
     }
   }
+}
+
+async function fetchProviderActiveMarkets({ provider, seriesTicker, baseUrl, fetchImpl = globalThis.fetch, nowMs, horizonMs, limit }) {
+  if (provider !== "kalshi") throw new Error(`unsupported_provider:${provider}`);
+  if (typeof fetchImpl !== "function") throw new Error("fetch_unavailable");
+  const url = new URL(`${normalizeKalshiBaseUrl(baseUrl)}/markets`);
+  url.searchParams.set("series_ticker", seriesTicker);
+  url.searchParams.set("status", "open");
+  url.searchParams.set("limit", String(limit));
+  const response = await fetchImpl(url, {
+    headers: {
+      "Accept": "application/json",
+      "User-Agent": "DogeEdge/0.1",
+    },
+    cache: "no-store",
+  });
+  if (!response.ok) throw new Error(`kalshi_markets_http_${response.status}`);
+  const payload = await response.json();
+  const rows = Array.isArray(payload?.markets) ? payload.markets : Array.isArray(payload?.data) ? payload.data : [];
+  return rows
+    .map((market) => {
+      const marketTicker = stringOrNull(market?.ticker ?? market?.market_ticker);
+      const closeMs = parseTime(market?.close_time ?? market?.closeTime ?? market?.close);
+      const status = String(market?.status ?? "").toLowerCase();
+      const millisecondsToClose = closeMs === null ? Number.POSITIVE_INFINITY : closeMs - nowMs;
+      return {
+        marketTicker,
+        closeMs,
+        closeTime: closeMs === null ? null : new Date(closeMs).toISOString(),
+        status,
+        millisecondsToClose,
+        priority: status === "active" ? 95 : 85,
+        family: "provider-active",
+      };
+    })
+    .filter((row) => row.marketTicker)
+    .filter((row) => row.status !== "closed" && row.status !== "finalized")
+    .filter((row) => row.closeMs === null || row.millisecondsToClose >= -15_000 && row.millisecondsToClose <= horizonMs)
+    .sort((left, right) => right.priority - left.priority || Math.abs(left.millisecondsToClose) - Math.abs(right.millisecondsToClose) || left.marketTicker.localeCompare(right.marketTicker));
+}
+
+function normalizeKalshiBaseUrl(baseUrl) {
+  const raw = String(baseUrl ?? process.env.KALSHI_BASE_URL ?? defaultKalshiBaseUrl).replace(/\/+$/, "");
+  return raw.endsWith("/trade-api/v2") ? raw : `${raw}/trade-api/v2`;
 }
 
 async function latestFilesRecursive(root, extensions, limit) {

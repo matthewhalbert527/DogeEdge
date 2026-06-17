@@ -1535,6 +1535,40 @@ describe("factory research safeguards", () => {
     expect(selection.activeTickers).toContain("KXDOGE15M-ACTIVE");
   });
 
+  it("falls back to provider open DOGE markets for active replay targets", async () => {
+    const dataRoot = mkdtempSync(path.join(tmpdir(), "dogeedge-provider-targets-test-"));
+    const storageDir = path.join(dataRoot, "local-worker");
+    mkdirSync(storageDir, { recursive: true });
+    const calls: string[] = [];
+    const selection = await selectTargetMarkets({
+      dataRoot,
+      storageDir,
+      now: "2026-06-17T14:00:00.000Z",
+      maxActiveTargets: 2,
+      providerActive: true,
+      seriesTicker: "KXDOGE15M",
+      fetchImpl: async (url: URL) => {
+        calls.push(String(url));
+        return {
+          ok: true,
+          json: async () => ({
+            markets: [{
+              ticker: "KXDOGE15M-26JUN171800-00",
+              status: "active",
+              close_time: "2026-06-17T22:00:00.000Z",
+            }],
+          }),
+        };
+      },
+    });
+
+    expect(calls[0]).toContain("series_ticker=KXDOGE15M");
+    expect(selection.activeTargetCount).toBe(1);
+    expect(selection.activeTickers).toEqual(["KXDOGE15M-26JUN171800-00"]);
+    expect(selection.activeTargets[0].evidenceSources).toContain("kalshi_provider_open_market");
+    expect(selection.reasonCodes).not.toContain("active_target_markets_absent");
+  });
+
   it("preflights evidence bootstrap offline without pretending provider auth is ready", async () => {
     const oldKey = process.env.KALSHI_API_KEY_ID;
     const oldPrivateKey = process.env.KALSHI_PRIVATE_KEY_PEM;
