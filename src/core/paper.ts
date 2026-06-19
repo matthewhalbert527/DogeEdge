@@ -59,8 +59,8 @@ export interface GeneratedPaperAlgo {
   sourceResearchAlgoId?: string | null;
   sourceSnapshotHash?: string | null;
   promotionVerdictAtInstall?: string | null;
-  lane?: "research_validated" | "telemetry_watchlist" | "exact_linked_evidence_probe" | null;
-  evidenceStatus?: "research_validated" | "telemetry_only" | "evidence_probe_only" | "rejected" | "insufficient_data" | null;
+  lane?: "research_validated" | "telemetry_watchlist" | "exact_linked_evidence_probe" | "exact_linked_execution_canary" | null;
+  evidenceStatus?: "research_validated" | "telemetry_only" | "evidence_probe_only" | "execution_canary_only" | "rejected" | "insufficient_data" | null;
   promotionEligibility?: "not_promotion_eligible" | "paper_candidate" | "tiny_live_eligible" | "research_validated" | null;
   paperOnly?: boolean;
   exactLinked?: boolean;
@@ -2192,7 +2192,12 @@ function normalizeGeneratedPaperAlgo(value: unknown): GeneratedPaperAlgo | null 
 }
 
 function normalizeGeneratedAlgoLane(value: unknown): GeneratedPaperAlgo["lane"] {
-  if (value === "research_validated" || value === "telemetry_watchlist" || value === "exact_linked_evidence_probe") return value;
+  if (
+    value === "research_validated"
+    || value === "telemetry_watchlist"
+    || value === "exact_linked_evidence_probe"
+    || value === "exact_linked_execution_canary"
+  ) return value;
   return null;
 }
 
@@ -2201,6 +2206,7 @@ function normalizeGeneratedAlgoEvidenceStatus(value: unknown): GeneratedPaperAlg
     value === "research_validated"
     || value === "telemetry_only"
     || value === "evidence_probe_only"
+    || value === "execution_canary_only"
     || value === "rejected"
     || value === "insufficient_data"
   ) return value;

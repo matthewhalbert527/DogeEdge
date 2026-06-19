@@ -2423,11 +2423,16 @@ function alignmentRows({ snapshotId, metrics, topStats, primaryRun, alignment, l
     const family = stat.family ?? metric?.family ?? "unknown";
     const familyEntry = familyRegistryEntry(family);
     const researchSupported = familyEntry.researchSupported === true;
-    const researchVerdict = metric?.promotionVerdict ?? "missing";
     const identity = metric ? identityForAlgo(identityByAlgoId, metric.algoId) : null;
+    const lineageLinkedExecutionCanary = !metric
+      && researchSupported
+      && isExecutionCanaryRow(stat)
+      && hasImmutableExactLinkage(stat);
+    const researchVerdict = metric?.promotionVerdict ?? (lineageLinkedExecutionCanary ? "execution_canary_only" : "missing");
     const linkageStatus = metric
       ? "exact_candidate_linked"
-      : researchSupported ? "missing_exact_link" : "unsupported_unlinked";
+      : lineageLinkedExecutionCanary ? "exact_linked_execution_canary"
+        : researchSupported ? "missing_exact_link" : "unsupported_unlinked";
     const dryRunTotalPnl = numberOrZero(stat.totalPnl);
     const gate = metricGate(metric, researchSupported);
     return {
@@ -2450,7 +2455,7 @@ function alignmentRows({ snapshotId, metrics, topStats, primaryRun, alignment, l
       dryRunTotalPnl,
       dryRunClosedExits: numberOrZero(stat.sells),
       dryRunAcceptedBuys: numberOrZero(stat.acceptedBuys),
-      defaultBucket: gate.ok ? "research_validated" : "watch",
+      defaultBucket: gate.ok ? "research_validated" : lineageLinkedExecutionCanary ? "execution_canary_watch" : "watch",
       watchOnly: !gate.ok,
     };
   });
@@ -2533,13 +2538,15 @@ function exactCandidateArtifacts({ snapshotId, metrics, topStats, decisionRows, 
     };
   });
   const evidenceAllocationByCandidate = rosterRows.map((row) => {
-    const exactLinked = row.linkageStatus === "exact_candidate_linked";
+    const exactLinked = isExactLinkedLinkageStatus(row.linkageStatus);
+    const executionCanaryLinked = row.linkageStatus === "exact_linked_execution_canary";
     const metric = metricByAlgoId.get(row.sourceResearchAlgoId);
     const gate = metricGate(metric, row.researchSupported);
-    const normalBudgetEligible = exactLinked && gate.ok;
+    const normalBudgetEligible = exactLinked && !executionCanaryLinked && gate.ok;
     const budgetBucket = normalBudgetEligible
       ? "exploitation"
-      : exactLinked ? "linked_watch"
+      : executionCanaryLinked ? "execution_canary_watch"
+        : exactLinked ? "linked_watch"
         : row.researchSupported ? "controlled_exploration"
           : "unsupported_zero";
     return {
@@ -2552,12 +2559,12 @@ function exactCandidateArtifacts({ snapshotId, metrics, topStats, decisionRows, 
       linkageStatus: row.linkageStatus,
       budgetBucket,
       normalBudgetEligible,
-      reason: allocationReason({ row, exactLinked, gate }),
+      reason: allocationReason({ row, exactLinked, gate, executionCanaryLinked }),
       dryRunTotalPnl: row.dryRunTotalPnl,
     };
   });
   const unlinkedLiveRows = evidenceAllocationByCandidate
-    .filter((row) => row.linkageStatus !== "exact_candidate_linked")
+    .filter((row) => !isExactLinkedLinkageStatus(row.linkageStatus))
     .map((row) => {
       const stat = liveBySource.get(row.algoId) ?? {};
       return {
@@ -2599,8 +2606,8 @@ function exactCandidateArtifacts({ snapshotId, metrics, topStats, decisionRows, 
         dryRunAcceptedBuys: roster.dryRunAcceptedBuys ?? 0,
       };
     });
-  const supportedLiveExactLinks = supportedLiveLinkage.filter((row) => row.linkageStatus === "exact_candidate_linked");
-  const exactLinkedLiveRows = evidenceAllocationByCandidate.filter((row) => row.linkageStatus === "exact_candidate_linked").length;
+  const supportedLiveExactLinks = supportedLiveLinkage.filter((row) => isExactLinkedLinkageStatus(row.linkageStatus));
+  const exactLinkedLiveRows = evidenceAllocationByCandidate.filter((row) => isExactLinkedLinkageStatus(row.linkageStatus)).length;
   const exactLinkedNormalBudgetRows = evidenceAllocationByCandidate.filter((row) => row.normalBudgetEligible).length;
   const familyOnlyLiveRows = evidenceAllocationByCandidate.filter((row) => row.linkageStatus === "family_only_unlinked").length;
   const missingExactLinkRows = evidenceAllocationByCandidate.filter((row) => row.linkageStatus === "missing_exact_link").length;
@@ -2630,8 +2637,8 @@ function exactCandidateArtifacts({ snapshotId, metrics, topStats, decisionRows, 
     missingLinkRows: missingExactLinkRows,
     unsupportedRows: unsupportedLiveRows,
     exactLinkRate,
-    supportedLiveExactLinkedCount: supportedLiveLinkage.filter((row) => row.linkageStatus === "exact_candidate_linked").length,
-    supportedLiveMissingLinkCount: supportedLiveLinkage.filter((row) => row.linkageStatus !== "exact_candidate_linked").length,
+    supportedLiveExactLinkedCount: supportedLiveLinkage.filter((row) => isExactLinkedLinkageStatus(row.linkageStatus)).length,
+    supportedLiveMissingLinkCount: supportedLiveLinkage.filter((row) => !isExactLinkedLinkageStatus(row.linkageStatus)).length,
     failClosed: exactLinkedNormalBudgetRows === 0,
   };
   const provenanceCompletenessReport = {
@@ -2691,7 +2698,7 @@ function evidenceAllocationFamilies({ snapshotId, evidenceAllocationByCandidate 
       recommendedAction: "",
     };
     current.liveRows += 1;
-    if (row.linkageStatus === "exact_candidate_linked") current.exactLinkedRows += 1;
+    if (isExactLinkedLinkageStatus(row.linkageStatus)) current.exactLinkedRows += 1;
     if (row.linkageStatus === "family_only_unlinked") current.familyOnlyRows += 1;
     if (row.linkageStatus === "missing_exact_link") current.missingLinkRows += 1;
     if (row.linkageStatus === "unsupported_unlinked") current.unsupportedRows += 1;
@@ -2704,7 +2711,8 @@ function evidenceAllocationFamilies({ snapshotId, evidenceAllocationByCandidate 
     ...row,
     recommendedAction: row.normalBudgetRows > 0
       ? "allocate_exploitation_budget"
-      : row.researchSupported ? "link_exact_candidate_before_primary_budget" : "freeze_unsupported_budget",
+      : row.exactLinkedRows > 0 ? "gather_paper_execution_evidence"
+        : row.researchSupported ? "link_exact_candidate_before_primary_budget" : "freeze_unsupported_budget",
   })).sort((left, right) => right.liveRows - left.liveRows || left.family.localeCompare(right.family));
 }
 
@@ -2744,11 +2752,32 @@ function missingFields(row, fields) {
   return fields.filter((field) => row?.[field] === null || row?.[field] === undefined || row?.[field] === "");
 }
 
-function allocationReason({ row, exactLinked, gate }) {
+function allocationReason({ row, exactLinked, gate, executionCanaryLinked = false }) {
   if (!row.researchSupported) return "unsupported_family_zero_budget";
+  if (executionCanaryLinked) return "execution_canary_paper_only";
   if (!exactLinked) return "exact_candidate_link_required";
   if (!gate.ok) return gate.reasonCodes.join(",") || "research_gate_failed";
   return "research_gate_passed";
+}
+
+function isExactLinkedLinkageStatus(status) {
+  return status === "exact_candidate_linked" || status === "exact_linked_execution_canary";
+}
+
+function isExecutionCanaryRow(row) {
+  const lane = String(row?.lane ?? "").toLowerCase();
+  const evidenceStatus = String(row?.evidenceStatus ?? "").toLowerCase();
+  return lane === "exact_linked_execution_canary" || evidenceStatus === "execution_canary_only";
+}
+
+function hasImmutableExactLinkage(row) {
+  return Boolean(
+    stringOrNull(row?.researchCandidateId)
+    && stringOrNull(row?.candidateConfigHash)
+    && stringOrNull(row?.sourceResearchAlgoId)
+    && stringOrNull(row?.sourceRunId)
+    && stringOrNull(row?.sourceSnapshotHash),
+  );
 }
 
 function schedulerReasonCodes({ exactLinkedLiveRows, exactLinkedNormalBudgetRows, familyOnlyLiveRows, missingExactLinkRows, unsupportedLiveRows }) {

@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { buildReviewBundle, exportEvaluationSnapshot } from "./export-eval-snapshot.mjs";

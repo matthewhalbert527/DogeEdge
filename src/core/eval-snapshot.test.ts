@@ -548,6 +548,45 @@ describe("continuous evaluation snapshot exporter", () => {
     expect(manifest.files.map((file: { relativePath: string }) => file.relativePath)).not.toContain("snapshots/raw_market_ticks/jsonl/KXDOGE15M-FIXTURE.jsonl");
   });
 
+  it("counts immutable execution canaries as exact-linked diagnostics without promoting them", async () => {
+    const fixture = writeEvalFixture({ executionCanary: true });
+    const result = await exportEvaluationSnapshot({
+      dataRoot: fixture.dataRoot,
+      storageDir: fixture.storageDir,
+      backtestsDir: fixture.backtestsDir,
+      outDir: fixture.outDir,
+      now: "2026-06-07T20:30:00.000Z",
+      maxRowLines: 10,
+      maxMetrics: 1,
+    });
+
+    const exactLinkSummary = JSON.parse(readFileSync(path.join(result.snapshotDir, "exact_link_summary.json"), "utf8"));
+    expect(exactLinkSummary).toMatchObject({
+      supportedLiveExactLinkedCount: 1,
+      supportedLiveMissingLinkCount: 0,
+      failClosed: true,
+    });
+
+    const readinessKpis = JSON.parse(readFileSync(path.join(result.snapshotDir, "readiness_kpis.json"), "utf8"));
+    expect(readinessKpis).toMatchObject({
+      exactLinkedSupportedLiveRows: 1,
+      researchValidatedRosterCount: 0,
+    });
+
+    const supportedLinks = gunzipSync(readFileSync(path.join(result.snapshotDir, "supported_live_exact_links.tsv.gz"))).toString("utf8");
+    expect(supportedLinks).toContain("execution-canary-sweep-scalp-0001");
+    expect(supportedLinks).toContain("exact_linked_execution_canary");
+    expect(supportedLinks).toContain("execution_canary_watch");
+
+    const unlinkedRows = gunzipSync(readFileSync(path.join(result.snapshotDir, "unlinked_live_rows.tsv.gz"))).toString("utf8");
+    expect(unlinkedRows).not.toContain("execution-canary-sweep-scalp-0001");
+
+    const allocations = gunzipSync(readFileSync(path.join(result.snapshotDir, "evidence_allocation_by_candidate.tsv.gz"))).toString("utf8");
+    expect(allocations).toContain("execution-canary-sweep-scalp-0001");
+    expect(allocations).toContain("execution_canary_watch\tfalse\texecution_canary_paper_only");
+    expect(allocations).toContain("execution_canary_paper_only");
+  });
+
   it("chooses bundle work only at the configured two-hour cadence", () => {
     const bundleEveryMs = 2 * 60 * 60_000;
 
@@ -561,7 +600,7 @@ function readGzipJson(filePath: string) {
   return JSON.parse(gunzipSync(readFileSync(filePath)).toString("utf8"));
 }
 
-function writeEvalFixture(options: { liveSwitch?: unknown; rawSnapshotMarketTicker?: string | null } = {}) {
+function writeEvalFixture(options: { liveSwitch?: unknown; rawSnapshotMarketTicker?: string | null; executionCanary?: boolean } = {}) {
   const root = mkdtempSync(path.join(tmpdir(), "dogeedge-eval-snapshot-"));
   const dataRoot = path.join(root, "data");
   const storageDir = path.join(dataRoot, "local-worker");
@@ -733,6 +772,35 @@ function writeEvalFixture(options: { liveSwitch?: unknown; rawSnapshotMarketTick
       positions: [],
     },
   };
+  if (options.executionCanary) {
+    topTradersExecutable.topTradersExecutable.stats["execution-canary-sweep-scalp-0001"] = {
+      sourceAlgoId: "execution-canary-sweep-scalp-0001",
+      algoId: "generated:execution-canary-sweep-scalp-0001",
+      displayId: "E-0001",
+      family: "sweep-scalp",
+      researchCandidateId: "rcid-111111111111111111111111",
+      candidateConfigHash: "a".repeat(64),
+      sourceResearchAlgoId: "sweep-scalp-s100-f40-e0-no-only-none",
+      sourceRunId: "older-supported-run",
+      sourceSnapshotHash: "b".repeat(64),
+      promotionVerdictAtInstall: "reject",
+      lane: "exact_linked_execution_canary",
+      evidenceStatus: "execution_canary_only",
+      paperOnly: true,
+      startedAt: "2026-06-07T20:05:00.000Z",
+      signals: 0,
+      attempts: 0,
+      acceptedBuys: 0,
+      rejected: 0,
+      buys: 0,
+      sells: 0,
+      open: 0,
+      wins: 0,
+      losses: 0,
+      totalPnl: 0,
+      totalCost: 0,
+    };
+  }
 
   writeFileSync(path.join(storageDir, "latest.json"), `${JSON.stringify({
     storedAt: "2026-06-07T20:20:00.000Z",

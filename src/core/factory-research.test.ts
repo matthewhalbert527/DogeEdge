@@ -33,7 +33,7 @@ import { replayParityReportFromManifest } from "../../scripts/factory/replay-cov
 import { buildExecutableReadinessGate } from "../../scripts/factory/readiness-gate.mjs";
 import { forecastCalibrationForDecisionRows, officialForecastCalibrationReport, probabilityCalibrationForTrades, tradeCalibrationByCandidate } from "../../scripts/factory/probability-calibration.mjs";
 import { deterministicLinkageBackfill } from "../../scripts/factory/backfill-linkage.mjs";
-import { selectEvidenceProbes } from "../../scripts/factory/evidence-lane.mjs";
+import { materializeExactLinkageForSource, selectEvidenceProbes } from "../../scripts/factory/evidence-lane.mjs";
 import { runEvidencePreflight } from "../../scripts/factory/evidence-preflight.mjs";
 import { fetchKalshiHistoricalSettlements } from "../../scripts/factory/provider-kalshi.mjs";
 import { selectTargetMarkets } from "../../scripts/factory/target-markets.mjs";
@@ -1498,6 +1498,47 @@ describe("factory research safeguards", () => {
       "unsupported_family",
     ]));
     expect(canaryResult.rejected.find((row) => row.algoId === "probe-good")?.reasonCodes).toContain("not_supported_execution_canary_family");
+  });
+
+  it("deterministically materializes missing exact links for supported execution canary rows", () => {
+    const rows = materializeExactLinkageForSource({
+      runId: "run-canary",
+      randomSeed: "seed-canary",
+      registry: {
+        configHash: "config-hash",
+        inputManifestHash: "snapshot-hash",
+        costModelHash: "cost-hash",
+        riskModelHash: "risk-hash",
+        metricsVersion: "robust-v1",
+      },
+      topMetrics: [{
+        algoId: "sweep-scalp-s100-f40-e0-no-only-none",
+        algoName: "Sweep Scalp",
+        family: "sweep-scalp",
+        params: { maxSpread: 0.01, feeBuffer: 0.004, minEdge: 0, sideMode: "no-only" },
+        closed: 12,
+        independentClosedMarkets: 12,
+        conservativeTotalPnl: 0.42,
+        promotionVerdict: "reject",
+      }],
+    });
+    expect(rows[0]).toMatchObject({
+      researchCandidateId: expect.stringMatching(/^rcid-[a-f0-9]{24}$/),
+      candidateConfigHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      sourceRunId: "run-canary",
+      sourceSnapshotHash: "snapshot-hash",
+      seed: "seed-canary",
+    });
+
+    const canaryResult = selectEvidenceProbes(rows, { maxProbes: 1, executableOnly: true });
+    expect(canaryResult.selected).toHaveLength(1);
+    expect(canaryResult.selected[0]).toMatchObject({
+      lane: "exact_linked_execution_canary",
+      evidenceStatus: "execution_canary_only",
+      sourceRunId: "run-canary",
+      family: "sweep-scalp",
+      paperOnly: true,
+    });
   });
 
   it("selects closed and active target markets from local evidence", async () => {

@@ -640,6 +640,7 @@ function topTradersExecutableEvidenceCount(executable) {
   const positions = Array.isArray(executable.positions) ? executable.positions.length : 0;
   return Object.values(executable.stats).reduce((total, stats) => (
     total
+    + (stats?.researchCandidateId && stats?.candidateConfigHash ? 1 : 0)
     + Number(stats?.signals ?? 0)
     + Number(stats?.attempts ?? 0)
     + Number(stats?.acceptedBuys ?? 0)

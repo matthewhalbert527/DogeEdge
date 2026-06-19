@@ -1,6 +1,7 @@
-import { access, mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { researchCandidateIdentity, researchCandidateIdentityContext } from "./candidate-identity.mjs";
 import { familyResearchSupported } from "./family-registry.mjs";
 import { hashJson } from "./utils.mjs";
 
@@ -103,7 +104,7 @@ async function evidenceLaneCli() {
   const source = await loadSourceSweep(args, dataRoot);
   const maxProbes = Math.max(0, Number(args["max-probes"] ?? 5));
   const executableOnly = Boolean(args["executable-only"] ?? args["execution-canary"] ?? args["execution-canaries"]);
-  const rows = [...(Array.isArray(source?.candidates) ? source.candidates : []), ...(Array.isArray(source?.topMetrics) ? source.topMetrics : [])];
+  const rows = materializeExactLinkageForSource(source);
   const sorted = rows.sort((left, right) => numberOrDefault(right.robustScore, 0) - numberOrDefault(left.robustScore, 0));
   const result = selectEvidenceProbes(sorted, {
     maxProbes,
@@ -138,22 +139,294 @@ async function evidenceLaneCli() {
   const reportFile = executableOnly ? "execution-canary-report.json" : "evidence-probe-report.json";
   await writeFile(path.join(storageDir, laneFile), `${JSON.stringify(lane, null, 2)}\n`, "utf8");
   await writeFile(path.join(storageDir, reportFile), `${JSON.stringify(lane.summary, null, 2)}\n`, "utf8");
+  if (executableOnly && lane.probes.length > 0 && args["skip-worker-install"] !== true) {
+    await installExecutionCanariesForWorker(lane, storageDir);
+  }
   console.log(`${executableOnly ? "Execution canary" : "Evidence probe"} lane reseed complete: ${lane.summary.installedProbeCount}/${maxProbes} probes`);
   console.log(`Output: ${path.join(storageDir, laneFile)}`);
 }
 
 async function loadSourceSweep(args, dataRoot) {
+  if (args["from-run-dir"]) return readRunDirectory(path.resolve(String(args["from-run-dir"])));
   if (args["run-id"]) {
     const runId = String(args["run-id"]);
-    return readJson(path.join(dataRoot, "backtests", "sweeps", runId, "config.json"));
+    return readRunDirectory(path.join(dataRoot, "backtests", "sweeps", runId));
   }
   const from = String(args.from ?? "latest-sweep");
   if (from === "latest-sweep") return readJson(path.join(dataRoot, "backtests", "latest-sweep.json"));
-  return readJson(path.resolve(from));
+  const resolved = path.resolve(from);
+  try {
+    const info = await stat(resolved);
+    if (info.isDirectory()) return readRunDirectory(resolved);
+  } catch {
+    // Fall through to JSON-file input.
+  }
+  return readJson(resolved);
+}
+
+async function readRunDirectory(runDir) {
+  const [config, candidates, metrics] = await Promise.all([
+    readJson(path.join(runDir, "config.json")),
+    readJsonMaybe(path.join(runDir, "candidates.json")),
+    readJsonMaybe(path.join(runDir, "metrics.json")),
+  ]);
+  return {
+    ...config,
+    runDir,
+    runId: config.runId ?? path.basename(runDir),
+    candidates: Array.isArray(candidates) ? candidates : [],
+    topMetrics: Array.isArray(metrics) ? metrics : [],
+  };
 }
 
 async function readJson(filePath) {
   return JSON.parse(await readFile(filePath, "utf8"));
+}
+
+async function readJsonMaybe(filePath) {
+  try {
+    return JSON.parse(await readFile(filePath, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+export function materializeExactLinkageForSource(source = {}) {
+  const rows = [
+    ...(Array.isArray(source?.candidates) ? source.candidates : []),
+    ...(Array.isArray(source?.topMetrics) ? source.topMetrics : []),
+  ];
+  const context = researchCandidateIdentityContext({
+    primaryRun: {
+      runId: source?.runId ?? "",
+      randomSeed: source?.randomSeed ?? source?.seed ?? source?.registry?.randomSeed ?? "",
+      configHash: source?.registry?.configHash ?? "",
+      sourceSnapshotHash: source?.registry?.inputManifestHash ?? source?.registry?.dataHash ?? "",
+    },
+    registry: source?.registry ?? {},
+    costModels: source?.costModels ?? source?.registry?.costModels ?? source?.registry?.costModel ?? [],
+    riskModel: source?.riskModel ?? source?.registry?.riskModel ?? {},
+  });
+  const sourceRunId = source?.runId ?? context.sourceRunId ?? null;
+  const sourceSnapshotHash = source?.registry?.inputManifestHash ?? source?.registry?.dataHash ?? context.sourceSnapshotHash ?? null;
+  const seed = source?.randomSeed ?? source?.seed ?? context.seed ?? null;
+  return rows.map((row) => {
+    if (!row || typeof row !== "object") return row;
+    const identity = row.researchCandidateId && row.candidateConfigHash
+      ? null
+      : researchCandidateIdentity(row, context);
+    return {
+      ...row,
+      researchCandidateId: row.researchCandidateId ?? identity?.researchCandidateId ?? null,
+      candidateConfigHash: row.candidateConfigHash ?? identity?.candidateConfigHash ?? null,
+      sourceResearchAlgoId: row.sourceResearchAlgoId ?? identity?.sourceResearchAlgoId ?? row.algoId ?? row.id ?? null,
+      sourceRunId: row.sourceRunId ?? sourceRunId,
+      sourceSnapshotHash: row.sourceSnapshotHash ?? sourceSnapshotHash,
+      seed: row.seed ?? seed,
+      metricsVersion: row.metricsVersion ?? context.metricsVersion ?? "dogeedge.factory.metrics.v1",
+      executionVersion: row.executionVersion ?? context.executionModelVersion ?? "dogeedge.simulator.v1",
+    };
+  });
+}
+
+async function installExecutionCanariesForWorker(lane, storageDir) {
+  const installedAt = lane.generatedAt ?? new Date().toISOString();
+  const batch = executionCanaryFactoryBatch(lane.probes, installedAt);
+  const appStatePath = path.join(storageDir, "app-state.json");
+  const factoryBatchesPath = path.join(storageDir, "factory-batches.json");
+  const executablePath = path.join(storageDir, "top-traders-executable.json");
+  const latestPath = path.join(storageDir, "latest.json");
+  const existingAppState = await readJsonMaybe(appStatePath) ?? {};
+  const factoryAlgoBatches = mergeFactoryBatches([batch, ...(Array.isArray(existingAppState.factoryAlgoBatches) ? existingAppState.factoryAlgoBatches : [])]);
+  const executable = mergeTopTradersExecutable(await readJsonMaybe(executablePath), lane.probes, installedAt);
+  const appState = {
+    ...existingAppState,
+    storedAt: installedAt,
+    factoryAlgoBatches,
+    topTradersExecutable: executable,
+  };
+  const latest = {
+    ...(await readJsonMaybe(latestPath) ?? {}),
+    storedAt: installedAt,
+    generatedPaperAlgoCount: Math.max(
+      Number((await readJsonMaybe(latestPath))?.generatedPaperAlgoCount ?? 0),
+      batch.algos.length,
+    ),
+    topTradersExecutable: executable,
+    topTradersExecutableSummary: topTradersExecutableSummary(executable),
+  };
+  await writeFile(appStatePath, `${JSON.stringify(appState, null, 2)}\n`, "utf8");
+  await writeFile(factoryBatchesPath, `${JSON.stringify({ storedAt: installedAt, factoryAlgoBatches }, null, 2)}\n`, "utf8");
+  await writeFile(executablePath, `${JSON.stringify({ storedAt: installedAt, topTradersExecutable: executable }, null, 2)}\n`, "utf8");
+  await writeFile(latestPath, `${JSON.stringify(latest, null, 2)}\n`, "utf8");
+}
+
+function executionCanaryFactoryBatch(probes, installedAt) {
+  const batchLetter = "E";
+  const batchId = `factory-batch-batch-${batchLetter.toLowerCase()}-${Date.parse(installedAt).toString(36)}`;
+  return {
+    id: batchId,
+    name: `Batch ${batchLetter}`,
+    createdAt: installedAt,
+    source: "Exact-linked execution canaries; paper-only and not promotion eligible",
+    generation: 1,
+    parentBatchIds: [],
+    summary: {
+      generation: 1,
+      eliteCount: 0,
+      mutationCount: 0,
+      crossoverCount: 0,
+      explorationCount: probes.length,
+      avoidedFailureZones: 0,
+      trainingSampleCount: probes.length,
+      quarantinedSampleCount: 0,
+      winnerCount: 0,
+      failureCount: 0,
+      parentBatchIds: [],
+    },
+    algos: probes.map((probe, index) => generatedAlgoFromProbe(probe, installedAt, batchLetter, index)),
+  };
+}
+
+function generatedAlgoFromProbe(probe, installedAt, batchLetter, index) {
+  return {
+    id: probe.id,
+    displayId: `${batchLetter}-${String(index + 1).padStart(4, "0")}`,
+    sourceAlgoId: probe.sourceAlgoId,
+    researchCandidateId: probe.researchCandidateId,
+    candidateConfigHash: probe.candidateConfigHash,
+    sourceResearchAlgoId: probe.sourceResearchAlgoId ?? probe.sourceAlgoId,
+    sourceSnapshotHash: probe.sourceSnapshotHash ?? null,
+    promotionVerdictAtInstall: probe.promotionVerdictAtInstall ?? null,
+    lane: executionCanaryLaneKind,
+    evidenceStatus: "execution_canary_only",
+    promotionEligibility: "not_promotion_eligible",
+    paperOnly: true,
+    exactLinked: true,
+    seed: probe.seed ?? null,
+    metricsVersion: probe.metricsVersion ?? null,
+    executionVersion: probe.executionVersion ?? null,
+    lineageHash: probe.lineageHash ?? null,
+    name: probe.name,
+    family: probe.family,
+    params: probe.params ?? {},
+    enabled: true,
+    promotedAt: probe.promotedAt ?? installedAt,
+    sourceRunId: probe.sourceRunId ?? null,
+    sourceMetrics: probe.sourceMetrics ?? emptySourceMetrics(),
+  };
+}
+
+function mergeFactoryBatches(batches) {
+  const byId = new Map();
+  for (const batch of batches.filter(Boolean)) {
+    if (!batch.id) continue;
+    byId.set(batch.id, batch);
+  }
+  return [...byId.values()]
+    .sort((left, right) => Date.parse(right.createdAt ?? "") - Date.parse(left.createdAt ?? ""))
+    .slice(0, 12);
+}
+
+function mergeTopTradersExecutable(existingFile, probes, installedAt) {
+  const current = existingFile?.topTradersExecutable && typeof existingFile.topTradersExecutable === "object"
+    ? existingFile.topTradersExecutable
+    : {};
+  const stats = current.stats && typeof current.stats === "object" ? { ...current.stats } : {};
+  for (const probe of probes) {
+    stats[probe.sourceAlgoId] = {
+      ...canaryExecutableStats(probe, installedAt),
+      ...(stats[probe.sourceAlgoId] ?? {}),
+      researchCandidateId: probe.researchCandidateId,
+      candidateConfigHash: probe.candidateConfigHash,
+      lane: executionCanaryLaneKind,
+      evidenceStatus: "execution_canary_only",
+      promotionEligibility: "not_promotion_eligible",
+      paperOnly: true,
+      exactLinked: true,
+    };
+  }
+  return {
+    startedAt: current.startedAt ?? installedAt,
+    stoppedAt: current.stoppedAt ?? null,
+    stats,
+    positions: Array.isArray(current.positions) ? current.positions : [],
+  };
+}
+
+function canaryExecutableStats(probe, installedAt) {
+  return {
+    sourceAlgoId: probe.sourceAlgoId,
+    algoId: probe.id,
+    displayId: probe.displayId,
+    family: probe.family,
+    researchCandidateId: probe.researchCandidateId,
+    candidateConfigHash: probe.candidateConfigHash,
+    sourceResearchAlgoId: probe.sourceResearchAlgoId ?? probe.sourceAlgoId,
+    sourceRunId: probe.sourceRunId ?? null,
+    sourceSnapshotHash: probe.sourceSnapshotHash ?? null,
+    promotionVerdictAtInstall: probe.promotionVerdictAtInstall ?? null,
+    startedAt: installedAt,
+    lastSignalAt: null,
+    lastAttemptAt: null,
+    lastAcceptedAt: null,
+    lastRejectedAt: null,
+    lastRejectedMessage: null,
+    lastRejectedCategory: null,
+    signals: 0,
+    attempts: 0,
+    acceptedBuys: 0,
+    rejected: 0,
+    staleRejects: 0,
+    depthRejects: 0,
+    gateRejects: 0,
+    edgeRejects: 0,
+    priceRejects: 0,
+    otherRejects: 0,
+    buys: 0,
+    sells: 0,
+    open: 0,
+    wins: 0,
+    losses: 0,
+    totalPnl: 0,
+    totalCost: 0,
+  };
+}
+
+function topTradersExecutableSummary(executable) {
+  const stats = executable?.stats && typeof executable.stats === "object" ? Object.values(executable.stats) : [];
+  return {
+    startedAt: executable?.startedAt ?? null,
+    stoppedAt: executable?.stoppedAt ?? null,
+    strategyStats: stats.length,
+    positions: Array.isArray(executable?.positions) ? executable.positions.length : 0,
+    exactLinkedExecutionRows: stats.filter((row) => row?.researchCandidateId && row?.candidateConfigHash).length,
+    signals: sumStats(stats, "signals"),
+    attempts: sumStats(stats, "attempts"),
+    acceptedBuys: sumStats(stats, "acceptedBuys"),
+    rejected: sumStats(stats, "rejected"),
+    buys: sumStats(stats, "buys"),
+    sells: sumStats(stats, "sells"),
+    open: sumStats(stats, "open"),
+    wins: sumStats(stats, "wins"),
+    losses: sumStats(stats, "losses"),
+  };
+}
+
+function sumStats(stats, key) {
+  return stats.reduce((sum, row) => sum + numberOrDefault(row?.[key], 0), 0);
+}
+
+function emptySourceMetrics() {
+  return {
+    closed: 0,
+    wins: 0,
+    losses: 0,
+    totalPnl: 0,
+    totalCost: 0,
+    roi: 0,
+    maxDrawdown: 0,
+  };
 }
 
 async function defaultDataRoot() {

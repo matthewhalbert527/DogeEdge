@@ -4680,7 +4680,9 @@ function executableRankedTopTraderRow(item: ExecutableTopTraderScore, bucket: To
 
 function topTraderEvidenceProbeOnly(row: Partial<GeneratedPaperAlgoArchive> | Partial<TopTraderRow>) {
   return row.evidenceStatus === "evidence_probe_only"
+    || row.evidenceStatus === "execution_canary_only"
     || row.lane === "exact_linked_evidence_probe"
+    || row.lane === "exact_linked_execution_canary"
     || (row.paperOnly === true && row.promotionEligibility === "not_promotion_eligible" && row.exactLinked === true);
 }
 
@@ -10955,13 +10957,19 @@ function normalizeArenaEntryPolicy(value: unknown): ArenaEntryPolicy {
 }
 
 function normalizeGeneratedAlgoLane(value: unknown): GeneratedPaperAlgo["lane"] {
-  return value === "research_validated" || value === "telemetry_watchlist" || value === "exact_linked_evidence_probe" ? value : null;
+  return value === "research_validated"
+    || value === "telemetry_watchlist"
+    || value === "exact_linked_evidence_probe"
+    || value === "exact_linked_execution_canary"
+    ? value
+    : null;
 }
 
 function normalizeGeneratedAlgoEvidenceStatus(value: unknown): GeneratedPaperAlgo["evidenceStatus"] {
   return value === "research_validated"
     || value === "telemetry_only"
     || value === "evidence_probe_only"
+    || value === "execution_canary_only"
     || value === "rejected"
     || value === "insufficient_data"
     ? value
@@ -11239,6 +11247,7 @@ function richerTopTradersExecutableState(current: TopTraderExecutableState, back
 function topTradersExecutableEvidenceCount(state: TopTraderExecutableState) {
   return Object.values(state.stats).reduce((total, stats) => (
     total
+    + (stats.researchCandidateId && stats.candidateConfigHash ? 1 : 0)
     + stats.signals
     + stats.attempts
     + stats.acceptedBuys
