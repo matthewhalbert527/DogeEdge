@@ -587,6 +587,29 @@ describe("continuous evaluation snapshot exporter", () => {
     expect(allocations).toContain("execution_canary_paper_only");
   });
 
+  it("keeps older exact-linked execution stats linked when canary lane fields were dropped", async () => {
+    const fixture = writeEvalFixture({ executionCanary: true, executionCanaryMissingLane: true });
+    const result = await exportEvaluationSnapshot({
+      dataRoot: fixture.dataRoot,
+      storageDir: fixture.storageDir,
+      backtestsDir: fixture.backtestsDir,
+      outDir: fixture.outDir,
+      now: "2026-06-07T20:30:00.000Z",
+      maxRowLines: 10,
+      maxMetrics: 1,
+    });
+
+    const exactLinkSummary = JSON.parse(readFileSync(path.join(result.snapshotDir, "exact_link_summary.json"), "utf8"));
+    expect(exactLinkSummary).toMatchObject({
+      supportedLiveExactLinkedCount: 1,
+      supportedLiveMissingLinkCount: 0,
+    });
+
+    const supportedLinks = gunzipSync(readFileSync(path.join(result.snapshotDir, "supported_live_exact_links.tsv.gz"))).toString("utf8");
+    expect(supportedLinks).toContain("execution-canary-sweep-scalp-0001");
+    expect(supportedLinks).toContain("exact_linked_execution_canary");
+  });
+
   it("chooses bundle work only at the configured two-hour cadence", () => {
     const bundleEveryMs = 2 * 60 * 60_000;
 
@@ -600,7 +623,7 @@ function readGzipJson(filePath: string) {
   return JSON.parse(gunzipSync(readFileSync(filePath)).toString("utf8"));
 }
 
-function writeEvalFixture(options: { liveSwitch?: unknown; rawSnapshotMarketTicker?: string | null; executionCanary?: boolean } = {}) {
+function writeEvalFixture(options: { liveSwitch?: unknown; rawSnapshotMarketTicker?: string | null; executionCanary?: boolean; executionCanaryMissingLane?: boolean } = {}) {
   const root = mkdtempSync(path.join(tmpdir(), "dogeedge-eval-snapshot-"));
   const dataRoot = path.join(root, "data");
   const storageDir = path.join(dataRoot, "local-worker");
@@ -773,7 +796,7 @@ function writeEvalFixture(options: { liveSwitch?: unknown; rawSnapshotMarketTick
     },
   };
   if (options.executionCanary) {
-    topTradersExecutable.topTradersExecutable.stats["execution-canary-sweep-scalp-0001"] = {
+    const executionCanaryStats: Record<string, unknown> = {
       sourceAlgoId: "execution-canary-sweep-scalp-0001",
       algoId: "generated:execution-canary-sweep-scalp-0001",
       displayId: "E-0001",
@@ -784,9 +807,6 @@ function writeEvalFixture(options: { liveSwitch?: unknown; rawSnapshotMarketTick
       sourceRunId: "older-supported-run",
       sourceSnapshotHash: "b".repeat(64),
       promotionVerdictAtInstall: "reject",
-      lane: "exact_linked_execution_canary",
-      evidenceStatus: "execution_canary_only",
-      paperOnly: true,
       startedAt: "2026-06-07T20:05:00.000Z",
       signals: 0,
       attempts: 0,
@@ -800,6 +820,12 @@ function writeEvalFixture(options: { liveSwitch?: unknown; rawSnapshotMarketTick
       totalPnl: 0,
       totalCost: 0,
     };
+    if (!options.executionCanaryMissingLane) {
+      executionCanaryStats.lane = "exact_linked_execution_canary";
+      executionCanaryStats.evidenceStatus = "execution_canary_only";
+      executionCanaryStats.paperOnly = true;
+    }
+    topTradersExecutable.topTradersExecutable.stats["execution-canary-sweep-scalp-0001"] = executionCanaryStats;
   }
 
   writeFileSync(path.join(storageDir, "latest.json"), `${JSON.stringify({

@@ -457,6 +457,15 @@ type TopTraderExecutableStats = {
   sourceRunId: string | null;
   sourceSnapshotHash: string | null;
   promotionVerdictAtInstall: string | null;
+  lane: GeneratedPaperAlgo["lane"] | null;
+  evidenceStatus: GeneratedPaperAlgo["evidenceStatus"] | null;
+  promotionEligibility: GeneratedPaperAlgo["promotionEligibility"] | null;
+  paperOnly: boolean;
+  exactLinked: boolean;
+  seed: string | null;
+  metricsVersion: string | null;
+  executionVersion: string | null;
+  lineageHash: string | null;
   startedAt: string | null;
   lastSignalAt: string | null;
   lastAttemptAt: string | null;
@@ -10315,6 +10324,15 @@ function defaultTopTraderExecutableStats(algo: GeneratedPaperAlgo, now: string):
     sourceRunId: algo.sourceRunId,
     sourceSnapshotHash: algo.sourceSnapshotHash ?? null,
     promotionVerdictAtInstall: algo.promotionVerdictAtInstall ?? null,
+    lane: algo.lane ?? null,
+    evidenceStatus: algo.evidenceStatus ?? null,
+    promotionEligibility: algo.promotionEligibility ?? null,
+    paperOnly: algo.paperOnly === true,
+    exactLinked: algo.exactLinked === true || Boolean(algo.researchCandidateId && algo.candidateConfigHash),
+    seed: algo.seed ?? null,
+    metricsVersion: algo.metricsVersion ?? null,
+    executionVersion: algo.executionVersion ?? null,
+    lineageHash: algo.lineageHash ?? null,
     startedAt: now,
     lastSignalAt: null,
     lastAttemptAt: null,
@@ -10413,6 +10431,15 @@ function updateTopTraderExecutableStats(
     sourceRunId: algo.sourceRunId ?? current.sourceRunId ?? null,
     sourceSnapshotHash: algo.sourceSnapshotHash ?? current.sourceSnapshotHash ?? null,
     promotionVerdictAtInstall: algo.promotionVerdictAtInstall ?? current.promotionVerdictAtInstall ?? null,
+    lane: algo.lane ?? current.lane ?? null,
+    evidenceStatus: algo.evidenceStatus ?? current.evidenceStatus ?? null,
+    promotionEligibility: algo.promotionEligibility ?? current.promotionEligibility ?? null,
+    paperOnly: algo.paperOnly === true || current.paperOnly === true,
+    exactLinked: algo.exactLinked === true || current.exactLinked === true || Boolean(algo.researchCandidateId && algo.candidateConfigHash),
+    seed: algo.seed ?? current.seed ?? null,
+    metricsVersion: algo.metricsVersion ?? current.metricsVersion ?? null,
+    executionVersion: algo.executionVersion ?? current.executionVersion ?? null,
+    lineageHash: algo.lineageHash ?? current.lineageHash ?? null,
     startedAt: current.startedAt ?? now,
   });
   return {
@@ -11319,6 +11346,15 @@ function normalizeTopTraderExecutableStats(value: unknown): TopTraderExecutableS
     sourceRunId: stringOrNull(value.sourceRunId),
     sourceSnapshotHash: stringOrNull(value.sourceSnapshotHash),
     promotionVerdictAtInstall: stringOrNull(value.promotionVerdictAtInstall),
+    lane: normalizeGeneratedAlgoLane(value.lane),
+    evidenceStatus: normalizeGeneratedAlgoEvidenceStatus(value.evidenceStatus),
+    promotionEligibility: normalizeGeneratedAlgoPromotionEligibility(value.promotionEligibility),
+    paperOnly: value.paperOnly === true,
+    exactLinked: value.exactLinked === true || Boolean(value.researchCandidateId && value.candidateConfigHash),
+    seed: stringOrNull(value.seed),
+    metricsVersion: stringOrNull(value.metricsVersion),
+    executionVersion: stringOrNull(value.executionVersion),
+    lineageHash: stringOrNull(value.lineageHash),
     startedAt: stringOrNull(value.startedAt),
     lastSignalAt: stringOrNull(value.lastSignalAt),
     lastAttemptAt: stringOrNull(value.lastAttemptAt),

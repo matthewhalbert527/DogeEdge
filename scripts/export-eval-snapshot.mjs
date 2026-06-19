@@ -2426,7 +2426,7 @@ function alignmentRows({ snapshotId, metrics, topStats, primaryRun, alignment, l
     const identity = metric ? identityForAlgo(identityByAlgoId, metric.algoId) : null;
     const lineageLinkedExecutionCanary = !metric
       && researchSupported
-      && isExecutionCanaryRow(stat)
+      && isExecutionCanaryEvidenceRow(stat)
       && hasImmutableExactLinkage(stat);
     const researchVerdict = metric?.promotionVerdict ?? (lineageLinkedExecutionCanary ? "execution_canary_only" : "missing");
     const linkageStatus = metric
@@ -2768,6 +2768,15 @@ function isExecutionCanaryRow(row) {
   const lane = String(row?.lane ?? "").toLowerCase();
   const evidenceStatus = String(row?.evidenceStatus ?? "").toLowerCase();
   return lane === "exact_linked_execution_canary" || evidenceStatus === "execution_canary_only";
+}
+
+function isExecutionCanaryEvidenceRow(row) {
+  const promotionEligibility = String(row?.promotionEligibility ?? "").toLowerCase();
+  const verdict = String(row?.promotionVerdictAtInstall ?? "").toLowerCase();
+  return isExecutionCanaryRow(row)
+    || row?.paperOnly === true
+    || promotionEligibility === "not_promotion_eligible"
+    || verdict === "reject";
 }
 
 function hasImmutableExactLinkage(row) {
