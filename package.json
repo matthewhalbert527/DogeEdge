@@ -26,6 +26,7 @@
     "factory:evidence-bootstrap": "node scripts/factory/evidence-bootstrap.mjs",
     "factory:evidence-loop": "node scripts/factory/evidence-loop.mjs",
     "evidence:loop": "node scripts/factory/evidence-loop.mjs",
+    "evidence:supervisor": "node scripts/dogeedge-evidence-supervisor.mjs",
     "factory:capture-replay": "node scripts/factory/capture-replay.mjs",
     "factory:build-replay": "node scripts/factory/build-replay-dataset.mjs",
     "factory:replay-coverage": "node scripts/factory/replay-coverage.mjs",
