@@ -1132,10 +1132,16 @@ function App() {
           savedTradeSummariesRef.current,
         );
         const rankedRows = rankTopTraderRowsByExecutableStats(sourceRankedRows, topTradersExecutableRef.current, new Date(nowMs).toISOString(), factoryResearchEvidenceBySource(latestSweepRef.current));
-        rosterIds = rankedRows
-          .filter((row) => row.bucket !== "standby")
+        const rankedRosterIds = rankedRows
+          .filter(topTraderRunnablePaperEvidenceRow)
           .slice(0, topTradersRosterSize)
           .map(paperStrategyIdForActivatedRow);
+        rosterIds = rankedRosterIds.length > 0
+          ? rankedRosterIds
+          : availableAlgos
+            .filter(topTraderExecutionCanaryOnly)
+            .slice(0, topTradersRosterSize)
+            .map(paperStrategyIdForActivatedRow);
         topTradersRosterIdsRef.current = rosterIds;
         topTradersRosterRefreshAtRef.current = nowMs + topTradersRosterRefreshMs;
         commitTopTradersArena((state) => ({
@@ -1541,15 +1547,21 @@ function App() {
         setRealisticArenaAlgoArchives((archives) => normalizeGeneratedPaperAlgoArchives([...archiveRows, ...archives]));
       }
       const rankingArena = config.reset ? defaultPaperArenaState() : current;
-      const selectedAlgoIds = rankTopTraderRowsByExecutableStats(
+      const rankedSelectedAlgoIds = rankTopTraderRowsByExecutableStats(
         buildTopTraderRows(availableAlgos, archivesForRanking, rankingArena, startedAt, mainArena, mainArenaAlgos, savedTradeSummariesRef.current),
         config.reset ? defaultTopTradersExecutableState() : topTradersExecutableRef.current,
         startedAt,
         factoryResearchEvidenceBySource(latestSweepRef.current),
       )
-        .filter((row) => row.bucket !== "standby")
+        .filter(topTraderRunnablePaperEvidenceRow)
         .slice(0, config.rosterLimit ?? topTradersRosterSize)
         .map(paperStrategyIdForActivatedRow);
+      const selectedAlgoIds = rankedSelectedAlgoIds.length > 0
+        ? rankedSelectedAlgoIds
+        : availableAlgos
+          .filter(topTraderExecutionCanaryOnly)
+          .slice(0, config.rosterLimit ?? topTradersRosterSize)
+          .map(paperStrategyIdForActivatedRow);
       if (selectedAlgoIds.length === 0) return current;
       topTradersRosterIdsRef.current = selectedAlgoIds;
       topTradersRosterRefreshAtRef.current = 0;
@@ -3895,6 +3907,8 @@ function TopTradersView({
   );
   const researchRosterRows = rows.filter((row) => row.bucket !== "standby").slice(0, topTradersRosterSize);
   const evidenceProbeRows = rows.filter(topTraderEvidenceProbeOnly).slice(0, topTradersTelemetryOnlyRosterSize);
+  const executionCanaryRows = rows.filter(topTraderExecutionCanaryOnly).slice(0, topTradersRosterSize);
+  const runnablePaperRows = researchRosterRows.length > 0 ? researchRosterRows : executionCanaryRows;
   const telemetryWatchRows = rows.filter((row) => row.bucket === "standby" && !topTraderEvidenceProbeOnly(row)).slice(0, topTradersTelemetryOnlyRosterSize);
   const eligibleBatchCounts = useMemo(() => topTraderEligibleBatchCounts(researchRosterRows), [researchRosterRows]);
   const championRows = researchRosterRows.filter((row) => row.bucket === "champion");
@@ -3923,8 +3937,8 @@ function TopTradersView({
     executableStats,
     executableState.startedAt,
   );
-  const activeRosterCount = researchRosterRows.filter((row) => selectedIds.has(paperStrategyIdForActivatedRow(row))).length;
-  const canPlay = researchRosterRows.length > 0 && numberFromInput(startingBalance) > 0 && numberFromInput(maxBet) > 0;
+  const activeRosterCount = runnablePaperRows.filter((row) => selectedIds.has(paperStrategyIdForActivatedRow(row))).length;
+  const canPlay = runnablePaperRows.length > 0 && numberFromInput(startingBalance) > 0 && numberFromInput(maxBet) > 0;
   const controlsLocked = arena.status === "running";
   const playLabel = arena.status === "paused" ? "Resume" : "Start";
   const changeSort = (key: TopTraderSortKey, additive: boolean) => {
@@ -4684,6 +4698,28 @@ function topTraderEvidenceProbeOnly(row: Partial<GeneratedPaperAlgoArchive> | Pa
     || row.lane === "exact_linked_evidence_probe"
     || row.lane === "exact_linked_execution_canary"
     || (row.paperOnly === true && row.promotionEligibility === "not_promotion_eligible" && row.exactLinked === true);
+}
+
+function topTraderExecutionCanaryOnly(row: Partial<GeneratedPaperAlgoArchive> | Partial<TopTraderRow>) {
+  return row.evidenceStatus === "execution_canary_only"
+    || row.lane === "exact_linked_execution_canary"
+    || (
+      row.paperOnly === true
+      && row.promotionEligibility === "not_promotion_eligible"
+      && row.exactLinked === true
+      && topTraderSupportedExecutionCanaryFamily(row)
+    );
+}
+
+function topTraderRunnablePaperEvidenceRow(row: TopTraderRow) {
+  return row.bucket !== "standby" || topTraderExecutionCanaryOnly(row);
+}
+
+function topTraderSupportedExecutionCanaryFamily(row: Partial<GeneratedPaperAlgoArchive> | Partial<TopTraderRow>) {
+  const family = row.family ?? "";
+  if (family === "sweep-scalp" || family === "sweep-liquidity-imbalance") return true;
+  const code = generatedPaperFamilyCode(family, `${row.name ?? ""} ${row.sourceAlgoId ?? ""}`);
+  return code === "SC" || code === "LI";
 }
 
 function executableTopTraderScore(
