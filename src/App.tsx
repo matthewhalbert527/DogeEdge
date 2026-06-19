@@ -529,6 +529,7 @@ const topTradersChampionMinWinRate = 0.55;
 const topTradersProspectMinClosedTrades = 1;
 const topTradersEngineChunkMs = 1_000;
 const topTradersRosterRefreshMs = 15_000;
+const topTradersExecutionCanaryAutoStartMs = 10_000;
 const topTradersExecutableMaxBuyRequestsPerTick = 10;
 const topTradersExecutableMaxSellRequestsPerTick = 8;
 const topTradersExecutableSignalConfirmMs = 1_000;
@@ -1650,6 +1651,53 @@ function App() {
     saveLiveManagedPositions(loadLiveManagedPositions().filter((position) => position.status === "open"));
     setActivatedDataClearToken((current) => current + 1);
   };
+
+  useEffect(() => {
+    if (!appStateBackupReady || !factoryAutomation.enabled) return undefined;
+
+    const maybeStartExecutionCanaries = () => {
+      const current = topTradersArenaRef.current;
+      if (current.status === "running" || current.status === "paused") return;
+      if (!liveOrderRouterStatus.dryRun || !liveOrderRouterStatus.liveSwitchEnabled) return;
+      if (nowLiveRunnerStatusRef.current === "running" || isLiveRunnerActive()) return;
+
+      const selectedAlgoIds = topTraderCandidateAlgosForFactory(generatedPaperAlgosRef.current, factoryAlgoBatchesRef.current)
+        .filter(topTraderExecutionCanaryOnly)
+        .slice(0, topTradersRosterSize)
+        .map(paperStrategyIdForActivatedRow);
+      if (selectedAlgoIds.length === 0) return;
+
+      const startedAt = new Date().toISOString();
+      topTradersRosterIdsRef.current = selectedAlgoIds;
+      topTradersRosterRefreshAtRef.current = 0;
+      topTradersEngineCursorRef.current = 0;
+      topTradersExecutableSignalSeenRef.current = {};
+      topTradersExecutableBlockedUntilRef.current = {};
+      commitTopTradersExecutable((state) => ({
+        ...state,
+        startedAt: state.startedAt ?? startedAt,
+        stoppedAt: null,
+      }));
+      commitTopTradersArena((state) => ({
+        ...state,
+        status: "running",
+        selectedAlgoId: selectedAlgoIds[0] ?? null,
+        selectedAlgoIds,
+        activeBatchId: null,
+        activeBatchIds: [],
+        startingBalance: state.startingBalance > 0 ? state.startingBalance : scheduledTopTradersStartingBalance,
+        maxBet: state.maxBet > 0 ? state.maxBet : scheduledTopTradersMaxBet,
+        allowRepeatBuys: false,
+        startedAt: state.startedAt ?? startedAt,
+        stoppedAt: null,
+        paperState: emptyPaperState,
+      }));
+    };
+
+    maybeStartExecutionCanaries();
+    const id = window.setInterval(maybeStartExecutionCanaries, topTradersExecutionCanaryAutoStartMs);
+    return () => window.clearInterval(id);
+  }, [appStateBackupReady, commitTopTradersArena, commitTopTradersExecutable, factoryAutomation.enabled, liveOrderRouterStatus.dryRun, liveOrderRouterStatus.liveSwitchEnabled]);
 
   const createFactoryBatchFromCurrentEvidence = useCallback((createdAt: string) => {
     const researchGate = factoryResearchGateSummary(latestSweepRef.current);
