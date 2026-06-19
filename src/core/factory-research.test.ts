@@ -1214,6 +1214,7 @@ describe("factory research safeguards", () => {
     mkdirSync(storageDir, { recursive: true });
     mkdirSync(evidenceDir, { recursive: true });
     mkdirSync(path.join(outDir, "target-markets"), { recursive: true });
+    mkdirSync(path.join(root, "review_exports", "bundles", "dogeedge-review-bundle-test", "snapshots"), { recursive: true });
     writeFileSync(path.join(evidenceDir, "settlement_fetch_report.json"), `${JSON.stringify({ coverage: { officialSettlementCoverage: 1 } })}\n`);
     writeFileSync(path.join(evidenceDir, "replay_coverage_report.json"), `${JSON.stringify({ replayGradeTargetMarketCoverage: 1 })}\n`);
     writeFileSync(path.join(storageDir, "evidence-probes.json"), `${JSON.stringify({ probes: [{ exactLinked: true }, { exactLinked: true }, { exactLinked: true }] })}\n`);
@@ -1227,12 +1228,17 @@ describe("factory research safeguards", () => {
       },
     })}\n`);
     writeFileSync(path.join(outDir, "target-markets", "target_markets.json"), `${JSON.stringify({ activeTargetCount: 1 })}\n`);
+    writeFileSync(path.join(root, "review_exports", "bundles", "dogeedge-review-bundle-test", "snapshots", "executable_readiness_gate.json"), `${JSON.stringify({
+      allowedToLoadArenaBatch: false,
+      reasonCodes: ["research_validated_roster_empty"],
+    })}\n`);
 
     await writeReadinessPercent({
       finishedAt: "2026-06-19T17:24:23.215Z",
       storageDir,
       evidenceDir,
       outDir,
+      reviewRoot: path.join(root, "review_exports"),
     });
     const readiness = JSON.parse(readFileSync(path.join(evidenceDir, "readiness_percent.json"), "utf8"));
 
@@ -1242,7 +1248,8 @@ describe("factory research safeguards", () => {
       promotionReadinessPercent: 0,
       evidenceCollectionReady: true,
       evidenceCollectionProgressPercent: 100,
-      promotionGateSource: "absent_fail_closed",
+      promotionGateSource: "executable_readiness_gate",
+      promotionGateReasonCodes: ["research_validated_roster_empty"],
       canPlaceOrders: false,
     });
   });

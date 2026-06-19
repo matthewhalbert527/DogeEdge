@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { access, mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
@@ -268,7 +268,8 @@ export async function writeReadinessPercent(report) {
   const appState = await readJsonMaybe(path.join(report.storageDir, "app-state.json"));
   const factoryBatches = await readJsonMaybe(path.join(report.storageDir, "factory-batches.json"));
   const targetMarkets = await readJsonMaybe(path.join(report.outDir, "target-markets", "target_markets.json"));
-  const executableGate = await readJsonMaybe(path.join(evidenceDir, "executable_readiness_gate.json"));
+  const executableGate = await readJsonMaybe(path.join(evidenceDir, "executable_readiness_gate.json"))
+    ?? await latestBundleExecutableGate(report.reviewRoot);
   const officialSettlementCoverage = Number(settlement?.coverage?.officialSettlementCoverage ?? 0);
   const replayGradeTargetMarketCoverage = Number(replay?.replayGradeTargetMarketCoverage ?? 0);
   const exactLinkedProbeCount = Array.isArray(probes?.probes) ? probes.probes.filter((probe) => probe?.exactLinked).length : 0;
@@ -340,6 +341,26 @@ export function executionCanariesNeedReseed({
     || canaryCount < targetCount
     || (sourceRunId && String(executionCanaries?.sourceRunId ?? "") !== String(sourceRunId))
   );
+}
+
+async function latestBundleExecutableGate(reviewRoot = path.join(repoRoot, "review_exports")) {
+  const bundlesDir = path.join(reviewRoot, "bundles");
+  let entries = [];
+  try {
+    entries = await readdir(bundlesDir, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  const candidates = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const gatePath = path.join(bundlesDir, entry.name, "snapshots", "executable_readiness_gate.json");
+    const info = await stat(gatePath).catch(() => null);
+    if (!info) continue;
+    candidates.push({ gatePath, mtimeMs: info.mtimeMs });
+  }
+  candidates.sort((left, right) => right.mtimeMs - left.mtimeMs);
+  return candidates.length > 0 ? readJsonMaybe(candidates[0].gatePath) : null;
 }
 
 function readinessMarkdown(readiness) {
