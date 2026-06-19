@@ -14,6 +14,7 @@ import { compactReplayTickRow } from "./factory/raw-tick-extract.mjs";
 import { replayParityReportFromManifest } from "./factory/replay-coverage.mjs";
 import { buildExecutableReadinessGate, readinessKpisFromGate } from "./factory/readiness-gate.mjs";
 import { normalizeOfficialSettlementRow, officialOutcomeMap } from "./factory/official-settlement.mjs";
+import { defaultPromotionThresholds } from "./factory/promotion.mjs";
 import {
   forecastCalibrationForDecisionRows,
   officialForecastCalibrationReport,
@@ -972,6 +973,7 @@ export async function exportEvaluationSnapshot(options = {}) {
   const replayParityReport = replayParityReportFromRawManifest({ snapshotId, generatedAt, rawTickManifest, replayManifestSummary });
   const rejectStreamSummary = rejectStreamSummaryReport({ snapshotId, generatedAt, decisionRows, tradeRows, topStats });
   const topRosterAudit = topRosterDefaultSortAudit({ snapshotId, alignmentArtifacts });
+  const researchRosterBlockers = researchRosterBlockerReport({ snapshotId, generatedAt, metrics, topRosterAudit });
   const executableReadinessGate = executableReadinessGateReport({
     snapshotId,
     generatedAt,
@@ -1008,6 +1010,7 @@ export async function exportEvaluationSnapshot(options = {}) {
     replayParityReport,
     replayManifestSummary,
     rejectStreamSummary,
+    researchRosterBlockers,
     evidenceProbeLane: evidenceProbeArtifacts.summary,
     executionCanaryLane: executionCanaryArtifacts.summary,
     evidenceStatus,
@@ -1079,6 +1082,7 @@ export async function exportEvaluationSnapshot(options = {}) {
     simulatorCalibrationReport: simulatorCalibration.report,
     replayParityReport,
     rejectStreamSummary,
+    researchRosterBlockers,
     evidenceProbeLane: evidenceProbeArtifacts.summary,
     evidenceStatus,
     evidencePreflightReport,
@@ -1259,6 +1263,7 @@ export async function buildReviewBundle(options = {}) {
     "calibration_report.json",
     "simulator_calibration_report.md",
     "reject_stream_summary.json",
+    "research_roster_blockers.json",
     "evidence_probe_lane.json",
     "execution_canary_lane.json",
     "evidence_status.json",
@@ -2350,6 +2355,7 @@ async function writeAuditReviewFiles({
   replayParityReport,
   replayManifestSummary,
   rejectStreamSummary,
+  researchRosterBlockers,
   evidenceProbeLane,
   executionCanaryLane,
   evidenceStatus,
@@ -2377,6 +2383,7 @@ async function writeAuditReviewFiles({
     ["replay_parity_report.json", replayParityReport],
     ["replay_manifest_summary.json", replayManifestSummary ?? { schemaVersion: "dogeedge.replay-manifest-summary.v1", status: "absent" }],
     ["reject_stream_summary.json", rejectStreamSummary],
+    ["research_roster_blockers.json", researchRosterBlockers],
     ["evidence_probe_lane.json", evidenceProbeLane],
     ["execution_canary_lane.json", executionCanaryLane],
     ["evidence_status.json", evidenceStatus ?? { schemaVersion: "dogeedge.evidence-status.v1", status: "absent" }],
@@ -3534,6 +3541,119 @@ function rejectStreamSummaryReport({ snapshotId, generatedAt, decisionRows, trad
     ],
     rejectMix: byCode,
   };
+}
+
+function researchRosterBlockerReport({ snapshotId, generatedAt, metrics = [], topRosterAudit = {} }) {
+  const rows = Array.isArray(metrics) ? metrics : [];
+  const reasonCounts = {};
+  const verdictCounts = {};
+  const familyCounts = {};
+  for (const row of rows) {
+    incrementRejectMix(verdictCounts, stringOrNull(row.promotionVerdict) ?? "unknown");
+    incrementRejectMix(familyCounts, stringOrNull(row.family) ?? "unknown");
+    for (const reason of Array.isArray(row.reasonCodes) ? row.reasonCodes : []) {
+      incrementRejectMix(reasonCounts, reason);
+    }
+  }
+  const validatedRows = rows.filter((row) => (
+    row?.nonPromotable !== true
+    && (row?.promotionVerdict === "paper_only" || row?.promotionVerdict === "tiny_live_eligible")
+  ));
+  const blockedCandidates = rows
+    .filter((row) => row && typeof row === "object")
+    .slice(0, 25)
+    .map((row) => researchRosterBlockedCandidate(row));
+  const topReasons = sortedCountRows(reasonCounts).slice(0, 15);
+  const topFamilies = sortedCountRows(familyCounts).slice(0, 15);
+  const topCandidate = blockedCandidates[0] ?? null;
+  const thresholds = {
+    minClosedTrades: defaultPromotionThresholds.minClosedTrades,
+    minResearchMarkets: defaultPromotionThresholds.minResearchMarkets,
+    minDays: defaultPromotionThresholds.minDays,
+    minHoldoutClosed: defaultPromotionThresholds.minHoldoutClosed,
+    minHoldoutMarkets: defaultPromotionThresholds.minHoldoutMarkets,
+    minHoldoutRoi: defaultPromotionThresholds.minHoldoutRoi,
+    minHoldoutExpectancyLowerBound: defaultPromotionThresholds.minHoldoutExpectancyLowerBound,
+    minAdjustedConfidence: defaultPromotionThresholds.minAdjustedConfidence,
+    minOfficialSettlementCoverageForTinyLive: defaultPromotionThresholds.minOfficialSettlementCoverageForTinyLive,
+  };
+  return {
+    schemaVersion: "dogeedge.research-roster-blockers.v1",
+    snapshotId,
+    generatedAt,
+    failClosed: validatedRows.length === 0,
+    researchValidatedRosterCount: numberOrZero(topRosterAudit.researchRankedRosterCount),
+    validationCandidateCount: validatedRows.length,
+    metricCount: rows.length,
+    verdictCounts,
+    topReasons,
+    topFamilies,
+    thresholds,
+    currentBottleneck: researchRosterBottleneck({ topReasons, topCandidate, validatedRows }),
+    nextEvidenceNeed: researchRosterNextEvidenceNeed({ topReasons, topCandidate, validatedRows }),
+    topBlockedCandidates: blockedCandidates,
+    note: "Rejected or insufficient-data rows remain excluded from trusted roster surfaces; this report explains the empty roster but does not relax gates.",
+  };
+}
+
+function researchRosterBlockedCandidate(row) {
+  const holdout = row.holdoutSummary ?? {};
+  return {
+    algoId: stringOrNull(row.algoId ?? row.id),
+    algoName: stringOrNull(row.algoName ?? row.name),
+    family: stringOrNull(row.family) ?? "unknown",
+    promotionVerdict: stringOrNull(row.promotionVerdict) ?? "unknown",
+    robustScore: numberOrNull(row.robustScore),
+    officialSettlementCoverage: numberOrNull(row.officialSettlementCoverage ?? row.settlementEvidence?.officialSettlementCoverage),
+    closedTrades: numberOrZero(row.closed),
+    independentClosedMarkets: numberOrZero(row.independentClosedMarkets),
+    representedDays: numberOrZero(row.daysRepresented),
+    conservativeTotalPnl: numberOrNull(row.conservativeTotalPnl ?? row.costModels?.conservative?.totalPnl),
+    walkForwardPass: row.walkForwardPass === true,
+    walkForwardClosed: numberOrZero(row.walkForwardClosed),
+    holdoutPass: row.holdoutPass === true || holdout.holdoutPass === true,
+    holdoutClosed: numberOrZero(row.holdoutClosed ?? holdout.holdoutClosed),
+    holdoutMarkets: numberOrZero(holdout.holdoutMarkets),
+    holdoutConservativeClosed: numberOrZero(holdout.holdoutConservativeClosed),
+    holdoutConservativeMarkets: numberOrZero(holdout.holdoutConservativeMarkets),
+    holdoutConservativeTotalPnl: numberOrNull(row.holdoutConservativeTotalPnl ?? holdout.holdoutConservativeTotalPnl),
+    holdoutLowerCi: numberOrNull(row.holdoutLowerCi ?? holdout.holdoutLowerCi),
+    paperEvidenceClosedMarkets: numberOrZero(row.paperEvidence?.closedMarkets),
+    reasonCodes: Array.isArray(row.reasonCodes) ? row.reasonCodes : [],
+  };
+}
+
+function researchRosterBottleneck({ topReasons, topCandidate, validatedRows }) {
+  if (validatedRows.length > 0) return "validated_rows_exist";
+  const reasonSet = new Set(topReasons.map((row) => row.code));
+  if (reasonSet.has("holdout_failed") || reasonSet.has("holdout_roi_too_low") || reasonSet.has("holdout_expectancy_ci_below_zero")) {
+    return "conservative_holdout_not_passing";
+  }
+  if (reasonSet.has("too_few_closed_trades") || reasonSet.has("insufficient_independent_markets")) return "research_sample_too_small";
+  if (reasonSet.has("walk_forward_failed")) return "walk_forward_not_passing";
+  if (topCandidate?.paperEvidenceClosedMarkets === 0) return "paper_evidence_not_yet_matched";
+  return "no_gate_passing_research_candidate";
+}
+
+function researchRosterNextEvidenceNeed({ topReasons, topCandidate, validatedRows }) {
+  if (validatedRows.length > 0) return "validated candidates exist; continue exact-linked paper evidence collection before any tiny-live review.";
+  const reasonSet = new Set(topReasons.map((row) => row.code));
+  if (reasonSet.has("insufficient_holdout_closed") || reasonSet.has("insufficient_holdout_markets")) {
+    return `Need more conservative-cost holdout evidence for the leading supported candidates: current best has ${topCandidate?.holdoutConservativeClosed ?? 0}/${defaultPromotionThresholds.minHoldoutClosed} conservative holdout closes and ${topCandidate?.holdoutConservativeMarkets ?? 0}/${defaultPromotionThresholds.minHoldoutMarkets} conservative holdout markets.`;
+  }
+  if (reasonSet.has("holdout_roi_too_low") || reasonSet.has("holdout_expectancy_ci_below_zero")) {
+    return `Need a supported exact-linked candidate with positive conservative holdout P/L and non-negative holdout lower CI; current best holdout conservative P/L is ${topCandidate?.holdoutConservativeTotalPnl ?? null}.`;
+  }
+  if (reasonSet.has("too_few_closed_trades") || reasonSet.has("insufficient_independent_markets")) {
+    return "Need more independent settled markets before research candidates can be trusted.";
+  }
+  return "Need a candidate that passes the existing research, holdout, multiple-testing, official-settlement, replay, and paper-evidence gates.";
+}
+
+function sortedCountRows(counts) {
+  return Object.entries(counts)
+    .map(([code, count]) => ({ code, count }))
+    .sort((left, right) => right.count - left.count || left.code.localeCompare(right.code));
 }
 
 function replayParityReportFromRawManifest({ snapshotId, generatedAt, rawTickManifest, replayManifestSummary = null }) {

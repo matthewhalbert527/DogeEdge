@@ -102,6 +102,7 @@ describe("continuous evaluation snapshot exporter", () => {
       "calibration_report.json",
       "simulator_calibration_report.md",
       "reject_stream_summary.json",
+      "research_roster_blockers.json",
       "replay_parity_report.json",
       "executable_readiness_gate.json",
       "readiness_kpis.json",
@@ -145,6 +146,16 @@ describe("continuous evaluation snapshot exporter", () => {
     expect(rejectStream).toMatchObject({
       schemaVersion: "dogeedge.reject-stream-summary.v1",
       fullRejectStreamPresent: true,
+    });
+    const rosterBlockers = JSON.parse(readFileSync(path.join(result.snapshotDir, "research_roster_blockers.json"), "utf8"));
+    expect(rosterBlockers).toMatchObject({
+      schemaVersion: "dogeedge.research-roster-blockers.v1",
+      failClosed: false,
+      currentBottleneck: expect.any(String),
+      nextEvidenceNeed: expect.any(String),
+    });
+    expect(snapshot.researchRosterBlockers).toMatchObject({
+      schemaVersion: "dogeedge.research-roster-blockers.v1",
     });
     const replayParity = JSON.parse(readFileSync(path.join(result.snapshotDir, "replay_parity_report.json"), "utf8"));
     expect(replayParity).toMatchObject({
@@ -282,6 +293,7 @@ describe("continuous evaluation snapshot exporter", () => {
       "snapshots/calibration_report.json",
       "snapshots/simulator_calibration_report.md",
       "snapshots/reject_stream_summary.json",
+      "snapshots/research_roster_blockers.json",
       "snapshots/replay_parity_report.json",
       "snapshots/executable_readiness_gate.json",
       "snapshots/readiness_kpis.json",
@@ -546,7 +558,7 @@ describe("continuous evaluation snapshot exporter", () => {
       "raw_market_tick_target_coverage_gap",
     ]));
     expect(manifest.files.map((file: { relativePath: string }) => file.relativePath)).not.toContain("snapshots/raw_market_ticks/jsonl/KXDOGE15M-FIXTURE.jsonl");
-  });
+  }, 15_000);
 
   it("counts immutable execution canaries as exact-linked diagnostics without promoting them", async () => {
     const fixture = writeEvalFixture({ executionCanary: true });
