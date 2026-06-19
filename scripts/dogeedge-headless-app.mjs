@@ -39,6 +39,9 @@ async function run() {
       error: error instanceof Error ? error.message : String(error),
     }));
     await writeStatus(status);
+    if (!once && shouldRestartChrome(status)) {
+      await closeChrome();
+    }
     if (once) {
       shutdown(status.chromeAlive && status.latestFresh ? 0 : 1);
       return;
@@ -65,6 +68,14 @@ function ensureChrome() {
     windowsHide: true,
   });
   chrome.unref();
+}
+
+async function closeChrome() {
+  if (chrome && !chrome.killed) {
+    chrome.kill();
+  }
+  chrome = null;
+  await sleep(1_000);
 }
 
 async function buildStatus() {
@@ -211,4 +222,14 @@ function shutdown(code) {
     chrome.kill();
   }
   process.exit(code);
+}
+
+function shouldRestartChrome(status) {
+  if (!status || typeof status !== "object") return true;
+  if (status.status !== "ok") return true;
+  if (status.chromeAlive === false) return true;
+  if (status.latestFresh === false || status.executableFresh === false) return true;
+  if (status.topTradersStatus && status.topTradersStatus !== "running") return true;
+  if (Number(status.selectedAlgoCount ?? 0) <= 0 && Number(status.canaryRows ?? 0) > 0) return true;
+  return false;
 }
