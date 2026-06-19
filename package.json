@@ -6,6 +6,7 @@
   "scripts": {
     "prebuild": "node scripts/write-build-version.mjs",
     "dev": "vite",
+    "app:headless": "node scripts/dogeedge-headless-app.mjs",
     "local-worker": "node scripts/dogeedge-local-worker.mjs",
     "factory:worker": "node scripts/dogeedge-local-worker.mjs",
     "factory:backtest": "node scripts/dogeedge-backtest.mjs",
