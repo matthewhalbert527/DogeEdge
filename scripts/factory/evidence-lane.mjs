@@ -1,4 +1,4 @@
-import { access, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { access, appendFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { researchCandidateIdentity, researchCandidateIdentityContext } from "./candidate-identity.mjs";
@@ -13,7 +13,7 @@ export const supportedExecutionCanaryFamilies = Object.freeze(["sweep-scalp", "s
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
 export function selectEvidenceProbes(rows = [], { maxProbes = 5, allowInsufficientDataProbe = false, executableOnly = false } = {}) {
-  const selected = [];
+  const eligible = [];
   const rejected = [];
   for (const row of rows) {
     const check = evidenceProbeEligibility(row, { allowInsufficientDataProbe, executableOnly });
@@ -21,9 +21,12 @@ export function selectEvidenceProbes(rows = [], { maxProbes = 5, allowInsufficie
       rejected.push({ algoId: row?.algoId ?? row?.id ?? "unknown", family: row?.family ?? "unknown", reasonCodes: check.reasonCodes });
       continue;
     }
-    selected.push(evidenceProbeFromCandidate(row, executableOnly ? { laneKind: executionCanaryLaneKind } : {}));
-    if (selected.length >= maxProbes) break;
+    eligible.push(row);
   }
+  const selectedRows = executableOnly
+    ? selectDiverseExecutionCanaryRows(eligible, maxProbes)
+    : eligible.slice(0, maxProbes);
+  const selected = selectedRows.map((row) => evidenceProbeFromCandidate(row, executableOnly ? { laneKind: executionCanaryLaneKind } : {}));
   return { selected, rejected };
 }
 
@@ -40,10 +43,56 @@ export function evidenceProbeEligibility(row = {}, { allowInsufficientDataProbe 
   }
   const conservativePnl = numberOrDefault(row.conservativeTotalPnl, numberOrDefault(row.costModels?.conservative?.totalPnl, 0));
   if (conservativePnl < 0 && !(allowInsufficientDataProbe && row.promotionVerdict === "insufficient_data")) reasonCodes.push("negative_conservative_cost_pnl");
+  if (executableOnly && numberOrDefault(row.params?.minEdge, 0) < 0) reasonCodes.push("negative_min_edge_execution_canary");
   const evidenceCount = Math.max(numberOrDefault(row.closed, 0), numberOrDefault(row.independentClosedMarkets, 0), numberOrDefault(row.walkForwardClosed, 0));
   if (evidenceCount <= 0) reasonCodes.push("minimal_event_or_trade_evidence_required");
   if (row.labelSource === "official_resolution" && row.settlementSource !== "official_resolution") reasonCodes.push("inconsistent_official_label_settlement");
   return { ok: reasonCodes.length === 0, reasonCodes };
+}
+
+function selectDiverseExecutionCanaryRows(rows, maxProbes) {
+  if (maxProbes <= 0) return [];
+  const sorted = [...rows].sort(compareExecutionCanaryCandidates);
+  const selected = [];
+  const selectedIds = new Set();
+  for (const family of supportedExecutionCanaryFamilies) {
+    if (selected.length >= maxProbes) break;
+    const row = sorted.find((candidate) => candidate.family === family && !selectedIds.has(candidateKey(candidate)));
+    if (!row) continue;
+    selected.push(row);
+    selectedIds.add(candidateKey(row));
+  }
+  for (const row of sorted) {
+    if (selected.length >= maxProbes) break;
+    const key = candidateKey(row);
+    if (selectedIds.has(key)) continue;
+    selected.push(row);
+    selectedIds.add(key);
+  }
+  return selected;
+}
+
+function compareExecutionCanaryCandidates(left, right) {
+  return compareNumber(right.robustScore, left.robustScore)
+    || compareNumber(conservativePnl(right), conservativePnl(left))
+    || compareNumber(evidenceCount(right), evidenceCount(left))
+    || String(left.algoId ?? left.id ?? "").localeCompare(String(right.algoId ?? right.id ?? ""));
+}
+
+function conservativePnl(row) {
+  return numberOrDefault(row?.conservativeTotalPnl, numberOrDefault(row?.costModels?.conservative?.totalPnl, 0));
+}
+
+function evidenceCount(row) {
+  return Math.max(numberOrDefault(row?.closed, 0), numberOrDefault(row?.independentClosedMarkets, 0), numberOrDefault(row?.walkForwardClosed, 0));
+}
+
+function compareNumber(left, right) {
+  return numberOrDefault(left, -Infinity) - numberOrDefault(right, -Infinity);
+}
+
+function candidateKey(row) {
+  return String(row?.researchCandidateId ?? row?.candidateConfigHash ?? row?.algoId ?? row?.id ?? JSON.stringify(row));
 }
 
 export function evidenceProbeFromCandidate(candidate, { laneKind = evidenceProbeLaneKind } = {}) {
@@ -237,8 +286,11 @@ async function installExecutionCanariesForWorker(lane, storageDir) {
   const executablePath = path.join(storageDir, "top-traders-executable.json");
   const latestPath = path.join(storageDir, "latest.json");
   const existingAppState = await readJsonMaybe(appStatePath) ?? {};
-  const factoryAlgoBatches = mergeFactoryBatches([batch, ...(Array.isArray(existingAppState.factoryAlgoBatches) ? existingAppState.factoryAlgoBatches : [])]);
-  const executable = mergeTopTradersExecutable(await readJsonMaybe(executablePath), lane.probes, installedAt);
+  const existingBatches = Array.isArray(existingAppState.factoryAlgoBatches) ? existingAppState.factoryAlgoBatches : [];
+  const existingExecutableFile = await readJsonMaybe(executablePath);
+  await archiveExecutionCanaryState(storageDir, existingBatches, existingExecutableFile?.topTradersExecutable, installedAt);
+  const factoryAlgoBatches = mergeFactoryBatches([batch, ...existingBatches.filter((item) => !isExecutionCanaryFactoryBatch(item))]);
+  const executable = mergeTopTradersExecutable(existingExecutableFile, lane.probes, installedAt);
   const appState = {
     ...existingAppState,
     storedAt: installedAt,
@@ -332,7 +384,13 @@ function mergeTopTradersExecutable(existingFile, probes, installedAt) {
   const current = existingFile?.topTradersExecutable && typeof existingFile.topTradersExecutable === "object"
     ? existingFile.topTradersExecutable
     : {};
-  const stats = current.stats && typeof current.stats === "object" ? { ...current.stats } : {};
+  const nextProbeSourceIds = new Set(probes.map((probe) => probe.sourceAlgoId));
+  const currentStats = current.stats && typeof current.stats === "object" ? current.stats : {};
+  const stats = {};
+  for (const [sourceAlgoId, row] of Object.entries(currentStats)) {
+    if (isExecutionCanaryStats(row) && !nextProbeSourceIds.has(sourceAlgoId)) continue;
+    stats[sourceAlgoId] = row;
+  }
   for (const probe of probes) {
     stats[probe.sourceAlgoId] = {
       ...canaryExecutableStats(probe, installedAt),
@@ -352,6 +410,33 @@ function mergeTopTradersExecutable(existingFile, probes, installedAt) {
     stats,
     positions: Array.isArray(current.positions) ? current.positions : [],
   };
+}
+
+async function archiveExecutionCanaryState(storageDir, batches, executable, archivedAt) {
+  const canaryBatches = batches.filter(isExecutionCanaryFactoryBatch);
+  const canaryStats = Object.fromEntries(Object.entries(executable?.stats ?? {}).filter(([, row]) => isExecutionCanaryStats(row)));
+  if (canaryBatches.length === 0 && Object.keys(canaryStats).length === 0) return;
+  const archiveRow = {
+    schemaVersion: "dogeedge.execution-canary-archive.v1",
+    archivedAt,
+    canaryBatches,
+    canaryStats,
+  };
+  await appendFile(path.join(storageDir, "execution-canary-archive.jsonl"), `${JSON.stringify(archiveRow)}\n`, "utf8");
+}
+
+function isExecutionCanaryFactoryBatch(batch) {
+  return Boolean(
+    batch
+    && (
+      String(batch.source ?? "").includes("Exact-linked execution canaries")
+      || (Array.isArray(batch.algos) && batch.algos.some((algo) => algo?.lane === executionCanaryLaneKind || algo?.evidenceStatus === "execution_canary_only"))
+    ),
+  );
+}
+
+function isExecutionCanaryStats(row) {
+  return Boolean(row?.lane === executionCanaryLaneKind || row?.evidenceStatus === "execution_canary_only");
 }
 
 function canaryExecutableStats(probe, installedAt) {

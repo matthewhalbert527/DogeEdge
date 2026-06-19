@@ -1653,6 +1653,73 @@ describe("factory research safeguards", () => {
     });
   });
 
+  it("diversifies execution canaries across supported families without negative min-edge probes", () => {
+    const rows = [
+      {
+        algoId: "scalp-high",
+        algoName: "Scalp High",
+        family: "sweep-scalp",
+        params: { maxSpread: 0.01, minEdge: 0 },
+        researchCandidateId: "rcid-scalp-high",
+        candidateConfigHash: "hash-scalp-high",
+        closed: 20,
+        independentClosedMarkets: 20,
+        conservativeTotalPnl: 2,
+        robustScore: 10,
+      },
+      {
+        algoId: "scalp-second",
+        algoName: "Scalp Second",
+        family: "sweep-scalp",
+        params: { maxSpread: 0.01, minEdge: 0 },
+        researchCandidateId: "rcid-scalp-second",
+        candidateConfigHash: "hash-scalp-second",
+        closed: 20,
+        independentClosedMarkets: 20,
+        conservativeTotalPnl: 2,
+        robustScore: 9,
+      },
+      {
+        algoId: "liquidity-ok",
+        algoName: "Liquidity OK",
+        family: "sweep-liquidity-imbalance",
+        params: { maxSpread: 0.04, minEdge: 0 },
+        researchCandidateId: "rcid-liquidity-ok",
+        candidateConfigHash: "hash-liquidity-ok",
+        closed: 80,
+        independentClosedMarkets: 75,
+        conservativeTotalPnl: 1,
+        robustScore: -30,
+      },
+      {
+        algoId: "liquidity-negative-edge",
+        algoName: "Liquidity Negative Edge",
+        family: "sweep-liquidity-imbalance",
+        params: { maxSpread: 0.04, minEdge: -0.02 },
+        researchCandidateId: "rcid-liquidity-negative-edge",
+        candidateConfigHash: "hash-liquidity-negative-edge",
+        closed: 80,
+        independentClosedMarkets: 75,
+        conservativeTotalPnl: 3,
+        robustScore: 11,
+      },
+    ];
+
+    const result = selectEvidenceProbes(rows, { maxProbes: 3, executableOnly: true });
+
+    expect(result.selected.map((probe) => probe.sourceAlgoId)).toEqual([
+      "scalp-high",
+      "liquidity-ok",
+      "scalp-second",
+    ]);
+    expect(result.selected.map((probe) => probe.family)).toEqual([
+      "sweep-scalp",
+      "sweep-liquidity-imbalance",
+      "sweep-scalp",
+    ]);
+    expect(result.rejected.find((row) => row.algoId === "liquidity-negative-edge")?.reasonCodes).toContain("negative_min_edge_execution_canary");
+  });
+
   it("selects closed and active target markets from local evidence", async () => {
     const dataRoot = mkdtempSync(path.join(tmpdir(), "dogeedge-targets-test-"));
     const storageDir = path.join(dataRoot, "local-worker");
