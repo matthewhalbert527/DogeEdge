@@ -1906,16 +1906,70 @@ describe("factory research safeguards", () => {
     const result = selectEvidenceProbes(rows, { maxProbes: 3, executableOnly: true });
 
     expect(result.selected.map((probe) => probe.sourceAlgoId)).toEqual([
-      "scalp-high",
       "liquidity-ok",
+      "scalp-high",
       "scalp-second",
     ]);
     expect(result.selected.map((probe) => probe.family)).toEqual([
-      "sweep-scalp",
       "sweep-liquidity-imbalance",
+      "sweep-scalp",
       "sweep-scalp",
     ]);
     expect(result.rejected.find((row) => row.algoId === "liquidity-negative-edge")?.reasonCodes).toContain("negative_min_edge_execution_canary");
+  });
+
+  it("prefers side-diverse safe execution canaries over same-side ranking concentration", () => {
+    const base = {
+      algoName: "Scalp",
+      family: "sweep-scalp",
+      researchCandidateId: "rcid",
+      candidateConfigHash: "hash",
+      closed: 20,
+      independentClosedMarkets: 20,
+      conservativeTotalPnl: 1,
+    };
+    const rows = [
+      {
+        ...base,
+        algoId: "yes-top",
+        researchCandidateId: "rcid-yes-top",
+        candidateConfigHash: "hash-yes-top",
+        params: { maxSpread: 0.01, minEdge: 0, sideMode: "yes-only" },
+        robustScore: 30,
+      },
+      {
+        ...base,
+        algoId: "yes-second",
+        researchCandidateId: "rcid-yes-second",
+        candidateConfigHash: "hash-yes-second",
+        params: { maxSpread: 0.01, minEdge: 0, sideMode: "yes-only" },
+        robustScore: 29,
+      },
+      {
+        ...base,
+        algoId: "no-safe",
+        researchCandidateId: "rcid-no-safe",
+        candidateConfigHash: "hash-no-safe",
+        params: { maxSpread: 0.01, minEdge: 0, sideMode: "no-only" },
+        robustScore: 2,
+      },
+      {
+        ...base,
+        algoId: "flex-safe",
+        researchCandidateId: "rcid-flex-safe",
+        candidateConfigHash: "hash-flex-safe",
+        params: { maxSpread: 0.01, minEdge: 0, sideMode: "best" },
+        robustScore: 1,
+      },
+    ];
+
+    const result = selectEvidenceProbes(rows, { maxProbes: 3, executableOnly: true });
+
+    expect(result.selected.map((probe) => probe.sourceAlgoId)).toEqual([
+      "yes-top",
+      "no-safe",
+      "flex-safe",
+    ]);
   });
 
   it("selects closed and active target markets from local evidence", async () => {

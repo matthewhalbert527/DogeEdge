@@ -55,12 +55,23 @@ function selectDiverseExecutionCanaryRows(rows, maxProbes) {
   const sorted = [...rows].sort(compareExecutionCanaryCandidates);
   const selected = [];
   const selectedIds = new Set();
+  const selectedFamilies = new Set();
+  for (const bucket of ["yes", "no", "flex"]) {
+    if (selected.length >= maxProbes) break;
+    const row = sorted.find((candidate) => executionSideBucket(candidate) === bucket && !selectedIds.has(candidateKey(candidate)));
+    if (!row) continue;
+    selected.push(row);
+    selectedIds.add(candidateKey(row));
+    selectedFamilies.add(row.family);
+  }
   for (const family of supportedExecutionCanaryFamilies) {
     if (selected.length >= maxProbes) break;
+    if (selectedFamilies.has(family)) continue;
     const row = sorted.find((candidate) => candidate.family === family && !selectedIds.has(candidateKey(candidate)));
     if (!row) continue;
     selected.push(row);
     selectedIds.add(candidateKey(row));
+    selectedFamilies.add(row.family);
   }
   for (const row of sorted) {
     if (selected.length >= maxProbes) break;
@@ -72,11 +83,32 @@ function selectDiverseExecutionCanaryRows(rows, maxProbes) {
   return selected;
 }
 
+function executionSideBucket(row) {
+  const rawSideMode = row?.params?.sideMode;
+  const sideMode = String(rawSideMode ?? (row?.family === "sweep-scalp" ? "best" : "")).toLowerCase();
+  if (sideMode === "yes-only") return "yes";
+  if (sideMode === "no-only") return "no";
+  if (["best", "hybrid", "pressure", "edge", "fair"].includes(sideMode)) return "flex";
+  if (row?.family === "sweep-liquidity-imbalance") return "flex";
+  return "unknown";
+}
+
 function compareExecutionCanaryCandidates(left, right) {
-  return compareNumber(right.robustScore, left.robustScore)
+  return compareNumber(executionReachScore(right), executionReachScore(left))
+    || compareNumber(right.robustScore, left.robustScore)
     || compareNumber(conservativePnl(right), conservativePnl(left))
     || compareNumber(evidenceCount(right), evidenceCount(left))
     || String(left.algoId ?? left.id ?? "").localeCompare(String(right.algoId ?? right.id ?? ""));
+}
+
+function executionReachScore(row) {
+  const params = isRecord(row?.params) ? row.params : {};
+  const maxSpread = Math.max(0, Math.min(0.05, numberOrDefault(params.maxSpread, row?.family === "sweep-liquidity-imbalance" ? 0.04 : 0.01)));
+  const minEdge = Math.max(0, numberOrDefault(params.minEdge, 0));
+  const minBidDepth = Math.max(1, numberOrDefault(params.minBidDepth, 1));
+  return (maxSpread * 100)
+    - (minEdge * 10)
+    - Math.log10(minBidDepth) * 0.05;
 }
 
 function conservativePnl(row) {
