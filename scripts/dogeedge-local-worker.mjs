@@ -1114,7 +1114,12 @@ async function reconcileInstalledExecutionCanaries(payload) {
   const expectedProbes = (Array.isArray(installed?.probes) ? installed.probes : [])
     .filter((probe) => probe?.sourceAlgoId);
   if (expectedProbes.length === 0) return payload;
-  if (topTradersExecutableHasInstalledCanaries(payload.topTradersExecutable, expectedProbes)) return payload;
+  if (topTradersExecutableHasInstalledCanaries(payload.topTradersExecutable, expectedProbes)) {
+    return {
+      ...payload,
+      topTradersExecutable: reconcileExecutionCanaryMetadata(payload.topTradersExecutable, expectedProbes),
+    };
+  }
 
   const [appStateFile, executableFile, latestFile] = await Promise.all([
     readOptionalJson(appStatePath),
@@ -1130,7 +1135,10 @@ async function reconcileInstalledExecutionCanaries(payload) {
 
   return {
     ...payload,
-    topTradersExecutable: mergeTopTradersExecutablePositions(replacement, payload.topTradersExecutable),
+    topTradersExecutable: mergeTopTradersExecutablePositions(
+      pruneStaleExecutionCanaries(replacement, expectedProbes),
+      payload.topTradersExecutable,
+    ),
   };
 }
 
@@ -1162,6 +1170,63 @@ function mergeTopTradersExecutablePositions(preferred, incoming) {
   return {
     ...preferred,
     positions: [...byId.values()],
+  };
+}
+
+function pruneStaleExecutionCanaries(executable, expectedProbes) {
+  if (!executable || typeof executable !== "object" || !executable.stats || typeof executable.stats !== "object") return executable;
+  const expectedSourceIds = new Set(expectedProbes.map((probe) => String(probe?.sourceAlgoId ?? "")).filter(Boolean));
+  const stats = {};
+  for (const [key, row] of Object.entries(executable.stats)) {
+    const sourceAlgoId = String(row?.sourceAlgoId ?? key);
+    if (isExecutionCanaryRow(row) && !expectedSourceIds.has(sourceAlgoId)) continue;
+    stats[key] = row;
+  }
+  return {
+    ...executable,
+    stats,
+  };
+}
+
+function isExecutionCanaryRow(row) {
+  return row?.lane === "exact_linked_execution_canary" || row?.evidenceStatus === "execution_canary_only";
+}
+
+function reconcileExecutionCanaryMetadata(executable, expectedProbes) {
+  const pruned = pruneStaleExecutionCanaries(executable, expectedProbes);
+  if (!pruned || typeof pruned !== "object" || !pruned.stats || typeof pruned.stats !== "object") return pruned;
+  const stats = { ...pruned.stats };
+  for (const probe of expectedProbes) {
+    const sourceAlgoId = String(probe?.sourceAlgoId ?? "");
+    if (!sourceAlgoId) continue;
+    const existingKey = Object.hasOwn(stats, sourceAlgoId)
+      ? sourceAlgoId
+      : Object.keys(stats).find((key) => String(stats[key]?.sourceAlgoId ?? "") === sourceAlgoId);
+    if (!existingKey) continue;
+    stats[existingKey] = {
+      ...stats[existingKey],
+      sourceAlgoId,
+      researchCandidateId: probe.researchCandidateId ?? stats[existingKey].researchCandidateId ?? null,
+      candidateConfigHash: probe.candidateConfigHash ?? stats[existingKey].candidateConfigHash ?? null,
+      sourceResearchAlgoId: probe.sourceResearchAlgoId ?? probe.sourceAlgoId ?? stats[existingKey].sourceResearchAlgoId ?? null,
+      sourceRunId: probe.sourceRunId ?? stats[existingKey].sourceRunId ?? null,
+      sourceSnapshotHash: probe.sourceSnapshotHash ?? stats[existingKey].sourceSnapshotHash ?? null,
+      promotionVerdictAtInstall: probe.promotionVerdictAtInstall ?? stats[existingKey].promotionVerdictAtInstall ?? null,
+      lane: "exact_linked_execution_canary",
+      evidenceStatus: "execution_canary_only",
+      promotionEligibility: "not_promotion_eligible",
+      paperOnly: true,
+      exactLinked: true,
+      seed: probe.seed ?? stats[existingKey].seed ?? null,
+      metricsVersion: probe.metricsVersion ?? stats[existingKey].metricsVersion ?? null,
+      executionVersion: probe.executionVersion ?? stats[existingKey].executionVersion ?? null,
+      lineageHash: probe.lineageHash ?? stats[existingKey].lineageHash ?? null,
+      sourceMetrics: probe.sourceMetrics ?? stats[existingKey].sourceMetrics ?? null,
+    };
+  }
+  return {
+    ...pruned,
+    stats,
   };
 }
 
