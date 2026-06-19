@@ -335,6 +335,15 @@ type LiveOrderRouterStatus = {
   maxExposureDollars: number;
   executionMinEdgeAfterFees: number;
   conservativeMode: boolean;
+  providerBackoff: {
+    active: boolean;
+    remainingMs: number;
+    until: string | null;
+    reason: string | null;
+    path: string | null;
+    status: number | null;
+    updatedAt: string | null;
+  };
   conservative: {
     minConfidence: number;
     minEdgeAfterFees: number;
@@ -11474,6 +11483,15 @@ function defaultLiveOrderRouterStatus(): LiveOrderRouterStatus {
     maxExposureDollars: 50,
     executionMinEdgeAfterFees: liveExecutableMinEdgeAfterFees,
     conservativeMode: false,
+    providerBackoff: {
+      active: false,
+      remainingMs: 0,
+      until: null,
+      reason: null,
+      path: null,
+      status: null,
+      updatedAt: null,
+    },
     conservative: {
       minConfidence: 92,
       minEdgeAfterFees: 0.06,
@@ -11491,6 +11509,7 @@ function normalizeLiveOrderRouterStatus(value: unknown): LiveOrderRouterStatus {
   if (!isRecord(value)) return { ...defaults, state: "error", error: "Order router payload was not an object" };
   const state = value.state === "error" ? "error" : value.state === "checking" ? "checking" : "ready";
   const conservative = isRecord(value.conservative) ? value.conservative : {};
+  const providerBackoff = isRecord(value.providerBackoff) ? value.providerBackoff : {};
   return {
     state,
     configured: Boolean(value.configured),
@@ -11503,6 +11522,15 @@ function normalizeLiveOrderRouterStatus(value: unknown): LiveOrderRouterStatus {
     maxExposureDollars: numberOrDefault(value.maxExposureDollars, defaults.maxExposureDollars),
     executionMinEdgeAfterFees: numberOrDefault(value.executionMinEdgeAfterFees, defaults.executionMinEdgeAfterFees),
     conservativeMode: value.conservativeMode === true,
+    providerBackoff: {
+      active: providerBackoff.active === true,
+      remainingMs: numberOrDefault(providerBackoff.remainingMs, 0),
+      until: stringOrNull(providerBackoff.until),
+      reason: stringOrNull(providerBackoff.reason),
+      path: stringOrNull(providerBackoff.path),
+      status: numberOrNull(providerBackoff.status),
+      updatedAt: stringOrNull(providerBackoff.updatedAt),
+    },
     conservative: {
       minConfidence: numberOrDefault(conservative.minConfidence, defaults.conservative.minConfidence),
       minEdgeAfterFees: numberOrDefault(conservative.minEdgeAfterFees, defaults.conservative.minEdgeAfterFees),
@@ -12045,6 +12073,7 @@ function portfolioModeLabel(portfolio: KalshiPortfolioSummary) {
 
 function orderRouterLabel(status: LiveOrderRouterStatus) {
   if (status.state === "checking") return "Checking";
+  if (status.providerBackoff.active) return "Provider backoff";
   if (status.dryRun) return status.liveSwitchEnabled ? "Dry run" : "Dry run off";
   if (!status.configured) return "Not configured";
   if (!status.liveSwitchEnabled && status.sellExitsEnabled) return "Exits only";

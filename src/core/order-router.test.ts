@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   buildExecutionPlan,
   buildKalshiOrderPayload,
+  kalshiProviderBackoffStatus,
   normalizeOrderRequest,
+  resetKalshiProviderBackoff,
   riskCheckOrder,
   routerStatus,
 } from "../../api/kalshi/order-router.js";
@@ -298,6 +300,30 @@ describe("Kalshi live order router", () => {
       expect(execution.plan.orders.every((order) => order.ticker === "KXDOGE15M-FRESH")).toBe(true);
       expect(execution.plan.snapshot.source).toBe("fresh-depth");
     } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("backs off provider fetches after a Kalshi rate-limit response", async () => {
+    const originalFetch = globalThis.fetch;
+    resetKalshiProviderBackoff();
+    let calls = 0;
+    globalThis.fetch = async () => {
+      calls += 1;
+      return Response.json({ error: { code: "too_many_requests", message: "too many requests" } }, { status: 429 });
+    };
+    try {
+      const parsed = normalizeOrderRequest(freshManagedScalpOrder, status);
+
+      expect(parsed.ok).toBe(true);
+      if (!parsed.ok) return;
+      await expect(buildExecutionPlan(parsed.order, status)).rejects.toThrow("429");
+      expect(kalshiProviderBackoffStatus().active).toBe(true);
+      expect(routerStatus({ DOGEEDGE_LIVE_DRY_RUN: "1" }).providerBackoff.active).toBe(true);
+      await expect(buildExecutionPlan(parsed.order, status)).rejects.toThrow("provider backoff active");
+      expect(calls).toBe(1);
+    } finally {
+      resetKalshiProviderBackoff();
       globalThis.fetch = originalFetch;
     }
   });

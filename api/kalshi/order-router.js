@@ -13,7 +13,17 @@ const DEFAULT_CONSERVATIVE_MIN_SIDE_PROBABILITY = 0.90;
 const DEFAULT_CONSERVATIVE_MAX_SPREAD_CENTS = 2;
 const DEFAULT_CONSERVATIVE_MIN_SECONDS_TO_CLOSE = 20;
 const DEFAULT_CONSERVATIVE_MAX_SECONDS_TO_CLOSE = 300;
+const DEFAULT_PROVIDER_BACKOFF_MS = 120_000;
+const MIN_PROVIDER_BACKOFF_MS = 15_000;
+const MAX_PROVIDER_BACKOFF_MS = 10 * 60_000;
 const MAX_CONTRACTS_PER_KALSHI_ORDER = 100;
+const providerBackoffState = {
+  untilMs: 0,
+  reason: null,
+  path: null,
+  status: null,
+  updatedAt: null,
+};
 const activePaperRules = {
   thresholdMinDistanceFromTarget: 0.0002,
   orderbookScalpMaxSpread: 0.02,
@@ -222,6 +232,7 @@ export function routerStatus(env = process.env) {
     maxExposureDollars,
     executionMinEdgeAfterFees,
     conservativeMode,
+    providerBackoff: kalshiProviderBackoffStatus(),
     conservative: {
       minConfidence: positiveNumber(env.DOGEEDGE_CONSERVATIVE_MIN_CONFIDENCE, DEFAULT_CONSERVATIVE_MIN_CONFIDENCE),
       minEdgeAfterFees: positiveNumber(env.DOGEEDGE_CONSERVATIVE_MIN_EDGE, DEFAULT_CONSERVATIVE_MIN_EDGE),
@@ -1033,10 +1044,8 @@ async function fetchAccountRisk(keyId, privateKeyPem, seriesTicker) {
 async function fetchFreshDogeMarket(seriesTicker) {
   const now = new Date();
   const market = await discoverActiveDogeMarket(now, seriesTicker);
-  const [freshMarket, orderbook] = await Promise.all([
-    kalshiPublicGet(`/markets/${encodeURIComponent(market.ticker)}`).then((payload) => payload.market ?? market),
-    kalshiPublicGet(`/markets/${encodeURIComponent(market.ticker)}/orderbook?depth=20`).then((payload) => payload.orderbook_fp ?? {}),
-  ]);
+  const freshMarket = await kalshiPublicGet(`/markets/${encodeURIComponent(market.ticker)}`).then((payload) => payload.market ?? market);
+  const orderbook = await kalshiPublicGet(`/markets/${encodeURIComponent(market.ticker)}/orderbook?depth=20`).then((payload) => payload.orderbook_fp ?? {});
   const normalizedOrderbook = normalizeOrderbook(freshMarket, orderbook, now.toISOString());
   return {
     observedAt: now.toISOString(),
@@ -1047,11 +1056,9 @@ async function fetchFreshDogeMarket(seriesTicker) {
 
 async function fetchFreshMarketByTicker(ticker) {
   const now = new Date();
-  const [market, orderbook] = await Promise.all([
-    kalshiPublicGet(`/markets/${encodeURIComponent(ticker)}`).then((payload) => payload.market),
-    kalshiPublicGet(`/markets/${encodeURIComponent(ticker)}/orderbook?depth=20`).then((payload) => payload.orderbook_fp ?? {}),
-  ]);
+  const market = await kalshiPublicGet(`/markets/${encodeURIComponent(ticker)}`).then((payload) => payload.market);
   if (!market?.ticker) throw new Error(`Kalshi market ${ticker} was not returned`);
+  const orderbook = await kalshiPublicGet(`/markets/${encodeURIComponent(ticker)}/orderbook?depth=20`).then((payload) => payload.orderbook_fp ?? {});
   return {
     observedAt: now.toISOString(),
     market,
@@ -1083,6 +1090,7 @@ async function discoverActiveDogeMarket(now, seriesTicker) {
 }
 
 async function kalshiPublicGet(pathWithQuery) {
+  assertProviderBackoffClear(pathWithQuery);
   const response = await fetch(`${KALSHI_BASE_URL}${TRADE_API_PATH}${pathWithQuery}`, {
     headers: {
       "Accept": "application/json",
@@ -1092,9 +1100,51 @@ async function kalshiPublicGet(pathWithQuery) {
   });
   if (!response.ok) {
     const text = await response.text();
+    if (response.status === 429) {
+      activateProviderBackoff(pathWithQuery, response.status, text);
+    }
     throw new Error(`Kalshi ${pathWithQuery.split("?")[0]} failed with ${response.status}: ${text.slice(0, 180)}`);
   }
   return response.json();
+}
+
+export function kalshiProviderBackoffStatus(nowMs = Date.now()) {
+  const remainingMs = Math.max(0, providerBackoffState.untilMs - nowMs);
+  return {
+    active: remainingMs > 0,
+    remainingMs,
+    until: remainingMs > 0 ? new Date(providerBackoffState.untilMs).toISOString() : null,
+    reason: remainingMs > 0 ? providerBackoffState.reason : null,
+    path: remainingMs > 0 ? providerBackoffState.path : null,
+    status: remainingMs > 0 ? providerBackoffState.status : null,
+    updatedAt: providerBackoffState.updatedAt,
+  };
+}
+
+function assertProviderBackoffClear(pathWithQuery, nowMs = Date.now()) {
+  const status = kalshiProviderBackoffStatus(nowMs);
+  if (!status.active) return;
+  const seconds = Math.max(1, Math.ceil(status.remainingMs / 1000));
+  throw new Error(`Kalshi provider backoff active for ${seconds}s after ${status.status ?? "provider"} response on ${status.path ?? pathWithQuery}.`);
+}
+
+function activateProviderBackoff(pathWithQuery, status, bodyText) {
+  const nowMs = Date.now();
+  const configured = positiveNumber(process.env.DOGEEDGE_KALSHI_BACKOFF_MS, DEFAULT_PROVIDER_BACKOFF_MS);
+  const backoffMs = Math.max(MIN_PROVIDER_BACKOFF_MS, Math.min(MAX_PROVIDER_BACKOFF_MS, configured));
+  providerBackoffState.untilMs = Math.max(providerBackoffState.untilMs, nowMs + backoffMs);
+  providerBackoffState.reason = String(bodyText ?? "").slice(0, 180);
+  providerBackoffState.path = pathWithQuery.split("?")[0];
+  providerBackoffState.status = status;
+  providerBackoffState.updatedAt = new Date(nowMs).toISOString();
+}
+
+export function resetKalshiProviderBackoff() {
+  providerBackoffState.untilMs = 0;
+  providerBackoffState.reason = null;
+  providerBackoffState.path = null;
+  providerBackoffState.status = null;
+  providerBackoffState.updatedAt = null;
 }
 
 function normalizeOrderbook(market, orderbook, observedAt) {
