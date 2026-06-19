@@ -21,7 +21,7 @@ import { auditReviewExports } from "../../scripts/factory/audit-exports.mjs";
 import { researchLiveAlignment } from "../../scripts/factory/family-registry.mjs";
 import { researchCandidateIdentity } from "../../scripts/factory/candidate-identity.mjs";
 import { sampleSufficiency } from "../../scripts/factory/sample-gates.mjs";
-import { applyFamilySearchBudget, searchBudgetDecision } from "../../scripts/factory/search-budget.mjs";
+import { applyFamilySearchBudget, applyPromoteCheckDiagnosticCap, searchBudgetDecision } from "../../scripts/factory/search-budget.mjs";
 import {
   normalizeKalshiHistoricalMarket,
   normalizeOfficialSettlementRow,
@@ -398,6 +398,43 @@ describe("factory research safeguards", () => {
       selected: 0,
       action: "freeze_new_minting",
     });
+  });
+
+  it("caps promote-check as a diversified supported-family diagnostic without lab or unsupported minting", () => {
+    const requested = [
+      ...Array.from({ length: 120 }, (_, index) => ({ id: `model-${index}`, family: "sweep-model" })),
+      ...Array.from({ length: 80 }, (_, index) => ({ id: `scalp-${index}`, family: "sweep-scalp" })),
+      ...Array.from({ length: 80 }, (_, index) => ({ id: `liq-${index}`, family: "sweep-liquidity-imbalance" })),
+      ...Array.from({ length: 80 }, (_, index) => ({ id: `trail-${index}`, family: "sweep-momentum-trail" })),
+    ];
+    const openDecision = searchBudgetDecision({
+      eventCount: 400,
+      officialSettlementCoverage: 0.98,
+      requestedSweepAlgos: requested.length,
+      sweepMode: true,
+      deepSweepMode: false,
+    });
+    const decision = applyPromoteCheckDiagnosticCap(openDecision, {
+      promoteCheckMode: true,
+      maxSweepAlgos: 60,
+    });
+    const budgeted = applyFamilySearchBudget(requested, decision);
+    const selectedFamilies = new Set(budgeted.algos.map((algo) => algo.family));
+
+    expect(decision.limited).toBe(true);
+    expect(decision.reasonCodes).toContain("promote_check_diagnostic_cap");
+    expect(decision.executableMintingAllowed).toBe(true);
+    expect(decision.labResearchAllowed).toBe(false);
+    expect(decision.promoteCheckDiagnosticCap).toMatchObject({
+      applied: true,
+      maxGeneratedAlgos: 60,
+    });
+    expect(budgeted.algos).toHaveLength(60);
+    expect(selectedFamilies.has("sweep-scalp")).toBe(true);
+    expect(selectedFamilies.has("sweep-liquidity-imbalance")).toBe(true);
+    expect(selectedFamilies.has("sweep-model")).toBe(false);
+    expect(selectedFamilies.has("sweep-momentum-trail")).toBe(false);
+    expect(budgeted.summary.unsupportedMintingCount).toBe(0);
   });
 
   it("counts family overlap when supported live-family adapters are in the research set", () => {

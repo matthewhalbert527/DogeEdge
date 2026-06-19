@@ -17,6 +17,8 @@ export const defaultSearchBudgetPolicy = {
   unsupportedFamilyShadowCap: 0,
 };
 
+export const defaultPromoteCheckDiagnosticCap = 100;
+
 export function searchBudgetDecision({
   eventCount = 0,
   officialSettlementCoverage = 0,
@@ -52,6 +54,51 @@ export function searchBudgetDecision({
     executableMintingAllowed,
     labResearchAllowed,
     policy: config,
+  };
+}
+
+export function applyPromoteCheckDiagnosticCap(decision = {}, {
+  promoteCheckMode = false,
+  selectedAlgoIds = null,
+  maxSweepAlgos = defaultPromoteCheckDiagnosticCap,
+  reasonCode = "promote_check_diagnostic_cap",
+} = {}) {
+  if (!promoteCheckMode || selectedAlgoIds) return decision;
+  const cap = Math.floor(Number(maxSweepAlgos));
+  if (!Number.isFinite(cap) || cap <= 0) return decision;
+  const requestedSweepAlgos = Math.max(0, Number(decision.requestedSweepAlgos ?? 0));
+  const currentMax = Math.max(0, Number(decision.maxGeneratedAlgos ?? requestedSweepAlgos));
+  const cappedMax = Math.min(currentMax, cap);
+  if (cappedMax >= currentMax) return decision;
+  const reasonCodes = uniqueStrings([...(decision.reasonCodes ?? []), reasonCode]);
+  const evidenceLimited = Boolean((decision.reasonCodes ?? []).some((code) => code !== reasonCode));
+  const config = { ...defaultSearchBudgetPolicy, ...(decision.policy ?? {}) };
+  const priorityFamilyCount = Math.max(1, (Array.isArray(config.priorityResearchFamilies) ? config.priorityResearchFamilies : []).length);
+  const promoteCheckPolicy = evidenceLimited
+    ? config
+    : {
+        ...config,
+        lowEvidenceExecutableMintingAllowed: true,
+        allowLowEvidenceLabResearch: false,
+        lowEvidenceFamilyPilotCount: Math.max(1, Math.ceil(cappedMax / priorityFamilyCount)),
+      };
+  return {
+    ...decision,
+    limited: true,
+    reasonCodes,
+    maxGeneratedAlgos: cappedMax,
+    executableMintingAllowed: evidenceLimited ? decision.executableMintingAllowed : true,
+    labResearchAllowed: evidenceLimited ? decision.labResearchAllowed : false,
+    policy: promoteCheckPolicy,
+    promoteCheckDiagnosticCap: {
+      schemaVersion: "dogeedge.promote-check-diagnostic-cap.v1",
+      applied: true,
+      maxGeneratedAlgos: cappedMax,
+      previousMaxGeneratedAlgos: currentMax,
+      requestedSweepAlgos,
+      reasonCode,
+      note: "Promote-check is a bounded diagnostic. This cap does not relax promotion gates or enable live trading.",
+    },
   };
 }
 
@@ -178,6 +225,10 @@ export function applyFamilySearchBudget(algos = [], decision = {}, { selectedAlg
     selectedCounts.set(family, (selectedCounts.get(family) ?? 0) + 1);
     return true;
   }
+}
+
+function uniqueStrings(values) {
+  return [...new Set(values.filter((value) => typeof value === "string" && value.length))];
 }
 
 function groupByFamily(algos) {

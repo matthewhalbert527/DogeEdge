@@ -7,7 +7,7 @@ import { metricsCsv as robustMetricsCsv, markdownReport as robustMarkdownReport 
 import { experimentRegistryEntry, compareRuns } from "./factory/registry.mjs";
 import { assertReplayInputManifest } from "./factory/repro.mjs";
 import { readPaperEvidence } from "./factory/paper-evidence.mjs";
-import { applyFamilySearchBudget, searchBudgetDecision } from "./factory/search-budget.mjs";
+import { applyFamilySearchBudget, applyPromoteCheckDiagnosticCap, defaultPromoteCheckDiagnosticCap, searchBudgetDecision } from "./factory/search-budget.mjs";
 import { researchCandidateIdentity, researchCandidateIdentityContext } from "./factory/candidate-identity.mjs";
 import { officialOutcomeMap, readOfficialSettlementStore } from "./factory/official-settlement.mjs";
 
@@ -42,6 +42,7 @@ const randomSeed = String(args.seed ?? replayConfig?.randomSeed ?? "dogeedge-fac
 const embargoMs = Math.max(0, Number(args["embargo-ms"] ?? replayConfig?.embargoMs ?? 15 * 60_000));
 const foldCount = Math.max(2, Number(args.folds ?? replayConfig?.foldCount ?? 5));
 const bootstrapIterations = Math.max(100, Number(args["bootstrap-iterations"] ?? replayConfig?.bootstrapIterations ?? 400));
+const promoteCheckMaxSweepAlgos = Math.max(1, Math.floor(Number(args["promote-check-max-sweep-algos"] ?? process.env.DOGEEDGE_PROMOTE_CHECK_MAX_SWEEP_ALGOS ?? defaultPromoteCheckDiagnosticCap)));
 const thresholds = {
   minClosedTrades: Math.max(30, minCandidateClosed),
   minResearchEvents: Math.max(60, Number(args["min-research-events"] ?? replayConfig?.thresholds?.minResearchEvents ?? 60)),
@@ -91,6 +92,11 @@ let searchBudget = searchBudgetDecision({
   requestedSweepAlgos: requestedSweepAlgos.length,
   sweepMode,
   deepSweepMode: requestedDeepSweepMode,
+});
+searchBudget = applyPromoteCheckDiagnosticCap(searchBudget, {
+  promoteCheckMode,
+  selectedAlgoIds,
+  maxSweepAlgos: promoteCheckMaxSweepAlgos,
 });
 activeDeepSweepMode = searchBudget.deepSweepAllowed;
 const effectiveSweepAlgos = sweepMode
@@ -224,6 +230,7 @@ await writeFile(path.join(runDir, "config.json"), `${JSON.stringify({
   embargoMs,
   foldCount,
   bootstrapIterations,
+  promoteCheckMaxSweepAlgos: promoteCheckMode ? promoteCheckMaxSweepAlgos : null,
   registry,
   promoteCheck: promoteCheckSummary(metrics, candidates),
   split: pipeline.split,
@@ -285,6 +292,7 @@ await writeFile(path.join(backtestsDir, "latest.json"), `${JSON.stringify({
   randomSeed,
   embargoMs,
   foldCount,
+  promoteCheckMaxSweepAlgos: promoteCheckMode ? promoteCheckMaxSweepAlgos : null,
   registry,
   replayManifestCheck,
   promoteCheck: promoteCheckSummary(metrics, candidates),
@@ -336,6 +344,7 @@ console.log(`Frames: ${filteredFrames.length}`);
 console.log(`Market events: ${pipeline.events.length}`);
 console.log(`Algos: ${algos.length}`);
 if (searchBudget?.limited) console.log(`Search budget limited: ${searchBudget.reasonCodes.join(", ")}; generated ${cappedSweepAlgos.length}/${searchBudget.requestedSweepAlgos} sweep algos.`);
+if (searchBudget?.promoteCheckDiagnosticCap?.applied) console.log(`Promote-check diagnostic cap: generated ${cappedSweepAlgos.length}/${searchBudget.promoteCheckDiagnosticCap.requestedSweepAlgos} sweep algos; cap ${searchBudget.promoteCheckDiagnosticCap.maxGeneratedAlgos}.`);
 console.log(`Run: ${runDir}`);
 const viableConsoleCandidates = candidates.filter(consolePromotionCandidateIsViable);
 if (viableConsoleCandidates.length === 0) {
