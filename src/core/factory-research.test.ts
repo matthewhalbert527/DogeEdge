@@ -34,6 +34,7 @@ import { buildExecutableReadinessGate } from "../../scripts/factory/readiness-ga
 import { forecastCalibrationForDecisionRows, officialForecastCalibrationReport, probabilityCalibrationForTrades, tradeCalibrationByCandidate } from "../../scripts/factory/probability-calibration.mjs";
 import { deterministicLinkageBackfill } from "../../scripts/factory/backfill-linkage.mjs";
 import { materializeExactLinkageForSource, selectEvidenceProbes } from "../../scripts/factory/evidence-lane.mjs";
+import { readinessComponent, writeReadinessPercent } from "../../scripts/factory/evidence-bootstrap.mjs";
 import { runEvidencePreflight } from "../../scripts/factory/evidence-preflight.mjs";
 import { fetchKalshiHistoricalSettlements } from "../../scripts/factory/provider-kalshi.mjs";
 import { selectTargetMarkets } from "../../scripts/factory/target-markets.mjs";
@@ -1098,6 +1099,64 @@ describe("factory research safeguards", () => {
         "represented_days_below_threshold",
         "independent_markets_below_threshold",
       ]),
+    });
+  });
+
+  it("reports readiness coverage progress using displayed percent units", () => {
+    expect(readinessComponent("replay-grade target coverage", 1, 1, "coverage")).toMatchObject({
+      value: 100,
+      target: 100,
+      unit: "percent",
+      progress: 1,
+      status: "pass",
+    });
+    expect(readinessComponent("official settlement coverage", 0.42, 0.95, "coverage")).toMatchObject({
+      value: 42,
+      target: 95,
+      unit: "percent",
+      progress: expect.closeTo(42 / 95, 6),
+      status: "blocked",
+    });
+  });
+
+  it("keeps promotion readiness fail-closed when only evidence collection is complete", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "dogeedge-readiness-percent-"));
+    const storageDir = path.join(root, "local-worker");
+    const evidenceDir = path.join(root, "evidence");
+    const outDir = path.join(root, "bootstrap");
+    mkdirSync(storageDir, { recursive: true });
+    mkdirSync(evidenceDir, { recursive: true });
+    mkdirSync(path.join(outDir, "target-markets"), { recursive: true });
+    writeFileSync(path.join(evidenceDir, "settlement_fetch_report.json"), `${JSON.stringify({ coverage: { officialSettlementCoverage: 1 } })}\n`);
+    writeFileSync(path.join(evidenceDir, "replay_coverage_report.json"), `${JSON.stringify({ replayGradeTargetMarketCoverage: 1 })}\n`);
+    writeFileSync(path.join(storageDir, "evidence-probes.json"), `${JSON.stringify({ probes: [{ exactLinked: true }, { exactLinked: true }, { exactLinked: true }] })}\n`);
+    writeFileSync(path.join(storageDir, "latest.json"), `${JSON.stringify({
+      topTradersExecutable: {
+        stats: {
+          one: { researchCandidateId: "rcid-1", candidateConfigHash: "hash-1" },
+          two: { researchCandidateId: "rcid-2", candidateConfigHash: "hash-2" },
+          three: { researchCandidateId: "rcid-3", candidateConfigHash: "hash-3" },
+        },
+      },
+    })}\n`);
+    writeFileSync(path.join(outDir, "target-markets", "target_markets.json"), `${JSON.stringify({ activeTargetCount: 1 })}\n`);
+
+    await writeReadinessPercent({
+      finishedAt: "2026-06-19T17:24:23.215Z",
+      storageDir,
+      evidenceDir,
+      outDir,
+    });
+    const readiness = JSON.parse(readFileSync(path.join(evidenceDir, "readiness_percent.json"), "utf8"));
+
+    expect(readiness).toMatchObject({
+      headline: "evidence_collection_ready_hold_promotion_gates",
+      promotionReady: false,
+      promotionReadinessPercent: 0,
+      evidenceCollectionReady: true,
+      evidenceCollectionProgressPercent: 100,
+      promotionGateSource: "absent_fail_closed",
+      canPlaceOrders: false,
     });
   });
 

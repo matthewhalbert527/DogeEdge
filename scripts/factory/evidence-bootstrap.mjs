@@ -120,6 +120,7 @@ async function evidenceBootstrapCli() {
   await runStep("replay-coverage", [
     "scripts/factory/replay-coverage.mjs",
     "--input", replayFinal,
+    "--markets-file", activeTargetsFile,
     "--out", path.join(evidenceDir, "replay_coverage_report.json"),
   ]);
 
@@ -234,7 +235,7 @@ async function writeEvidenceStatus(report) {
   await writeFile(path.join(evidenceDir, "evidence_status.json"), `${JSON.stringify(status, null, 2)}\n`, "utf8");
 }
 
-async function writeReadinessPercent(report) {
+export async function writeReadinessPercent(report) {
   const evidenceDir = path.resolve(report.evidenceDir ?? "artifacts/evidence");
   await mkdir(evidenceDir, { recursive: true });
   const settlement = await readJsonMaybe(path.join(evidenceDir, "settlement_fetch_report.json"));
@@ -242,6 +243,7 @@ async function writeReadinessPercent(report) {
   const probes = await readJsonMaybe(path.join(report.storageDir, "evidence-probes.json"));
   const latest = await readJsonMaybe(path.join(report.storageDir, "latest.json"));
   const targetMarkets = await readJsonMaybe(path.join(report.outDir, "target-markets", "target_markets.json"));
+  const executableGate = await readJsonMaybe(path.join(evidenceDir, "executable_readiness_gate.json"));
   const officialSettlementCoverage = Number(settlement?.coverage?.officialSettlementCoverage ?? 0);
   const replayGradeTargetMarketCoverage = Number(replay?.replayGradeTargetMarketCoverage ?? 0);
   const exactLinkedProbeCount = Array.isArray(probes?.probes) ? probes.probes.filter((probe) => probe?.exactLinked).length : 0;
@@ -257,33 +259,39 @@ async function writeReadinessPercent(report) {
     readinessComponent("active replay targets available", activeTargetCount, 1, "count"),
     readinessComponent("exact-linked execution rows", exactLinkedExecutionRows, 3, "count"),
   ];
-  const promotionReady = components.every((component) => component.status === "pass");
+  const evidenceCollectionReady = components.every((component) => component.status === "pass");
+  const promotionReady = executableGate?.allowedToLoadArenaBatch === true;
   const evidenceProgress = components.length
     ? components.reduce((sum, component) => sum + component.progress, 0) / components.length
     : 0;
   const readiness = {
     schemaVersion: "dogeedge.readiness-percent.v1",
     generatedAt: report.finishedAt ?? new Date().toISOString(),
-    headline: promotionReady ? "promotion_ready" : "hold_gather_evidence",
+    headline: promotionReady ? "promotion_ready" : evidenceCollectionReady ? "evidence_collection_ready_hold_promotion_gates" : "hold_gather_evidence",
     promotionReady,
     promotionReadinessPercent: promotionReady ? 100 : 0,
     evidenceCollectionProgressPercent: roundPercent(evidenceProgress),
+    evidenceCollectionReady,
+    promotionGateSource: executableGate ? "executable_readiness_gate" : "absent_fail_closed",
+    promotionGateReasonCodes: executableGate?.reasonCodes ?? ["executable_readiness_gate_absent"],
     components,
     canPlaceOrders: false,
-    note: "Promotion readiness is fail-closed/all-or-nothing. Evidence collection progress is a monitoring score, not permission to trade.",
+    note: "Promotion readiness is controlled by the executable readiness gate. Evidence collection progress is a monitoring score, not permission to trade.",
   };
   await writeFile(path.join(evidenceDir, "readiness_percent.json"), `${JSON.stringify(readiness, null, 2)}\n`, "utf8");
   await writeFile(path.join(evidenceDir, "readiness_percent.md"), readinessMarkdown(readiness), "utf8");
 }
 
-function readinessComponent(kpi, value, target, kind) {
+export function readinessComponent(kpi, value, target, kind) {
   const numericValue = Number.isFinite(value) ? value : 0;
   const numericTarget = Number.isFinite(target) && target > 0 ? target : 1;
-  const progress = Math.max(0, Math.min(1, numericValue / numericTarget));
+  const displayValue = kind === "coverage" ? roundPercent(numericValue) : numericValue;
+  const displayTarget = kind === "coverage" ? roundPercent(numericTarget) : numericTarget;
+  const progress = Math.max(0, Math.min(1, displayValue / displayTarget));
   return {
     kpi,
-    value: kind === "coverage" ? roundPercent(numericValue) : numericValue,
-    target: kind === "coverage" ? roundPercent(numericTarget) : numericTarget,
+    value: displayValue,
+    target: displayTarget,
     unit: kind === "coverage" ? "percent" : "count",
     progress,
     status: progress >= 1 ? "pass" : "blocked",
