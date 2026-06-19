@@ -1160,6 +1160,59 @@ describe("factory research safeguards", () => {
     });
   });
 
+  it("counts selected exact-linked execution canaries before every canary emits stats", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "dogeedge-readiness-canaries-"));
+    const storageDir = path.join(root, "local-worker");
+    const evidenceDir = path.join(root, "evidence");
+    const outDir = path.join(root, "bootstrap");
+    mkdirSync(storageDir, { recursive: true });
+    mkdirSync(evidenceDir, { recursive: true });
+    mkdirSync(path.join(outDir, "target-markets"), { recursive: true });
+    const canary = (index: number) => ({
+      id: `generated:canary-${index}`,
+      sourceAlgoId: `canary-${index}`,
+      researchCandidateId: `rcid-${index}`,
+      candidateConfigHash: `hash-${index}`,
+      paperOnly: true,
+      promotionEligibility: "not_promotion_eligible",
+      evidenceStatus: "execution_canary_only",
+      lane: "exact_linked_execution_canary",
+    });
+    writeFileSync(path.join(evidenceDir, "settlement_fetch_report.json"), `${JSON.stringify({ coverage: { officialSettlementCoverage: 1 } })}\n`);
+    writeFileSync(path.join(evidenceDir, "replay_coverage_report.json"), `${JSON.stringify({ replayGradeTargetMarketCoverage: 1 })}\n`);
+    writeFileSync(path.join(storageDir, "evidence-probes.json"), `${JSON.stringify({ probes: [{ exactLinked: true }, { exactLinked: true }, { exactLinked: true }] })}\n`);
+    writeFileSync(path.join(storageDir, "latest.json"), `${JSON.stringify({
+      topTradersArena: { selectedAlgoCount: 3 },
+      topTradersExecutable: {
+        stats: {
+          one: { researchCandidateId: "rcid-1", candidateConfigHash: "hash-1" },
+        },
+      },
+    })}\n`);
+    writeFileSync(path.join(storageDir, "factory-batches.json"), `${JSON.stringify({
+      factoryAlgoBatches: [{ algos: [canary(1), canary(2), canary(3)] }],
+    })}\n`);
+    writeFileSync(path.join(outDir, "target-markets", "target_markets.json"), `${JSON.stringify({ activeTargetCount: 1 })}\n`);
+
+    await writeReadinessPercent({
+      finishedAt: "2026-06-19T18:20:00.000Z",
+      storageDir,
+      evidenceDir,
+      outDir,
+    });
+    const readiness = JSON.parse(readFileSync(path.join(evidenceDir, "readiness_percent.json"), "utf8"));
+    const executionRows = readiness.components.find((component: { kpi: string }) => component.kpi === "exact-linked execution rows");
+
+    expect(executionRows).toMatchObject({ value: 3, target: 3, status: "pass" });
+    expect(readiness).toMatchObject({
+      headline: "evidence_collection_ready_hold_promotion_gates",
+      promotionReady: false,
+      promotionReadinessPercent: 0,
+      evidenceCollectionReady: true,
+      evidenceCollectionProgressPercent: 100,
+    });
+  });
+
   it("computes proper scoring diagnostics only from label-known closed trades", () => {
     const calibration = probabilityCalibrationForTrades([
       { status: "closed", pnl: 1, entryContext: { fairProbability: 0.8 } },

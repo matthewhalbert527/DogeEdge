@@ -242,6 +242,8 @@ export async function writeReadinessPercent(report) {
   const replay = await readJsonMaybe(path.join(evidenceDir, "replay_coverage_report.json"));
   const probes = await readJsonMaybe(path.join(report.storageDir, "evidence-probes.json"));
   const latest = await readJsonMaybe(path.join(report.storageDir, "latest.json"));
+  const appState = await readJsonMaybe(path.join(report.storageDir, "app-state.json"));
+  const factoryBatches = await readJsonMaybe(path.join(report.storageDir, "factory-batches.json"));
   const targetMarkets = await readJsonMaybe(path.join(report.outDir, "target-markets", "target_markets.json"));
   const executableGate = await readJsonMaybe(path.join(evidenceDir, "executable_readiness_gate.json"));
   const officialSettlementCoverage = Number(settlement?.coverage?.officialSettlementCoverage ?? 0);
@@ -250,7 +252,10 @@ export async function writeReadinessPercent(report) {
   const executionRows = latest?.topTradersExecutable?.stats && typeof latest.topTradersExecutable.stats === "object"
     ? Object.values(latest.topTradersExecutable.stats)
     : [];
-  const exactLinkedExecutionRows = executionRows.filter((row) => row?.researchCandidateId && row?.candidateConfigHash).length;
+  const exactLinkedExecutionStats = executionRows.filter((row) => row?.researchCandidateId && row?.candidateConfigHash).length;
+  const exactLinkedExecutionCanaries = exactLinkedExecutionCanaryCount([appState, factoryBatches]);
+  const selectedExecutionRows = Math.max(0, Math.floor(Number(latest?.topTradersArena?.selectedAlgoCount ?? 0)));
+  const exactLinkedExecutionRows = Math.max(exactLinkedExecutionStats, Math.min(selectedExecutionRows, exactLinkedExecutionCanaries));
   const activeTargetCount = Number(targetMarkets?.activeTargetCount ?? 0);
   const components = [
     readinessComponent("official settlement coverage", officialSettlementCoverage, 0.95, "coverage"),
@@ -321,6 +326,36 @@ function readinessMarkdown(readiness) {
 
 function roundPercent(value) {
   return Math.round(Number(value ?? 0) * 1000) / 10;
+}
+
+function exactLinkedExecutionCanaryCount(sources) {
+  const seen = new Set();
+  for (const source of sources) {
+    const batches = Array.isArray(source?.factoryAlgoBatches) ? source.factoryAlgoBatches : [];
+    for (const batch of batches) {
+      const algos = Array.isArray(batch?.algos) ? batch.algos : [];
+      for (const algo of algos) {
+        if (!isExactLinkedExecutionCanary(algo)) continue;
+        const key = algo.id ?? algo.sourceAlgoId ?? algo.researchCandidateId ?? JSON.stringify(algo);
+        seen.add(String(key));
+      }
+    }
+  }
+  return seen.size;
+}
+
+function isExactLinkedExecutionCanary(algo) {
+  return Boolean(
+    algo
+    && algo.researchCandidateId
+    && algo.candidateConfigHash
+    && algo.paperOnly === true
+    && algo.promotionEligibility === "not_promotion_eligible"
+    && (
+      algo.evidenceStatus === "execution_canary_only"
+      || algo.lane === "exact_linked_execution_canary"
+    ),
+  );
 }
 
 async function readJsonMaybe(filePath) {
