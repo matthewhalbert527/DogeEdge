@@ -123,15 +123,7 @@ export function evidenceProbeFromCandidate(candidate, { laneKind = evidenceProbe
     family: candidate.family,
     params: candidate.params ?? {},
     promotedAt,
-    sourceMetrics: {
-      closed: numberOrDefault(candidate.closed, 0),
-      wins: numberOrDefault(candidate.wins, 0),
-      losses: numberOrDefault(candidate.losses, 0),
-      totalPnl: numberOrDefault(candidate.totalPnl, 0),
-      totalCost: numberOrDefault(candidate.totalCost, 0),
-      roi: numberOrDefault(candidate.roi, 0),
-      maxDrawdown: numberOrDefault(candidate.maxDrawdown, 0),
-    },
+    sourceMetrics: sourceMetricsFromCandidate(candidate),
     lineageHash: hashJson({
       researchCandidateId: candidate.researchCandidateId,
       candidateConfigHash: candidate.candidateConfigHash,
@@ -380,7 +372,7 @@ function mergeFactoryBatches(batches) {
     .slice(0, 12);
 }
 
-function mergeTopTradersExecutable(existingFile, probes, installedAt) {
+export function mergeTopTradersExecutable(existingFile, probes, installedAt) {
   const current = existingFile?.topTradersExecutable && typeof existingFile.topTradersExecutable === "object"
     ? existingFile.topTradersExecutable
     : {};
@@ -392,11 +384,16 @@ function mergeTopTradersExecutable(existingFile, probes, installedAt) {
     stats[sourceAlgoId] = row;
   }
   for (const probe of probes) {
+    const existingStats = stats[probe.sourceAlgoId] ?? {};
+    const carriedStats = isSameExecutionCanaryIdentity(existingStats, probe) ? existingStats : {};
     stats[probe.sourceAlgoId] = {
       ...canaryExecutableStats(probe, installedAt),
-      ...(stats[probe.sourceAlgoId] ?? {}),
+      ...carriedStats,
       researchCandidateId: probe.researchCandidateId,
       candidateConfigHash: probe.candidateConfigHash,
+      sourceRunId: probe.sourceRunId ?? null,
+      sourceSnapshotHash: probe.sourceSnapshotHash ?? null,
+      sourceMetrics: probe.sourceMetrics ?? emptySourceMetrics(),
       lane: executionCanaryLaneKind,
       evidenceStatus: "execution_canary_only",
       promotionEligibility: "not_promotion_eligible",
@@ -410,6 +407,17 @@ function mergeTopTradersExecutable(existingFile, probes, installedAt) {
     stats,
     positions: Array.isArray(current.positions) ? current.positions : [],
   };
+}
+
+function isSameExecutionCanaryIdentity(row, probe) {
+  return Boolean(
+    row
+    && probe
+    && row.candidateConfigHash
+    && probe.candidateConfigHash
+    && row.candidateConfigHash === probe.candidateConfigHash
+    && String(row.sourceRunId ?? "") === String(probe.sourceRunId ?? "")
+  );
 }
 
 async function archiveExecutionCanaryState(storageDir, batches, executable, archivedAt) {
@@ -451,6 +459,7 @@ function canaryExecutableStats(probe, installedAt) {
     sourceRunId: probe.sourceRunId ?? null,
     sourceSnapshotHash: probe.sourceSnapshotHash ?? null,
     promotionVerdictAtInstall: probe.promotionVerdictAtInstall ?? null,
+    sourceMetrics: probe.sourceMetrics ?? emptySourceMetrics(),
     startedAt: installedAt,
     lastSignalAt: null,
     lastAttemptAt: null,
@@ -505,12 +514,56 @@ function sumStats(stats, key) {
 function emptySourceMetrics() {
   return {
     closed: 0,
+    independentClosedMarkets: 0,
+    daysRepresented: 0,
     wins: 0,
     losses: 0,
     totalPnl: 0,
+    conservativeTotalPnl: 0,
     totalCost: 0,
     roi: 0,
     maxDrawdown: 0,
+    robustScore: 0,
+    officialSettlementCoverage: 0,
+    walkForwardPass: false,
+    walkForwardClosed: 0,
+    holdoutPass: false,
+    holdoutClosed: 0,
+    holdoutMarkets: 0,
+    holdoutConservativeClosed: 0,
+    holdoutConservativeMarkets: 0,
+    holdoutConservativeTotalPnl: 0,
+    holdoutLowerCi: 0,
+  };
+}
+
+function sourceMetricsFromCandidate(candidate = {}) {
+  const holdoutSummary = isRecord(candidate.holdoutSummary) ? candidate.holdoutSummary : {};
+  return {
+    closed: numberOrDefault(candidate.closed, 0),
+    independentClosedMarkets: numberOrDefault(candidate.independentClosedMarkets, 0),
+    daysRepresented: numberOrDefault(candidate.daysRepresented, 0),
+    wins: numberOrDefault(candidate.wins, 0),
+    losses: numberOrDefault(candidate.losses, 0),
+    totalPnl: numberOrDefault(candidate.totalPnl, 0),
+    conservativeTotalPnl: conservativePnl(candidate),
+    totalCost: numberOrDefault(candidate.totalCost, 0),
+    roi: numberOrDefault(candidate.roi, 0),
+    maxDrawdown: numberOrDefault(candidate.maxDrawdown, 0),
+    robustScore: numberOrDefault(candidate.robustScore, 0),
+    officialSettlementCoverage: numberOrDefault(candidate.officialSettlementCoverage, 0),
+    walkForwardPass: Boolean(candidate.walkForwardPass),
+    walkForwardClosed: numberOrDefault(candidate.walkForwardClosed, 0),
+    holdoutPass: Boolean(candidate.holdoutPass ?? holdoutSummary.holdoutPass),
+    holdoutClosed: numberOrDefault(candidate.holdoutClosed, numberOrDefault(holdoutSummary.holdoutClosed, 0)),
+    holdoutMarkets: numberOrDefault(candidate.holdoutMarkets, numberOrDefault(holdoutSummary.holdoutMarkets, 0)),
+    holdoutConservativeClosed: numberOrDefault(holdoutSummary.holdoutConservativeClosed, 0),
+    holdoutConservativeMarkets: numberOrDefault(holdoutSummary.holdoutConservativeMarkets, 0),
+    holdoutConservativeTotalPnl: numberOrDefault(
+      candidate.holdoutConservativeTotalPnl,
+      numberOrDefault(holdoutSummary.holdoutConservativeTotalPnl, 0),
+    ),
+    holdoutLowerCi: numberOrDefault(candidate.holdoutLowerCi, numberOrDefault(holdoutSummary.holdoutLowerCi, 0)),
   };
 }
 

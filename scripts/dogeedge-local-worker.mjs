@@ -208,6 +208,7 @@ server.listen(port, host, () => {
 });
 
 async function persistPayload(payload, writtenAt) {
+  payload = await reconcileInstalledExecutionCanaries(payload);
   const seen = await readSeen();
   const paperState = payload?.paperState ?? {};
   const arenaPaperState = payload?.paperArena?.paperState ?? {};
@@ -1104,6 +1105,63 @@ function buildRawSnapshot(payload, writtenAt, decisionFrame) {
     paperArena: payload?.paperArena ?? null,
     activeRules: payload?.activeRules ?? null,
     activeRuleDescriptions: Array.isArray(payload?.activeRuleDescriptions) ? payload.activeRuleDescriptions : [],
+  };
+}
+
+async function reconcileInstalledExecutionCanaries(payload) {
+  if (!payload || typeof payload !== "object") return payload;
+  const installed = await readOptionalJson(path.join(storageDir, "execution-canaries.json"));
+  const expectedProbes = (Array.isArray(installed?.probes) ? installed.probes : [])
+    .filter((probe) => probe?.sourceAlgoId);
+  if (expectedProbes.length === 0) return payload;
+  if (topTradersExecutableHasInstalledCanaries(payload.topTradersExecutable, expectedProbes)) return payload;
+
+  const [appStateFile, executableFile, latestFile] = await Promise.all([
+    readOptionalJson(appStatePath),
+    readOptionalJson(topTradersExecutablePath),
+    readOptionalJson(path.join(storageDir, "latest.json")),
+  ]);
+  const replacement = [
+    appStateFile?.topTradersExecutable,
+    executableFile?.topTradersExecutable,
+    latestFile?.topTradersExecutable,
+  ].find((candidate) => topTradersExecutableHasInstalledCanaries(candidate, expectedProbes));
+  if (!replacement) return payload;
+
+  return {
+    ...payload,
+    topTradersExecutable: mergeTopTradersExecutablePositions(replacement, payload.topTradersExecutable),
+  };
+}
+
+function topTradersExecutableHasInstalledCanaries(executable, expectedProbes) {
+  if (!executable || typeof executable !== "object" || !executable.stats || typeof executable.stats !== "object") return false;
+  return expectedProbes.every((probe) => {
+    const sourceAlgoId = String(probe?.sourceAlgoId ?? "");
+    const row = executable.stats[sourceAlgoId]
+      ?? Object.values(executable.stats).find((candidate) => String(candidate?.sourceAlgoId ?? "") === sourceAlgoId);
+    return Boolean(
+      row
+      && String(row.sourceRunId ?? "") === String(probe?.sourceRunId ?? "")
+      && (!probe?.candidateConfigHash || row.candidateConfigHash === probe.candidateConfigHash)
+    );
+  });
+}
+
+function mergeTopTradersExecutablePositions(preferred, incoming) {
+  if (!preferred || typeof preferred !== "object") return preferred;
+  const byId = new Map();
+  for (const position of [
+    ...(Array.isArray(preferred.positions) ? preferred.positions : []),
+    ...(Array.isArray(incoming?.positions) ? incoming.positions : []),
+  ]) {
+    const key = String(position?.id ?? "");
+    if (!key) continue;
+    byId.set(key, position);
+  }
+  return {
+    ...preferred,
+    positions: [...byId.values()],
   };
 }
 

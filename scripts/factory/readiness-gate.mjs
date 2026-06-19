@@ -44,9 +44,11 @@ export function buildExecutableReadinessGate({
   const rosterCount = numeric(topRosterDefaultSortAudit?.researchRankedRosterCount);
   const evidenceProbeCount = numeric(evidenceProbeSummary.exactLinkedProbeCount ?? evidenceProbeSummary.installedProbeCount);
   const seedCompletenessRatio = numeric(seedCompleteness);
-  const replayGradeCoverage = replayParity.targetMarketCount > 0
-    ? roundRatio(replayParity.coveredTargetMarketCount / replayParity.targetMarketCount)
-    : 0;
+  const replayGradeCoverage = typeof replayParity.replayGradeTargetMarketCoverage === "number"
+    ? roundRatio(replayParity.replayGradeTargetMarketCoverage)
+    : replayParity.targetMarketCount > 0
+      ? roundRatio(numeric(replayParity.replayGradeTargetMarketCount) / replayParity.targetMarketCount)
+      : 0;
   const reasonCodes = [
     ...(exactLinked <= 0 && evidenceProbeCount <= 0 ? ["exact_linked_supported_live_rows_zero"] : []),
     ...(exactLinked < config.minExactLinkedSupportedRowsForPromotion && evidenceProbeCount < config.minEvidenceProbeCountForPromotion ? ["exact_linked_supported_live_rows_below_threshold"] : []),

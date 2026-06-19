@@ -33,7 +33,7 @@ import { replayParityReportFromManifest } from "../../scripts/factory/replay-cov
 import { buildExecutableReadinessGate } from "../../scripts/factory/readiness-gate.mjs";
 import { forecastCalibrationForDecisionRows, officialForecastCalibrationReport, probabilityCalibrationForTrades, tradeCalibrationByCandidate } from "../../scripts/factory/probability-calibration.mjs";
 import { deterministicLinkageBackfill } from "../../scripts/factory/backfill-linkage.mjs";
-import { materializeExactLinkageForSource, selectEvidenceProbes } from "../../scripts/factory/evidence-lane.mjs";
+import { materializeExactLinkageForSource, mergeTopTradersExecutable, selectEvidenceProbes } from "../../scripts/factory/evidence-lane.mjs";
 import { readinessComponent, writeReadinessPercent } from "../../scripts/factory/evidence-bootstrap.mjs";
 import { runEvidencePreflight } from "../../scripts/factory/evidence-preflight.mjs";
 import { fetchKalshiHistoricalSettlements } from "../../scripts/factory/provider-kalshi.mjs";
@@ -1139,6 +1139,33 @@ describe("factory research safeguards", () => {
     });
   });
 
+  it("uses replay-grade coverage, not diagnostic sample coverage, for readiness", () => {
+    const gate = buildExecutableReadinessGate({
+      snapshotId: "snap",
+      generatedAt: "2026-06-09T12:00:00.000Z",
+      exactLinkSummary: { supportedLiveExactLinkedCount: 3, exactLinkRate: 1 },
+      settlementCoverageReport: { summary: { officialSettlementCoverage: 1 } },
+      replayParityReport: {
+        replayGrade: false,
+        targetMarketCount: 2,
+        coveredTargetMarketCount: 2,
+        replayGradeTargetMarketCount: 1,
+        replayGradeTargetMarketCoverage: 0.5,
+        coverageRate: 1,
+        fallbackKind: "absent",
+      },
+      simulatorCalibrationReport: { attempts: 2, labelKnownCount: 50 },
+      topRosterDefaultSortAudit: { researchRankedRosterCount: 1 },
+      dataQuality: { marketEvents: 60, sampleSufficiency: { counts: { daysRepresented: 7, independentMarkets: 60 } } },
+      evidenceProbeSummary: { exactLinkedProbeCount: 3 },
+      seedCompleteness: 1,
+    });
+
+    expect(gate.replayGradeTargetMarketCoverage).toBe(0.5);
+    expect(gate.rawTickReplayReady).toBe(false);
+    expect(gate.reasonCodes).toContain("replay_grade_target_market_ticks_absent");
+  });
+
   it("reports readiness coverage progress using displayed percent units", () => {
     expect(readinessComponent("replay-grade target coverage", 1, 1, "coverage")).toMatchObject({
       value: 100,
@@ -1667,6 +1694,21 @@ describe("factory research safeguards", () => {
         params: { maxSpread: 0.01, feeBuffer: 0.004, minEdge: 0, sideMode: "no-only" },
         closed: 12,
         independentClosedMarkets: 12,
+        daysRepresented: 7,
+        robustScore: 4.2,
+        officialSettlementCoverage: 0.97,
+        walkForwardPass: true,
+        walkForwardClosed: 5,
+        holdoutPass: false,
+        holdoutClosed: 4,
+        holdoutSummary: {
+          holdoutClosed: 4,
+          holdoutMarkets: 4,
+          holdoutConservativeClosed: 3,
+          holdoutConservativeMarkets: 3,
+          holdoutConservativeTotalPnl: -0.12,
+          holdoutLowerCi: -0.03,
+        },
         conservativeTotalPnl: 0.42,
         promotionVerdict: "reject",
       }],
@@ -1687,6 +1729,65 @@ describe("factory research safeguards", () => {
       sourceRunId: "run-canary",
       family: "sweep-scalp",
       paperOnly: true,
+      sourceMetrics: {
+        closed: 12,
+        independentClosedMarkets: 12,
+        daysRepresented: 7,
+        conservativeTotalPnl: 0.42,
+        robustScore: 4.2,
+        officialSettlementCoverage: 0.97,
+        walkForwardPass: true,
+        walkForwardClosed: 5,
+        holdoutPass: false,
+        holdoutClosed: 4,
+        holdoutMarkets: 4,
+        holdoutConservativeClosed: 3,
+        holdoutConservativeMarkets: 3,
+        holdoutConservativeTotalPnl: -0.12,
+        holdoutLowerCi: -0.03,
+      },
+    });
+  });
+
+  it("replaces stale execution canary lineage when a newer run reseeds the same source algo", () => {
+    const merged = mergeTopTradersExecutable({
+      topTradersExecutable: {
+        startedAt: "2026-06-19T19:00:00.000Z",
+        stats: {
+          "sweep-scalp": {
+            sourceAlgoId: "sweep-scalp",
+            sourceRunId: "old-run",
+            candidateConfigHash: "hash-old",
+            lane: "exact_linked_execution_canary",
+            evidenceStatus: "execution_canary_only",
+            attempts: 9,
+            sourceMetrics: { closed: 1, holdoutConservativeTotalPnl: -9 },
+          },
+        },
+        positions: [{ id: "pos-1", status: "open" }],
+      },
+    }, [{
+      id: "generated:sweep-scalp",
+      displayId: "E-0001",
+      sourceAlgoId: "sweep-scalp",
+      family: "sweep-scalp",
+      researchCandidateId: "rcid-new",
+      candidateConfigHash: "hash-new",
+      sourceRunId: "new-run",
+      sourceSnapshotHash: "snapshot-new",
+      sourceMetrics: { closed: 12, holdoutConservativeTotalPnl: -0.12 },
+    }], "2026-06-19T20:00:00.000Z");
+
+    expect(merged.positions).toEqual([{ id: "pos-1", status: "open" }]);
+    expect(merged.stats["sweep-scalp"]).toMatchObject({
+      sourceRunId: "new-run",
+      candidateConfigHash: "hash-new",
+      researchCandidateId: "rcid-new",
+      attempts: 0,
+      sourceMetrics: { closed: 12, holdoutConservativeTotalPnl: -0.12 },
+      promotionEligibility: "not_promotion_eligible",
+      paperOnly: true,
+      exactLinked: true,
     });
   });
 
