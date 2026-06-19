@@ -329,17 +329,31 @@ export function readinessComponent(kpi, value, target, kind) {
 
 export function executionCanariesNeedReseed({
   executionCanaries = {},
-  sourceRunId = null,
   maxExecutionCanaries = 3,
   force = false,
 } = {}) {
   const targetCount = Math.max(0, Math.floor(Number(maxExecutionCanaries ?? 0)));
   const canaryCount = Array.isArray(executionCanaries?.probes) ? executionCanaries.probes.length : 0;
+  const healthyCanaries = canaryCount >= targetCount
+    && executionCanaries?.paperOnly === true
+    && executionCanaries?.executableOnly === true
+    && executionCanaries?.lane === "exact_linked_execution_canary"
+    && executionCanaries.probes.every((probe) => (
+      probe?.exactLinked === true
+      && probe?.paperOnly === true
+      && probe?.enabled === true
+      && probe?.lane === "exact_linked_execution_canary"
+      && typeof probe?.researchCandidateId === "string"
+      && probe.researchCandidateId.length > 0
+      && typeof probe?.candidateConfigHash === "string"
+      && probe.candidateConfigHash.length > 0
+    ));
+  if (targetCount <= 0) return Boolean(force);
   return Boolean(
     force
     || canaryCount === 0
     || canaryCount < targetCount
-    || (sourceRunId && String(executionCanaries?.sourceRunId ?? "") !== String(sourceRunId))
+    || !healthyCanaries
   );
 }
 

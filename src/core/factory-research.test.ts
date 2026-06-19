@@ -1199,8 +1199,38 @@ describe("factory research safeguards", () => {
       sourceRunId: "run-2",
       maxExecutionCanaries: 3,
     })).toBe(true);
+    const healthyCanary = {
+      exactLinked: true,
+      paperOnly: true,
+      enabled: true,
+      lane: "exact_linked_execution_canary",
+      researchCandidateId: "rcid-1",
+      candidateConfigHash: "hash-1",
+    };
+    expect(executionCanariesNeedReseed({
+      executionCanaries: {
+        sourceRunId: "run-1",
+        paperOnly: true,
+        executableOnly: true,
+        lane: "exact_linked_execution_canary",
+        probes: [healthyCanary, healthyCanary, healthyCanary],
+      },
+      sourceRunId: "run-2",
+      maxExecutionCanaries: 3,
+    })).toBe(false);
     expect(executionCanariesNeedReseed({
       executionCanaries: { sourceRunId: "run-2", probes: [{}, {}, {}] },
+      sourceRunId: "run-2",
+      maxExecutionCanaries: 3,
+    })).toBe(true);
+    expect(executionCanariesNeedReseed({
+      executionCanaries: {
+        sourceRunId: "run-2",
+        paperOnly: true,
+        executableOnly: true,
+        lane: "exact_linked_execution_canary",
+        probes: [healthyCanary, healthyCanary, healthyCanary],
+      },
       sourceRunId: "run-2",
       maxExecutionCanaries: 3,
     })).toBe(false);
