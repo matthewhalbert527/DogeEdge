@@ -34,7 +34,7 @@ import { buildExecutableReadinessGate } from "../../scripts/factory/readiness-ga
 import { forecastCalibrationForDecisionRows, officialForecastCalibrationReport, probabilityCalibrationForTrades, tradeCalibrationByCandidate } from "../../scripts/factory/probability-calibration.mjs";
 import { deterministicLinkageBackfill } from "../../scripts/factory/backfill-linkage.mjs";
 import { materializeExactLinkageForSource, mergeTopTradersExecutable, selectEvidenceProbes } from "../../scripts/factory/evidence-lane.mjs";
-import { readinessComponent, writeReadinessPercent } from "../../scripts/factory/evidence-bootstrap.mjs";
+import { executionCanariesNeedReseed, readinessComponent, writeReadinessPercent } from "../../scripts/factory/evidence-bootstrap.mjs";
 import { runEvidencePreflight } from "../../scripts/factory/evidence-preflight.mjs";
 import { fetchKalshiHistoricalSettlements } from "../../scripts/factory/provider-kalshi.mjs";
 import { selectTargetMarkets } from "../../scripts/factory/target-markets.mjs";
@@ -1181,6 +1181,29 @@ describe("factory research safeguards", () => {
       progress: expect.closeTo(42 / 95, 6),
       status: "blocked",
     });
+  });
+
+  it("reseeds execution canaries when the lane is missing, undersized, or stale", () => {
+    expect(executionCanariesNeedReseed({
+      executionCanaries: null,
+      sourceRunId: "run-2",
+      maxExecutionCanaries: 3,
+    })).toBe(true);
+    expect(executionCanariesNeedReseed({
+      executionCanaries: { sourceRunId: "run-2", probes: [{}, {}] },
+      sourceRunId: "run-2",
+      maxExecutionCanaries: 3,
+    })).toBe(true);
+    expect(executionCanariesNeedReseed({
+      executionCanaries: { sourceRunId: "run-1", probes: [{}, {}, {}] },
+      sourceRunId: "run-2",
+      maxExecutionCanaries: 3,
+    })).toBe(true);
+    expect(executionCanariesNeedReseed({
+      executionCanaries: { sourceRunId: "run-2", probes: [{}, {}, {}] },
+      sourceRunId: "run-2",
+      maxExecutionCanaries: 3,
+    })).toBe(false);
   });
 
   it("keeps promotion readiness fail-closed when only evidence collection is complete", async () => {

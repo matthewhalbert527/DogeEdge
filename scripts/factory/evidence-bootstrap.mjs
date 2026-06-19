@@ -143,12 +143,13 @@ async function evidenceBootstrapCli() {
 
   const evidenceProbes = await readJsonMaybe(path.join(storageDir, "evidence-probes.json"));
   const probeCount = Array.isArray(evidenceProbes?.probes) ? evidenceProbes.probes.length : 0;
+  const maxProbes = Math.max(0, Number(args["max-probes"] ?? 5));
   if (probeCount === 0 || args["force-reseed-probes"]) {
     const reseedArgs = [
       "scripts/factory/evidence-lane.mjs",
       "--data-root", dataRoot,
       "--storage-dir", storageDir,
-      "--max-probes", String(args["max-probes"] ?? 5),
+      "--max-probes", String(maxProbes),
     ];
     if (probeSource) reseedArgs.push("--from", probeSource);
     else reseedArgs.push("--from", "latest-sweep");
@@ -158,6 +159,28 @@ async function evidenceBootstrapCli() {
   if (args["run-backtest"]) {
     await runStep("backtest", ["scripts/dogeedge-backtest.mjs", "--data-root", dataRoot], { optional: true });
     await runStep("promote-check", ["scripts/dogeedge-backtest.mjs", "--sweep", "--promote-check", "--data-root", dataRoot], { optional: true });
+  }
+
+  const executionCanaries = await readJsonMaybe(path.join(storageDir, "execution-canaries.json"));
+  const sourceRunId = await evidenceLaneSourceRunId({ dataRoot, probeSource });
+  const maxExecutionCanaries = Math.min(3, maxProbes);
+  const canariesStale = executionCanariesNeedReseed({
+    executionCanaries,
+    sourceRunId,
+    maxExecutionCanaries,
+    force: Boolean(args["force-reseed-probes"]),
+  });
+  if (args["skip-execution-canaries"] !== true && maxExecutionCanaries > 0 && canariesStale) {
+    const canaryArgs = [
+      "scripts/factory/evidence-lane.mjs",
+      "--data-root", dataRoot,
+      "--storage-dir", storageDir,
+      "--max-probes", String(maxExecutionCanaries),
+      "--executable-only",
+    ];
+    if (probeSource) canaryArgs.push("--from", probeSource);
+    else canaryArgs.push("--from", "latest-sweep");
+    await runStep("reseed-execution-canaries", canaryArgs, { optional: true });
   }
 
   if (args["refresh-bundle"]) {
@@ -303,6 +326,22 @@ export function readinessComponent(kpi, value, target, kind) {
   };
 }
 
+export function executionCanariesNeedReseed({
+  executionCanaries = {},
+  sourceRunId = null,
+  maxExecutionCanaries = 3,
+  force = false,
+} = {}) {
+  const targetCount = Math.max(0, Math.floor(Number(maxExecutionCanaries ?? 0)));
+  const canaryCount = Array.isArray(executionCanaries?.probes) ? executionCanaries.probes.length : 0;
+  return Boolean(
+    force
+    || canaryCount === 0
+    || canaryCount < targetCount
+    || (sourceRunId && String(executionCanaries?.sourceRunId ?? "") !== String(sourceRunId))
+  );
+}
+
 function readinessMarkdown(readiness) {
   return [
     "# DogeEdge Readiness Percent",
@@ -326,6 +365,12 @@ function readinessMarkdown(readiness) {
 
 function roundPercent(value) {
   return Math.round(Number(value ?? 0) * 1000) / 10;
+}
+
+async function evidenceLaneSourceRunId({ dataRoot, probeSource }) {
+  const sourcePath = probeSource ?? path.join(dataRoot, "backtests", "latest-sweep.json");
+  const source = await readJsonMaybe(sourcePath);
+  return source?.runId ?? null;
 }
 
 function exactLinkedExecutionCanaryCount(sources) {
