@@ -34,7 +34,7 @@ import { buildExecutableReadinessGate } from "../../scripts/factory/readiness-ga
 import { forecastCalibrationForDecisionRows, officialForecastCalibrationReport, probabilityCalibrationForTrades, tradeCalibrationByCandidate } from "../../scripts/factory/probability-calibration.mjs";
 import { deterministicLinkageBackfill } from "../../scripts/factory/backfill-linkage.mjs";
 import { loadSourceSweep, materializeExactLinkageForSource, mergeTopTradersExecutable, selectEvidenceProbes } from "../../scripts/factory/evidence-lane.mjs";
-import { countTargetMarkets, executionCanariesNeedReseed, executionCanaryHealth, mergedCanaryExclusions, mirrorTargetMarketSelectionArtifacts, readinessComponent, writeReadinessPercent } from "../../scripts/factory/evidence-bootstrap.mjs";
+import { countTargetMarkets, evalBundleArgsForBootstrap, executionCanariesNeedReseed, executionCanaryHealth, mergedCanaryExclusions, mirrorTargetMarketSelectionArtifacts, readinessComponent, writeReadinessPercent } from "../../scripts/factory/evidence-bootstrap.mjs";
 import { evidenceLoopHealth, executionCanarySupervisorHealth } from "../../scripts/dogeedge-evidence-supervisor.mjs";
 import { canarySelectionStatus, shouldRestartChrome } from "../../scripts/dogeedge-headless-app.mjs";
 import { runEvidencePreflight } from "../../scripts/factory/evidence-preflight.mjs";
@@ -1422,6 +1422,23 @@ describe("factory research safeguards", () => {
       progress: expect.closeTo(42 / 95, 6),
       status: "blocked",
     });
+  });
+
+  it("keeps evidence bundle refresh pointed at the active runtime data directories", () => {
+    const args = evalBundleArgsForBootstrap({
+      dataRoot: "D:\\DogeEdge\\data",
+      storageDir: "D:\\DogeEdge\\data\\local-worker",
+      evidenceDir: "C:\\Users\\matth\\DogeEdge\\artifacts\\evidence",
+    });
+
+    expect(args).toEqual(expect.arrayContaining([
+      "--data-root",
+      "D:\\DogeEdge\\data",
+      "--storage-dir",
+      "D:\\DogeEdge\\data\\local-worker",
+      "--evidence-dir",
+      "C:\\Users\\matth\\DogeEdge\\artifacts\\evidence",
+    ]));
   });
 
   it("reseeds execution canaries when the lane is missing, undersized, or stale", () => {

@@ -247,15 +247,7 @@ async function evidenceBootstrapCli() {
   await maybeReseedExecutionCanaries("post-backtest");
 
   if (args["refresh-bundle"]) {
-    await runStep("eval-bundle", [
-      "scripts/export-eval-snapshot.mjs",
-      "--bundle",
-      "--window-minutes", "30",
-      "--bundle-hours", "2",
-      "--out", "review_exports",
-      "--full-rows",
-      "--evidence-dir", evidenceDir,
-    ], { optional: true });
+    await runStep("eval-bundle", evalBundleArgsForBootstrap({ dataRoot, storageDir, evidenceDir }), { optional: true });
   }
 
   const finishedAt = new Date().toISOString();
@@ -284,6 +276,20 @@ async function evidenceBootstrapCli() {
   await writeReadinessPercent(report);
   console.log(`Evidence bootstrap ${report.status}: ${steps.length} steps`);
   console.log(`Report: ${path.join(outDir, "report.json")}`);
+}
+
+export function evalBundleArgsForBootstrap({ dataRoot, storageDir, evidenceDir }) {
+  return [
+    "scripts/export-eval-snapshot.mjs",
+    "--bundle",
+    "--window-minutes", "30",
+    "--bundle-hours", "2",
+    "--out", "review_exports",
+    "--full-rows",
+    "--data-root", dataRoot,
+    "--storage-dir", storageDir,
+    "--evidence-dir", evidenceDir,
+  ];
 }
 
 function bootstrapMarkdown(report) {
