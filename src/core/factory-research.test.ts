@@ -35,7 +35,7 @@ import { forecastCalibrationForDecisionRows, officialForecastCalibrationReport, 
 import { deterministicLinkageBackfill } from "../../scripts/factory/backfill-linkage.mjs";
 import { loadSourceSweep, materializeExactLinkageForSource, mergeTopTradersExecutable, selectEvidenceProbes } from "../../scripts/factory/evidence-lane.mjs";
 import { executionCanariesNeedReseed, executionCanaryHealth, mergedCanaryExclusions, readinessComponent, writeReadinessPercent } from "../../scripts/factory/evidence-bootstrap.mjs";
-import { evidenceLoopHealth } from "../../scripts/dogeedge-evidence-supervisor.mjs";
+import { evidenceLoopHealth, executionCanarySupervisorHealth } from "../../scripts/dogeedge-evidence-supervisor.mjs";
 import { canarySelectionStatus, shouldRestartChrome } from "../../scripts/dogeedge-headless-app.mjs";
 import { runEvidencePreflight } from "../../scripts/factory/evidence-preflight.mjs";
 import { fetchKalshiHistoricalSettlements } from "../../scripts/factory/provider-kalshi.mjs";
@@ -1513,6 +1513,34 @@ describe("factory research safeguards", () => {
       { excludedSourceAlgoIds: ["old-bad", "still-bad"] },
       { unhealthySourceAlgoIds: ["still-bad", "new-bad"] },
     )).toEqual(["old-bad", "still-bad", "new-bad"]);
+  });
+
+  it("marks supervisor canary health unhealthy when row loss limits are crossed", () => {
+    expect(executionCanarySupervisorHealth({
+      stats: {
+        "fast-fail": {
+          sourceAlgoId: "fast-fail",
+          lane: "exact_linked_execution_canary",
+          attempts: 8,
+          acceptedBuys: 6,
+          rejected: 0,
+          sells: 5,
+          totalPnl: -15.25,
+          startedAt: "2026-06-20T00:00:00.000Z",
+          lastAttemptAt: "2026-06-20T00:10:00.000Z",
+        },
+      },
+    }, {
+      minRowAttempts: 8,
+      minRowSells: 5,
+      maxRowLossDollars: 15,
+      now: "2026-06-20T00:12:00.000Z",
+    })).toMatchObject({
+      ok: false,
+      status: "fail",
+      reasonCodes: ["canary_row_loss_limit_exceeded"],
+      unhealthySourceAlgoIds: ["fast-fail"],
+    });
   });
 
   it("treats a fresh running evidence loop as healthy and stale running loops as unhealthy", () => {

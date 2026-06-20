@@ -1,13 +1,17 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { mkdir, open, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
+import { executionCanaryHealth, mergedCanaryExclusions } from "./factory/evidence-bootstrap.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const execFileAsync = promisify(execFile);
 const args = parseArgs(process.argv.slice(2));
 const once = Boolean(args.once);
 const statusOnly = Boolean(args["status-only"]);
 const heartbeatSeconds = numberArg("heartbeat-seconds", 30);
+const maxProbes = Math.max(0, Math.floor(numberArg("max-probes", 3)));
 const appUrl = stringArg("app-url", "http://127.0.0.1:5173");
 const workerUrl = stringArg("worker-url", "http://127.0.0.1:8787/health");
 const dataRoot = path.resolve(stringArg("data-root", process.env.DOGEEDGE_DATA_ROOT ?? "D:\\DogeEdge\\data"));
@@ -46,10 +50,15 @@ async function superviseOnce() {
     worker: await checkHttp(workerUrl),
     app: await checkHttp(appUrl),
     headless: await checkHeadless(),
+    executionCanaries: await checkExecutionCanaries(),
     evidenceLoop: await checkEvidenceLoop(),
   };
   const actions = [];
   if (!statusOnly) {
+    if (checks.executionCanaries.status === "fail") {
+      actions.push(await reseedExecutionCanaries(checks.executionCanaries));
+      checks.executionCanaries = await checkExecutionCanaries();
+    }
     if (!checks.worker.ok) actions.push(await startManaged("worker", [process.execPath, ["scripts/dogeedge-local-worker.mjs"], workerEnv()]));
     if (!checks.app.ok) actions.push(await startManaged("app", [process.execPath, [viteBin(), "--host", "127.0.0.1", "--port", "5173"], process.env]));
     if (!checks.headless.ok) {
@@ -88,7 +97,7 @@ async function superviseOnce() {
           "--run-backtest",
           "--refresh-bundle",
           "--max-probes",
-          "3",
+          String(maxProbes),
           "--out",
           evidenceLoopOut,
           "--evidence-out",
@@ -170,6 +179,69 @@ async function checkHeadless() {
   };
 }
 
+async function checkExecutionCanaries() {
+  const executableFile = await readJsonMaybe(path.join(storageDir, "top-traders-executable.json"));
+  const health = executionCanarySupervisorHealth(executableFile?.topTradersExecutable);
+  await mkdir(evidenceOut, { recursive: true });
+  await writeFile(path.join(evidenceOut, "execution_canary_health.json"), `${JSON.stringify({ ...health, source: "supervisor" }, null, 2)}\n`, "utf8");
+  return health;
+}
+
+export function executionCanarySupervisorHealth(topTradersExecutable, options = {}) {
+  const health = executionCanaryHealth(topTradersExecutable, options);
+  return {
+    ok: health.status !== "fail",
+    ...health,
+  };
+}
+
+async function reseedExecutionCanaries(canaryHealth) {
+  if (maxProbes <= 0) {
+    return { name: "execution-canaries", action: "skipped", reason: "max_probes_zero" };
+  }
+  const executionCanaries = await readJsonMaybe(path.join(storageDir, "execution-canaries.json"));
+  const excludedSourceAlgoIds = mergedCanaryExclusions(executionCanaries, canaryHealth);
+  const childArgs = [
+    "scripts/factory/evidence-lane.mjs",
+    "--data-root",
+    dataRoot,
+    "--storage-dir",
+    storageDir,
+    "--max-probes",
+    String(Math.min(3, maxProbes)),
+    "--executable-only",
+    "--from",
+    "best-supported-research",
+  ];
+  if (excludedSourceAlgoIds.length > 0) childArgs.push("--exclude-source-algos", excludedSourceAlgoIds.join(","));
+  try {
+    const { stdout, stderr } = await execFileAsync(process.execPath, childArgs, {
+      cwd: repoRoot,
+      windowsHide: true,
+      maxBuffer: 20 * 1024 * 1024,
+    });
+    return {
+      name: "execution-canaries",
+      action: "reseeded_unhealthy_canaries",
+      reasonCodes: canaryHealth.reasonCodes ?? [],
+      excludedSourceAlgoIds,
+      command: ["node", ...childArgs],
+      stdout: tail(stdout),
+      stderr: tail(stderr),
+    };
+  } catch (error) {
+    return {
+      name: "execution-canaries",
+      action: "reseed_failed",
+      reasonCodes: canaryHealth.reasonCodes ?? [],
+      excludedSourceAlgoIds,
+      command: ["node", ...childArgs],
+      stdout: tail(error?.stdout ?? ""),
+      stderr: tail(error?.stderr ?? errorMessage(error)),
+    };
+  }
+}
+
 async function checkEvidenceLoop() {
   const latestPath = path.join(evidenceLoopOut, "latest.json");
   const doc = await readJsonMaybe(latestPath);
@@ -247,6 +319,15 @@ function stringArg(name, fallback) {
 function numberArg(name, fallback) {
   const value = Number(args[name]);
   return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+function tail(value, max = 6000) {
+  const text = String(value ?? "");
+  return text.length > max ? text.slice(-max) : text;
+}
+
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function sleep(ms) {
