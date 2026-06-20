@@ -34,7 +34,7 @@ import { buildExecutableReadinessGate } from "../../scripts/factory/readiness-ga
 import { forecastCalibrationForDecisionRows, officialForecastCalibrationReport, probabilityCalibrationForTrades, tradeCalibrationByCandidate } from "../../scripts/factory/probability-calibration.mjs";
 import { deterministicLinkageBackfill } from "../../scripts/factory/backfill-linkage.mjs";
 import { loadSourceSweep, materializeExactLinkageForSource, mergeTopTradersExecutable, selectEvidenceProbes } from "../../scripts/factory/evidence-lane.mjs";
-import { executionCanariesNeedReseed, executionCanaryHealth, mergedCanaryExclusions, mirrorTargetMarketSelectionArtifacts, readinessComponent, writeReadinessPercent } from "../../scripts/factory/evidence-bootstrap.mjs";
+import { countTargetMarkets, executionCanariesNeedReseed, executionCanaryHealth, mergedCanaryExclusions, mirrorTargetMarketSelectionArtifacts, readinessComponent, writeReadinessPercent } from "../../scripts/factory/evidence-bootstrap.mjs";
 import { evidenceLoopHealth, executionCanarySupervisorHealth } from "../../scripts/dogeedge-evidence-supervisor.mjs";
 import { canarySelectionStatus, shouldRestartChrome } from "../../scripts/dogeedge-headless-app.mjs";
 import { runEvidencePreflight } from "../../scripts/factory/evidence-preflight.mjs";
@@ -1965,6 +1965,19 @@ describe("factory research safeguards", () => {
     });
   });
 
+  it("counts active replay target documents without falling back to closed targets", () => {
+    expect(countTargetMarkets({ markets: [] })).toBe(0);
+    expect(countTargetMarkets({ activeTargets: [], closedTargets: [{ marketTicker: "KXDOGE15M-CLOSED" }] })).toBe(0);
+    expect(countTargetMarkets({ markets: ["KXDOGE15M-A", "KXDOGE15M-A", "KXDOGE15M-B"] })).toBe(2);
+    expect(countTargetMarkets({
+      activeTargets: [
+        { marketTicker: "KXDOGE15M-A" },
+        { ticker: "KXDOGE15M-B" },
+        { id: "KXDOGE15M-B" },
+      ],
+    })).toBe(2);
+  });
+
   it("restarts headless Chrome only when stale canary selection is restart-eligible", () => {
     expect(shouldRestartChrome({
       status: "ok",
@@ -2138,6 +2151,12 @@ describe("factory research safeguards", () => {
     });
     writeFileSync(path.join(evidenceDir, "settlement_fetch_report.json"), `${JSON.stringify({ coverage: { officialSettlementCoverage: 1 } })}\n`);
     writeFileSync(path.join(evidenceDir, "replay_coverage_report.json"), `${JSON.stringify({ replayGradeTargetMarketCoverage: 1 })}\n`);
+    writeFileSync(path.join(evidenceDir, "executable_readiness_gate.json"), `${JSON.stringify({
+      allowedToLoadArenaBatch: false,
+      reasonCodes: ["research_validated_roster_empty"],
+      officialSettlementCoverage: 1,
+      replayGradeTargetMarketCoverage: 1,
+    })}\n`);
     writeFileSync(path.join(storageDir, "evidence-probes.json"), `${JSON.stringify({ probes: [{ exactLinked: true }, { exactLinked: true }, { exactLinked: true }] })}\n`);
     writeFileSync(path.join(storageDir, "latest.json"), `${JSON.stringify({
       topTradersArena: { selectedAlgoCount: 3 },
@@ -2168,6 +2187,56 @@ describe("factory research safeguards", () => {
       promotionReadinessPercent: 0,
       evidenceCollectionReady: true,
       evidenceCollectionProgressPercent: 100,
+    });
+  });
+
+  it("treats absent active replay targets as waiting when replay evidence is already green", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "dogeedge-readiness-waiting-active-"));
+    const storageDir = path.join(root, "local-worker");
+    const evidenceDir = path.join(root, "evidence");
+    const outDir = path.join(root, "bootstrap");
+    mkdirSync(storageDir, { recursive: true });
+    mkdirSync(evidenceDir, { recursive: true });
+    mkdirSync(path.join(outDir, "target-markets"), { recursive: true });
+    writeFileSync(path.join(evidenceDir, "settlement_fetch_report.json"), `${JSON.stringify({ coverage: { officialSettlementCoverage: 1 } })}\n`);
+    writeFileSync(path.join(evidenceDir, "replay_coverage_report.json"), `${JSON.stringify({ replayGradeTargetMarketCoverage: 1 })}\n`);
+    writeFileSync(path.join(evidenceDir, "executable_readiness_gate.json"), `${JSON.stringify({
+      allowedToLoadArenaBatch: false,
+      reasonCodes: ["research_validated_roster_empty"],
+      officialSettlementCoverage: 1,
+      replayGradeTargetMarketCoverage: 1,
+    })}\n`);
+    writeFileSync(path.join(storageDir, "evidence-probes.json"), `${JSON.stringify({ probes: [{ exactLinked: true }, { exactLinked: true }, { exactLinked: true }] })}\n`);
+    writeFileSync(path.join(storageDir, "latest.json"), `${JSON.stringify({
+      topTradersArena: { selectedAlgoCount: 3 },
+      topTradersExecutable: {
+        stats: {
+          one: { researchCandidateId: "rcid-1", candidateConfigHash: "hash-1" },
+          two: { researchCandidateId: "rcid-2", candidateConfigHash: "hash-2" },
+          three: { researchCandidateId: "rcid-3", candidateConfigHash: "hash-3" },
+        },
+      },
+    })}\n`);
+    writeFileSync(path.join(outDir, "target-markets", "target_markets.json"), `${JSON.stringify({ activeTargetCount: 0 })}\n`);
+
+    await writeReadinessPercent({
+      finishedAt: "2026-06-19T18:20:00.000Z",
+      storageDir,
+      evidenceDir,
+      outDir,
+    });
+    const readiness = JSON.parse(readFileSync(path.join(evidenceDir, "readiness_percent.json"), "utf8"));
+    const activeTargets = readiness.components.find((component: { kpi: string }) => component.kpi === "active replay targets available");
+
+    expect(readiness).toMatchObject({
+      headline: "evidence_collection_ready_waiting_for_active_target_hold_promotion_gates",
+      evidenceCollectionReady: true,
+      evidenceCollectionProgressPercent: 100,
+    });
+    expect(activeTargets).toMatchObject({
+      value: 0,
+      target: 1,
+      status: "waiting",
     });
   });
 

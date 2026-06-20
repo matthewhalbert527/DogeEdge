@@ -663,6 +663,144 @@ describe("continuous evaluation snapshot exporter", () => {
     expect(blockers.nextEvidenceNeed).not.toContain("Need more conservative-cost holdout evidence");
   });
 
+  it("prefers a fuller recent promote-check diagnostic over a smaller latest scheduled sweep", async () => {
+    const fixture = writeEvalFixture();
+    const latestSweepPath = path.join(fixture.backtestsDir, "latest-sweep.json");
+    const latestSweep = JSON.parse(readFileSync(latestSweepPath, "utf8"));
+    const rejectedMetric = {
+      ...latestSweep.topMetrics[0],
+      family: "sweep-scalp",
+      promotionVerdict: "reject",
+      promotionStage: "rejected",
+      nonPromotable: true,
+      holdoutPass: false,
+      holdoutConservativeClosed: 16,
+      holdoutConservativeTotalPnl: -1.44,
+      holdoutLowerCi: -0.25,
+      reasonCodes: [
+        "holdout_failed",
+        "holdout_roi_too_low",
+        "holdout_expectancy_ci_below_zero",
+      ],
+    };
+    latestSweep.topMetrics = [rejectedMetric];
+    latestSweep.candidates = [];
+    latestSweep.promoteCheckMode = true;
+    latestSweep.mode = "promote-check";
+    latestSweep.promoteCheckMaxSweepAlgos = 500;
+    latestSweep.searchBudget = {
+      limited: true,
+      reasonCodes: ["promote_check_diagnostic_cap"],
+      requestedSweepAlgos: 6036,
+      maxGeneratedAlgos: 500,
+      promoteCheckDiagnosticCap: {
+        applied: true,
+        maxGeneratedAlgos: 500,
+        requestedSweepAlgos: 6036,
+      },
+      familyBudget: {
+        selectedAlgos: 500,
+        families: [
+          { family: "sweep-scalp", requested: 810, selected: 338, researchSupported: true, labOnly: false, budgetLane: "executable_linked_family" },
+          { family: "sweep-liquidity-imbalance", requested: 162, selected: 162, researchSupported: true, labOnly: false, budgetLane: "executable_linked_family" },
+        ],
+      },
+    };
+    writeFileSync(latestSweepPath, `${JSON.stringify(latestSweep)}\n`);
+
+    const fullRunId = "2026-06-07T20-39-00Z";
+    const fullRunDir = path.join(fixture.backtestsDir, "sweeps", fullRunId);
+    mkdirSync(fullRunDir, { recursive: true });
+    writeFileSync(path.join(fullRunDir, "config.json"), `${JSON.stringify({
+      ...latestSweep,
+      runId: fullRunId,
+      runDir: fullRunDir,
+      finishedAt: "2026-06-07T20:39:00.000Z",
+      promoteCheckMaxSweepAlgos: 1200,
+      searchBudget: {
+        ...latestSweep.searchBudget,
+        maxGeneratedAlgos: 1200,
+        promoteCheckDiagnosticCap: {
+          applied: true,
+          maxGeneratedAlgos: 1200,
+          requestedSweepAlgos: 6036,
+        },
+        familyBudget: {
+          selectedAlgos: 972,
+          families: [
+            { family: "sweep-scalp", requested: 810, selected: 810, researchSupported: true, labOnly: false, budgetLane: "executable_linked_family" },
+            { family: "sweep-liquidity-imbalance", requested: 162, selected: 162, researchSupported: true, labOnly: false, budgetLane: "executable_linked_family" },
+          ],
+        },
+      },
+    })}\n`);
+    writeFileSync(path.join(fullRunDir, "metrics.json"), `${JSON.stringify([rejectedMetric])}\n`);
+    writeFileSync(path.join(fullRunDir, "candidates.json"), "[]\n");
+    writeFileSync(path.join(fullRunDir, "metrics.csv"), "algoId,totalPnl\nfull-supported,-1\n");
+    writeFileSync(path.join(fullRunDir, "report.md"), "# Full supported diagnostic\n");
+
+    const result = await exportEvaluationSnapshot({
+      dataRoot: fixture.dataRoot,
+      storageDir: fixture.storageDir,
+      backtestsDir: fixture.backtestsDir,
+      outDir: fixture.outDir,
+      now: "2026-06-07T20:40:00.000Z",
+      maxMetrics: 10,
+    });
+    const blockers = JSON.parse(readFileSync(path.join(result.snapshotDir, "research_roster_blockers.json"), "utf8"));
+
+    expect(blockers.validationStatus).toBe("supported_families_exhausted_no_holdout_survivor");
+    expect(blockers.supportedExecutableSweepCoverage).toMatchObject({
+      requested: 972,
+      selected: 972,
+      fullyCovered: true,
+    });
+    expect(blockers.searchBudget).toMatchObject({
+      runId: fullRunId,
+      promoteCheckMaxSweepAlgos: 1200,
+    });
+    expect(blockers.nextEvidenceNeed).not.toContain("run a full-supported diagnostic cap");
+  });
+
+  it("uses explicit evidence replay coverage for replay readiness", async () => {
+    const fixture = writeEvalFixture();
+    const evidenceDir = path.join(fixture.dataRoot, "evidence-artifacts");
+    mkdirSync(evidenceDir, { recursive: true });
+    writeFileSync(path.join(evidenceDir, "replay_coverage_report.json"), `${JSON.stringify({
+      schemaVersion: "dogeedge.replay-coverage-report.v1",
+      generatedAt: "2026-06-07T20:39:30.000Z",
+      targetMarketCount: 1,
+      coveredTargetMarketCount: 1,
+      replayGradeTargetMarketCount: 1,
+      replayGradeTargetMarketCoverage: 1,
+      replayGradeAvailable: true,
+      executionSensitivePromotionAllowed: true,
+      fallbackKind: "replay_grade",
+      reasonCodes: [],
+    })}\n`);
+
+    const result = await exportEvaluationSnapshot({
+      dataRoot: fixture.dataRoot,
+      storageDir: fixture.storageDir,
+      backtestsDir: fixture.backtestsDir,
+      evidenceDir,
+      outDir: fixture.outDir,
+      now: "2026-06-07T20:40:00.000Z",
+      maxMetrics: 10,
+    });
+    const replayParity = JSON.parse(readFileSync(path.join(result.snapshotDir, "replay_parity_report.json"), "utf8"));
+    const readiness = JSON.parse(readFileSync(path.join(result.snapshotDir, "readiness_kpis.json"), "utf8"));
+
+    expect(replayParity).toMatchObject({
+      targetMarketCount: 1,
+      replayGradeTargetMarketCount: 1,
+      replayGradeTargetMarketCoverage: 1,
+      replayGrade: true,
+      fallbackKind: "replay_grade",
+    });
+    expect(readiness.replayGradeReady).toBe(true);
+  });
+
   it("counts immutable execution canaries as exact-linked diagnostics without promoting them", async () => {
     const fixture = writeEvalFixture({ executionCanary: true });
     const result = await exportEvaluationSnapshot({

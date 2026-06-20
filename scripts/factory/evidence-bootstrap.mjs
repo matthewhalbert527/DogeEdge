@@ -54,6 +54,22 @@ async function evidenceBootstrapCli() {
       return row;
     }
   };
+  const recordBlockedOptionalStep = (name, reasonCodes, message) => {
+    const now = new Date().toISOString();
+    const row = {
+      name,
+      status: "blocked_optional",
+      startedAt: now,
+      finishedAt: now,
+      command: [],
+      stdout: message,
+      stderr: "",
+      optional: true,
+      reasonCodes,
+    };
+    steps.push(row);
+    return row;
+  };
   let lastExecutionCanaryHealth = null;
 
   const maybeReseedExecutionCanaries = async (phase) => {
@@ -136,6 +152,7 @@ async function evidenceBootstrapCli() {
 
   const closedTargetsFile = targetMarketsFile ?? path.join(outDir, "target-markets", "closed-targets.json");
   const activeTargetsFile = targetMarketsFile ?? path.join(outDir, "target-markets", "active-targets.json");
+  const activeReplayTargetCount = countTargetMarkets(await readJsonMaybe(activeTargetsFile));
   const officialStore = path.join(dataRoot, "official_settlements.jsonl");
   const settlementArgs = [
     "scripts/factory/fetch-official-settlements.mjs",
@@ -149,34 +166,41 @@ async function evidenceBootstrapCli() {
   await runStep("fetch-settlements", settlementArgs, { optional: !mockSettlements && !args.online });
 
   const rawRoot = path.join(dataRoot, "replay", "raw", "bootstrap", startedAt.slice(0, 10));
-  const captureArgs = [
-    "scripts/factory/capture-replay.mjs",
-    "--data-root", dataRoot,
-    "--markets-file", activeTargetsFile,
-    "--mode", args.mode ? String(args.mode) : "websocket",
-    "--out", rawRoot,
-  ];
-  if (args["duration-seconds"]) captureArgs.push("--duration-seconds", String(args["duration-seconds"]));
-  if (args.channels) captureArgs.push("--channels", String(args.channels));
-  if (args["use-yes-price"] !== undefined) captureArgs.push("--use-yes-price", String(args["use-yes-price"]));
-  if (mockReplayRaw) captureArgs.push("--mock-input", mockReplayRaw);
-  await runStep("capture-replay", captureArgs, { optional: !mockReplayRaw && !args.online });
-
   const replayFinal = path.join(dataRoot, "replay", "final");
-  await runStep("build-replay", [
-    "scripts/factory/build-replay-dataset.mjs",
-    "--data-root", dataRoot,
-    "--input", rawRoot,
-    "--markets-file", activeTargetsFile,
-    "--out", replayFinal,
-  ]);
+  if (activeReplayTargetCount > 0 || mockReplayRaw) {
+    const captureArgs = [
+      "scripts/factory/capture-replay.mjs",
+      "--data-root", dataRoot,
+      "--markets-file", activeTargetsFile,
+      "--mode", args.mode ? String(args.mode) : "websocket",
+      "--out", rawRoot,
+    ];
+    if (args["duration-seconds"]) captureArgs.push("--duration-seconds", String(args["duration-seconds"]));
+    if (args.channels) captureArgs.push("--channels", String(args.channels));
+    if (args["use-yes-price"] !== undefined) captureArgs.push("--use-yes-price", String(args["use-yes-price"]));
+    if (mockReplayRaw) captureArgs.push("--mock-input", mockReplayRaw);
+    await runStep("capture-replay", captureArgs, { optional: !mockReplayRaw && !args.online });
 
-  await runStep("replay-coverage", [
-    "scripts/factory/replay-coverage.mjs",
-    "--input", replayFinal,
-    "--markets-file", activeTargetsFile,
-    "--out", path.join(evidenceDir, "replay_coverage_report.json"),
-  ]);
+    await runStep("build-replay", [
+      "scripts/factory/build-replay-dataset.mjs",
+      "--data-root", dataRoot,
+      "--input", rawRoot,
+      "--markets-file", activeTargetsFile,
+      "--out", replayFinal,
+    ]);
+
+    await runStep("replay-coverage", [
+      "scripts/factory/replay-coverage.mjs",
+      "--input", replayFinal,
+      "--markets-file", activeTargetsFile,
+      "--out", path.join(evidenceDir, "replay_coverage_report.json"),
+    ]);
+  } else {
+    const reasonCodes = ["active_target_markets_absent"];
+    recordBlockedOptionalStep("capture-replay", reasonCodes, "No active target markets were selected; preserved the previous replay coverage report.");
+    recordBlockedOptionalStep("build-replay", reasonCodes, "No new replay raw input was captured in this cycle.");
+    recordBlockedOptionalStep("replay-coverage", reasonCodes, "Skipped replay coverage overwrite because the current active target set is empty.");
+  }
 
   await runStep("linkage-audit", [
     "scripts/factory/backfill-linkage.mjs",
@@ -223,7 +247,15 @@ async function evidenceBootstrapCli() {
   await maybeReseedExecutionCanaries("post-backtest");
 
   if (args["refresh-bundle"]) {
-    await runStep("eval-bundle", ["scripts/export-eval-snapshot.mjs", "--bundle", "--window-minutes", "30", "--bundle-hours", "2", "--out", "review_exports", "--full-rows"], { optional: true });
+    await runStep("eval-bundle", [
+      "scripts/export-eval-snapshot.mjs",
+      "--bundle",
+      "--window-minutes", "30",
+      "--bundle-hours", "2",
+      "--out", "review_exports",
+      "--full-rows",
+      "--evidence-dir", evidenceDir,
+    ], { optional: true });
   }
 
   const finishedAt = new Date().toISOString();
@@ -360,14 +392,20 @@ export async function writeReadinessPercent(report) {
   const selectedExecutionRows = Math.max(0, Math.floor(Number(latest?.topTradersArena?.selectedAlgoCount ?? 0)));
   const exactLinkedExecutionRows = Math.max(exactLinkedExecutionStats, Math.min(selectedExecutionRows, exactLinkedExecutionCanaries));
   const activeTargetCount = Number(targetMarkets?.activeTargetCount ?? 0);
+  const activeReplayTargetComponent = readinessComponent("active replay targets available", activeTargetCount, 1, "count");
+  if (activeTargetCount <= 0 && replayGradeTargetMarketCoverage >= 1) {
+    activeReplayTargetComponent.status = "waiting";
+    activeReplayTargetComponent.progress = 1;
+    activeReplayTargetComponent.note = "No active target market is available right now; previous replay-grade evidence is preserved and the loop will try again next cycle.";
+  }
   const components = [
     readinessComponent("official settlement coverage", officialSettlementCoverage, 0.95, "coverage"),
     readinessComponent("replay-grade target coverage", replayGradeTargetMarketCoverage, 1, "coverage"),
     readinessComponent("exact-linked evidence probes", exactLinkedProbeCount, 3, "count"),
-    readinessComponent("active replay targets available", activeTargetCount, 1, "count"),
+    activeReplayTargetComponent,
     readinessComponent("exact-linked execution rows", exactLinkedExecutionRows, 3, "count"),
   ];
-  const evidenceCollectionReady = components.every((component) => component.status === "pass");
+  const evidenceCollectionReady = components.every((component) => component.status === "pass" || component.status === "waiting");
   const promotionReady = executableGate?.allowedToLoadArenaBatch === true;
   const evidenceProgress = components.length
     ? components.reduce((sum, component) => sum + component.progress, 0) / components.length
@@ -375,7 +413,11 @@ export async function writeReadinessPercent(report) {
   const readiness = {
     schemaVersion: "dogeedge.readiness-percent.v1",
     generatedAt: report.finishedAt ?? new Date().toISOString(),
-    headline: promotionReady ? "promotion_ready" : evidenceCollectionReady ? "evidence_collection_ready_hold_promotion_gates" : "hold_gather_evidence",
+    headline: promotionReady
+      ? "promotion_ready"
+      : evidenceCollectionReady && activeReplayTargetComponent.status === "waiting"
+        ? "evidence_collection_ready_waiting_for_active_target_hold_promotion_gates"
+        : evidenceCollectionReady ? "evidence_collection_ready_hold_promotion_gates" : "hold_gather_evidence",
     promotionReady,
     promotionReadinessPercent: promotionReady ? 100 : 0,
     evidenceCollectionProgressPercent: roundPercent(evidenceProgress),
@@ -405,6 +447,26 @@ export function readinessComponent(kpi, value, target, kind) {
     progress,
     status: progress >= 1 ? "pass" : "blocked",
   };
+}
+
+export function countTargetMarkets(document) {
+  if (Array.isArray(document)) return uniqueTargetCount(document);
+  if (!document || typeof document !== "object") return 0;
+  const activeTargets = Array.isArray(document.activeTargets) ? document.activeTargets : [];
+  if (activeTargets.length) return uniqueTargetCount(activeTargets);
+  const markets = Array.isArray(document.markets) ? document.markets : [];
+  if (markets.length) return uniqueTargetCount(markets);
+  const tickers = Array.isArray(document.tickers) ? document.tickers : [];
+  if (tickers.length) return uniqueTargetCount(tickers);
+  return 0;
+}
+
+function uniqueTargetCount(values) {
+  return new Set(values.map((value) => {
+    if (typeof value === "string") return value.trim();
+    if (!value || typeof value !== "object") return "";
+    return String(value.marketTicker ?? value.ticker ?? value.id ?? "").trim();
+  }).filter(Boolean)).size;
 }
 
 export function executionCanariesNeedReseed({

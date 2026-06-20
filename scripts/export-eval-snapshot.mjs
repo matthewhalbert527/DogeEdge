@@ -711,6 +711,9 @@ export async function exportEvaluationSnapshot(options = {}) {
   const dataRoot = path.resolve(options.dataRoot ?? defaultDataRoot());
   const storageDir = path.resolve(options.storageDir ?? process.env.DOGEEDGE_DATA_DIR ?? path.join(dataRoot, "local-worker"));
   const backtestsDir = path.resolve(options.backtestsDir ?? path.join(dataRoot, "backtests"));
+  const evidenceDir = options.evidenceDir || process.env.DOGEEDGE_EVIDENCE_DIR
+    ? path.resolve(options.evidenceDir ?? process.env.DOGEEDGE_EVIDENCE_DIR)
+    : null;
   const outRoot = path.resolve(options.outDir ?? path.join(dataRoot, "gpt-review-packets"));
   const snapshotsRoot = path.join(outRoot, "snapshots");
   const priorHistory = await loadSnapshotHistory({ snapshotsRoot, hours: 48 });
@@ -733,9 +736,11 @@ export async function exportEvaluationSnapshot(options = {}) {
   const latestSweepPath = path.join(backtestsDir, "latest-sweep.json");
   const defaultOfficialSettlementsStorePath = path.join(dataRoot, "official_settlements.jsonl");
   const settlementFetchReportPath = path.join(dataRoot, "settlement_fetch_report.json");
-  const artifactSettlementFetchReportPath = path.resolve("artifacts", "evidence", "settlement_fetch_report.json");
+  const artifactSettlementFetchReportPath = evidenceDir ? path.join(evidenceDir, "settlement_fetch_report.json") : null;
+  const dataRootReplayCoverageReportPath = path.join(dataRoot, "replay", "final", "replay_coverage_report.json");
+  const artifactReplayCoverageReportPath = evidenceDir ? path.join(evidenceDir, "replay_coverage_report.json") : null;
   const replayManifestSummaryPath = await latestReplayManifestSummaryPath(dataRoot);
-  const evidenceStatusPath = path.resolve("artifacts", "evidence", "evidence_status.json");
+  const evidenceStatusPath = evidenceDir ? path.join(evidenceDir, "evidence_status.json") : null;
   const evidencePreflightReportPath = path.resolve("artifacts", "evidence-preflight", "report.json");
 
   const [
@@ -749,6 +754,8 @@ export async function exportEvaluationSnapshot(options = {}) {
     latestSweep,
     dataRootSettlementFetchReport,
     artifactSettlementFetchReport,
+    dataRootReplayCoverageReport,
+    artifactReplayCoverageReport,
     replayManifestSummary,
     evidenceStatus,
     evidencePreflightReport,
@@ -764,6 +771,8 @@ export async function exportEvaluationSnapshot(options = {}) {
     readJsonMaybe(latestSweepPath),
     readJsonMaybe(settlementFetchReportPath),
     readJsonMaybe(artifactSettlementFetchReportPath),
+    readJsonMaybe(dataRootReplayCoverageReportPath),
+    readJsonMaybe(artifactReplayCoverageReportPath),
     readJsonMaybe(replayManifestSummaryPath),
     readJsonMaybe(evidenceStatusPath),
     readJsonMaybe(evidencePreflightReportPath),
@@ -774,7 +783,13 @@ export async function exportEvaluationSnapshot(options = {}) {
     dataRootSettlementFetchReport,
     artifactSettlementFetchReport,
   ]);
-  const primaryRun = choosePrimaryRun(latestSweep, latestBacktest);
+  const replayCoverageReport = newestTimestampedRecord([
+    dataRootReplayCoverageReport,
+    artifactReplayCoverageReport,
+  ]);
+  const replayEvidenceSummary = replayCoverageReport ?? replayManifestSummary;
+  const bestPromoteCheckDiagnostic = await bestRecentPromoteCheckDiagnostic(backtestsDir, latestSweep);
+  const primaryRun = choosePrimaryRun(bestPromoteCheckDiagnostic ?? latestSweep, latestBacktest);
   const officialSettlementStorePath = stringOrNull(settlementFetchReport?.storePath) ?? defaultOfficialSettlementsStorePath;
   const officialSettlementStoreRows = await readJsonlMaybe(officialSettlementStorePath);
   const runDir = stringOrNull(primaryRun?.runDir);
@@ -934,7 +949,7 @@ export async function exportEvaluationSnapshot(options = {}) {
     { logicalName: "supported_live_exact_links.tsv.gz", relativePath: "supported_live_exact_links.tsv.gz", content: tsv(supportedLiveLinkageColumns, identityArtifacts.supportedLiveExactLinks) },
     { logicalName: "evidence_probe_lane.tsv.gz", relativePath: "evidence_probe_lane.tsv.gz", content: tsv(evidenceProbeColumns, evidenceProbeArtifacts.rows) },
     { logicalName: "execution_canary_lane.tsv.gz", relativePath: "execution_canary_lane.tsv.gz", content: tsv(evidenceProbeColumns, executionCanaryArtifacts.rows) },
-    { logicalName: "replay_gap_report.tsv.gz", relativePath: "replay_gap_report.tsv.gz", content: tsv(replayGapReportColumns, replayGapRows({ snapshotId, replayManifestSummary })) },
+    { logicalName: "replay_gap_report.tsv.gz", relativePath: "replay_gap_report.tsv.gz", content: tsv(replayGapReportColumns, replayGapRows({ snapshotId, replayManifestSummary: replayEvidenceSummary })) },
     { logicalName: "official_settlements.tsv.gz", relativePath: "official_settlements.tsv.gz", content: tsv(officialSettlementColumns, settlementArtifacts.settlements) },
     { logicalName: "settlement_join_audit.tsv.gz", relativePath: "settlement_join_audit.tsv.gz", content: tsv(settlementJoinAuditColumns, settlementJoinArtifacts.auditRows) },
     { logicalName: "official_settlement_coverage_by_family.tsv.gz", relativePath: "official_settlement_coverage_by_family.tsv.gz", content: tsv(officialSettlementCoverageByFamilyColumns, settlementArtifacts.coverageByFamily) },
@@ -979,7 +994,7 @@ export async function exportEvaluationSnapshot(options = {}) {
   });
   fileManifest.push(...exactExportFiles);
   const rawTickManifest = await readJsonMaybe(path.join(snapshotDir, "raw_market_ticks", "manifest.json"));
-  const replayParityReport = replayParityReportFromRawManifest({ snapshotId, generatedAt, rawTickManifest, replayManifestSummary });
+  const replayParityReport = replayParityReportFromRawManifest({ snapshotId, generatedAt, rawTickManifest, replayManifestSummary: replayEvidenceSummary });
   const rejectStreamSummary = rejectStreamSummaryReport({ snapshotId, generatedAt, decisionRows, tradeRows, topStats });
   const topRosterAudit = topRosterDefaultSortAudit({ snapshotId, alignmentArtifacts });
   const researchRosterBlockers = researchRosterBlockerReport({ snapshotId, generatedAt, metrics, topRosterAudit, primaryRun });
@@ -1017,7 +1032,7 @@ export async function exportEvaluationSnapshot(options = {}) {
     settlementCoverageReport: settlementArtifacts.coverageReport,
     settlementFetchReport,
     replayParityReport,
-    replayManifestSummary,
+    replayManifestSummary: replayEvidenceSummary,
     rejectStreamSummary,
     researchRosterBlockers,
     evidenceProbeLane: evidenceProbeArtifacts.summary,
@@ -1647,6 +1662,51 @@ export function validateEvaluationSnapshot(snapshot) {
 function choosePrimaryRun(latestSweep, latestBacktest) {
   if (latestSweep?.runId) return latestSweep;
   return latestBacktest?.runId ? latestBacktest : {};
+}
+
+async function bestRecentPromoteCheckDiagnostic(backtestsDir, latestSweep = null) {
+  const candidates = [];
+  if (latestSweep?.promoteCheckMode === true || latestSweep?.mode === "promote-check") {
+    candidates.push({ ...latestSweep, runDir: stringOrNull(latestSweep.runDir) ?? path.join(backtestsDir, "sweeps", String(latestSweep.runId ?? "")) });
+  }
+  const sweepsDir = path.join(backtestsDir, "sweeps");
+  let entries = [];
+  try {
+    entries = await readdir(sweepsDir, { withFileTypes: true });
+  } catch {
+    entries = [];
+  }
+  await Promise.all(entries
+    .filter((entry) => entry.isDirectory())
+    .map(async (entry) => {
+      const runDir = path.join(sweepsDir, entry.name);
+      const config = await readJsonMaybe(path.join(runDir, "config.json"));
+      if (!config || (config.promoteCheckMode !== true && config.mode !== "promote-check")) return;
+      candidates.push({ ...config, runId: config.runId ?? entry.name, runDir });
+    }));
+  const scored = candidates
+    .filter((run) => stringOrNull(run.runId))
+    .map((run) => {
+      const budget = researchRosterSearchBudgetSummary(run);
+      const coverage = budget?.supportedExecutableSweepCoverage ?? {};
+      const finishedMs = parseTime(run.finishedAt) ?? 0;
+      return {
+        run,
+        fullyCovered: coverage.fullyCovered === true ? 1 : 0,
+        selected: numberOrZero(coverage.selected),
+        requested: numberOrZero(coverage.requested),
+        finishedMs,
+      };
+    })
+    .filter((row) => row.selected > 0);
+  if (!scored.length) return null;
+  scored.sort((left, right) => (
+    right.fullyCovered - left.fullyCovered
+    || right.selected - left.selected
+    || right.requested - left.requested
+    || right.finishedMs - left.finishedMs
+  ));
+  return scored[0].run;
 }
 
 async function selectPrimaryRunMetrics(primaryRun, maxMetrics) {
@@ -5154,6 +5214,7 @@ function parseArgs(argv) {
     dataRoot: result["data-root"],
     storageDir: result["storage-dir"],
     backtestsDir: result["backtests-dir"],
+    evidenceDir: result["evidence-dir"],
     outDir: result.out,
     windowMinutes: result["window-minutes"],
     bundleHours: result["bundle-hours"],
