@@ -130,6 +130,9 @@ async function buildStatus() {
 export function canarySelectionStatus(latest, executionCanaries, executable = null) {
   const expectedCanaryIds = expectedCanaryAlgoIds(executionCanaries);
   const currentSelectedAlgoIds = selectedTopTraderAlgoIds(latest?.topTradersArena);
+  const explicitSelectedAlgoIds = Array.isArray(latest?.topTradersArena?.selectedAlgoIds)
+    ? uniqueStrings(latest.topTradersArena.selectedAlgoIds)
+    : [];
   const expectedSet = new Set(expectedCanaryIds);
   const currentSelectedCanaryIds = currentSelectedAlgoIds.filter((id) => expectedSet.has(id));
   const activeCanaryIds = activeCanaryAlgoIds(executable, expectedSet);
@@ -138,10 +141,16 @@ export function canarySelectionStatus(latest, executionCanaries, executable = nu
   const topTradersStatus = stringOrNull(latest?.topTradersArena?.status);
   const selectedAlgoCount = numberOrNull(latest?.topTradersArena?.selectedAlgoCount);
   const hasSelectionEvidence = selectedAlgoIds.length > 0 || Number(selectedAlgoCount ?? 0) > 0;
+  const currentSelectionIsLegacy = currentSelectedAlgoIds.length > 0 && currentSelectedCanaryIds.length === 0;
+  const explicitSelectionIsIncomplete = explicitSelectedAlgoIds.length > 0 && currentSelectedCanaryIds.length < expectedCanaryIds.length;
   const stale = expectedCanaryIds.length > 0
     && topTradersStatus === "running"
     && hasSelectionEvidence
-    && selectedCanaryIds.length < expectedCanaryIds.length;
+    && (
+      selectedCanaryIds.length < expectedCanaryIds.length
+      || currentSelectionIsLegacy
+      || explicitSelectionIsIncomplete
+    );
   return {
     expectedCanaryCount: expectedCanaryIds.length,
     selectedCanaryCount: selectedCanaryIds.length,

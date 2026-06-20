@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -1788,6 +1788,16 @@ describe("factory research safeguards", () => {
       candidate("fallback-safe-no", "sweep-scalp", "fallback-run", "no-only", 30, 1),
     ])}\n`);
     writeFileSync(path.join(fallbackRunDir, "candidates.json"), "[]\n");
+    const oldTime = new Date("2026-06-20T00:00:00.000Z");
+    utimesSync(fallbackRunDir, oldTime, oldTime);
+    for (let index = 0; index < 30; index += 1) {
+      const fillerDir = path.join(dataRoot, "backtests", "sweeps", `filler-run-${String(index).padStart(2, "0")}`);
+      mkdirSync(fillerDir, { recursive: true });
+      writeFileSync(path.join(fillerDir, "config.json"), `${JSON.stringify({ runId: `filler-run-${index}`, randomSeed: `seed-filler-${index}` })}\n`);
+      writeFileSync(path.join(fillerDir, "metrics.json"), "[]\n");
+      const fillerTime = new Date(Date.parse("2026-06-20T01:00:00.000Z") + index * 1000);
+      utimesSync(fillerDir, fillerTime, fillerTime);
+    }
 
     execFileSync(process.execPath, [
       "scripts/factory/evidence-lane.mjs",
@@ -1878,6 +1888,48 @@ describe("factory research safeguards", () => {
         "generated:sweep-scalp-third",
       ],
       canarySelectionStale: false,
+    });
+  });
+
+  it("does not let active canary stats mask a stale legacy selected top-trader roster", () => {
+    const executionCanaries = {
+      probes: [
+        { id: "generated:sweep-scalp-current", sourceAlgoId: "sweep-scalp-current" },
+        { id: "generated:sweep-liquidity-current", sourceAlgoId: "sweep-liquidity-current" },
+        { id: "generated:sweep-scalp-third", sourceAlgoId: "sweep-scalp-third" },
+      ],
+    };
+    expect(canarySelectionStatus({
+      topTradersArena: {
+        status: "running",
+        selectedAlgoId: "generated:sweep-scalp-legacy",
+        selectedAlgoCount: 3,
+      },
+    }, executionCanaries, {
+      stats: {
+        "sweep-scalp-current": {
+          algoId: "generated:sweep-scalp-current",
+          lane: "exact_linked_execution_canary",
+        },
+        "sweep-liquidity-current": {
+          algoId: "generated:sweep-liquidity-current",
+          evidenceStatus: "execution_canary_only",
+        },
+        "sweep-scalp-third": {
+          sourceAlgoId: "sweep-scalp-third",
+          lane: "exact_linked_execution_canary",
+        },
+      },
+    })).toMatchObject({
+      expectedCanaryCount: 3,
+      selectedCanaryCount: 3,
+      currentSelectedCanaryIds: [],
+      activeCanaryIds: [
+        "generated:sweep-scalp-current",
+        "generated:sweep-liquidity-current",
+        "generated:sweep-scalp-third",
+      ],
+      canarySelectionStale: true,
     });
   });
 

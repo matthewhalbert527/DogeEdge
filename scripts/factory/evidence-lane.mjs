@@ -262,7 +262,7 @@ async function evidenceLaneCli() {
       dataRoot,
       primarySource: source,
       excludedSourceAlgoIds,
-      maxRuns: Number(args["fallback-run-count"] ?? 24),
+      maxRuns: Number(args["fallback-run-count"] ?? 200),
     })
     : [];
   const rows = dedupeCandidateRows([...primaryRows, ...fallbackRows]);

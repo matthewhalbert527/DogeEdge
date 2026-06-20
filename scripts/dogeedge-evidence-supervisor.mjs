@@ -19,6 +19,7 @@ const storageDir = path.resolve(stringArg("storage-dir", process.env.DOGEEDGE_DA
 const evidenceOut = path.resolve(stringArg("evidence-out", "C:\\Users\\matth\\DogeEdge\\artifacts\\evidence"));
 const evidenceLoopOut = path.resolve(stringArg("out", "C:\\Users\\matth\\DogeEdge\\artifacts\\evidence-live-run"));
 const headlessStatusFile = path.resolve(stringArg("headless-status-file", "artifacts/evidence/headless-app-status.json"));
+const headlessUserDataDir = path.resolve(stringArg("headless-user-data-dir", path.join(evidenceLoopOut, "headless-chrome-profile")));
 const supervisorStatusFile = path.resolve(stringArg("status-file", "artifacts/evidence/supervisor-status.json"));
 const logsDir = path.resolve(stringArg("logs-dir", "artifacts/evidence/supervisor-logs"));
 
@@ -62,7 +63,7 @@ async function superviseOnce() {
     if (!checks.worker.ok) actions.push(await startManaged("worker", [process.execPath, ["scripts/dogeedge-local-worker.mjs"], workerEnv()]));
     if (!checks.app.ok) actions.push(await startManaged("app", [process.execPath, [viteBin(), "--host", "127.0.0.1", "--port", "5173"], process.env]));
     if (!checks.headless.ok) {
-      actions.push(await startManaged("headless", [
+      actions.push(await restartManaged("headless", [
         process.execPath,
         [
           "scripts/dogeedge-headless-app.mjs",
@@ -74,6 +75,8 @@ async function superviseOnce() {
           storageDir,
           "--heartbeat-seconds",
           String(heartbeatSeconds),
+          "--user-data-dir",
+          headlessUserDataDir,
         ],
         process.env,
       ]));
@@ -148,6 +151,17 @@ async function startManaged(name, spec) {
   return { name, action: "started", pid: child.pid, command: [command, ...childArgs] };
 }
 
+async function restartManaged(name, spec) {
+  const existing = children.get(name);
+  if (existing && !existing.killed && existing.exitCode === null) {
+    existing.kill();
+    children.delete(name);
+    await sleep(1_000);
+  }
+  const started = await startManaged(name, spec);
+  return { ...started, action: started.action === "started" ? "restarted" : started.action };
+}
+
 async function checkHttp(url) {
   try {
     const response = await fetch(url, { cache: "no-store", signal: AbortSignal.timeout(5_000) });
@@ -163,7 +177,7 @@ async function checkHeadless() {
   const ageSeconds = doc?.checkedAt ? Math.max(0, (Date.parse(checkedAt) - Date.parse(doc.checkedAt)) / 1000) : null;
   const fresh = ageSeconds !== null && ageSeconds <= Math.max(90, heartbeatSeconds * 4);
   return {
-    ok: Boolean(doc?.status === "ok" && fresh && doc.latestFresh !== false && doc.executableFresh !== false && doc.topTradersStatus === "running"),
+    ok: Boolean(doc?.status === "ok" && fresh && doc.latestFresh !== false && doc.executableFresh !== false && doc.topTradersStatus === "running" && doc.canarySelectionStale !== true),
     status: doc?.status ?? null,
     checkedAt: doc?.checkedAt ?? null,
     ageSeconds,

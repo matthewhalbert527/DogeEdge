@@ -1150,17 +1150,13 @@ function App() {
           arenaAlgosForArena(paperArenaRef.current, generatedPaperAlgosRef.current, latestSweepRef.current, factoryAlgoBatchesRef.current),
           savedTradeSummariesRef.current,
         );
+        const canaryRosterIds = topTraderExecutionCanaryStrategyIds(availableAlgos, topTradersRosterSize);
         const rankedRows = rankTopTraderRowsByExecutableStats(sourceRankedRows, topTradersExecutableRef.current, new Date(nowMs).toISOString(), factoryResearchEvidenceBySource(latestSweepRef.current));
         const rankedRosterIds = rankedRows
           .filter(topTraderRunnablePaperEvidenceRow)
           .slice(0, topTradersRosterSize)
           .map(paperStrategyIdForActivatedRow);
-        rosterIds = rankedRosterIds.length > 0
-          ? rankedRosterIds
-          : availableAlgos
-            .filter(topTraderExecutionCanaryOnly)
-            .slice(0, topTradersRosterSize)
-            .map(paperStrategyIdForActivatedRow);
+        rosterIds = canaryRosterIds.length > 0 ? canaryRosterIds : rankedRosterIds;
         topTradersRosterIdsRef.current = rosterIds;
         topTradersRosterRefreshAtRef.current = nowMs + topTradersRosterRefreshMs;
         commitTopTradersArena((state) => ({
@@ -1575,12 +1571,8 @@ function App() {
         .filter(topTraderRunnablePaperEvidenceRow)
         .slice(0, config.rosterLimit ?? topTradersRosterSize)
         .map(paperStrategyIdForActivatedRow);
-      const selectedAlgoIds = rankedSelectedAlgoIds.length > 0
-        ? rankedSelectedAlgoIds
-        : availableAlgos
-          .filter(topTraderExecutionCanaryOnly)
-          .slice(0, config.rosterLimit ?? topTradersRosterSize)
-          .map(paperStrategyIdForActivatedRow);
+      const canarySelectedAlgoIds = topTraderExecutionCanaryStrategyIds(availableAlgos, config.rosterLimit ?? topTradersRosterSize);
+      const selectedAlgoIds = canarySelectedAlgoIds.length > 0 ? canarySelectedAlgoIds : rankedSelectedAlgoIds;
       if (selectedAlgoIds.length === 0) return current;
       topTradersRosterIdsRef.current = selectedAlgoIds;
       topTradersRosterRefreshAtRef.current = 0;
@@ -1656,10 +1648,10 @@ function App() {
     if (!appStateBackupReady || !factoryAutomation.enabled) return undefined;
 
     const maybeStartExecutionCanaries = () => {
-      const selectedAlgoIds = topTraderCandidateAlgosForFactory(generatedPaperAlgosRef.current, factoryAlgoBatchesRef.current)
-        .filter(topTraderExecutionCanaryOnly)
-        .slice(0, topTradersRosterSize)
-        .map(paperStrategyIdForActivatedRow);
+      const selectedAlgoIds = topTraderExecutionCanaryStrategyIds(
+        topTraderCandidateAlgosForFactory(generatedPaperAlgosRef.current, factoryAlgoBatchesRef.current),
+        topTradersRosterSize,
+      );
       if (selectedAlgoIds.length === 0) return;
 
       const current = topTradersArenaRef.current;
@@ -4779,6 +4771,13 @@ function topTraderExecutionCanaryOnly(row: Partial<GeneratedPaperAlgoArchive> | 
       && row.exactLinked === true
       && topTraderSupportedExecutionCanaryFamily(row)
     );
+}
+
+function topTraderExecutionCanaryStrategyIds(availableAlgos: GeneratedPaperAlgo[], limit: number) {
+  return availableAlgos
+    .filter(topTraderExecutionCanaryOnly)
+    .slice(0, Math.max(0, limit))
+    .map(paperStrategyIdForActivatedRow);
 }
 
 function topTraderRunnablePaperEvidenceRow(row: TopTraderRow) {
