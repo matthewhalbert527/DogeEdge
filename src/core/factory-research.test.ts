@@ -946,6 +946,14 @@ describe("factory research safeguards", () => {
       rawEvidenceRows: 1,
       matchedAlgoCount: 1,
     });
+    expect(evidence.rows).toHaveLength(1);
+    expect(evidence.rows[0]).toMatchObject({
+      sourceAlgoId: "sweep-scalp-linked",
+      researchCandidateId: "rcid-linked",
+      candidateConfigHash: "hash-linked",
+      promotionStage: "evidence_probe_only",
+      promotionVerdict: "evidence_probe_only",
+    });
     expect(evidence.byAlgoId["sweep-scalp-linked"]).toHaveLength(1);
     expect(evidence.byAlgoId["legacy-unlinked"]).toBeUndefined();
     expect(summary).toMatchObject({
@@ -1969,19 +1977,20 @@ describe("factory research safeguards", () => {
     const calibration = probabilityCalibrationForTrades([
       { status: "closed", pnl: 1, entryContext: { fairProbability: 0.8 } },
       { status: "closed", pnl: -1, entryContext: { fairProbability: 0.7 } },
+      { status: "closed", pnl: 1, entryPrice: 0.4 },
       { status: "open", pnl: null, entryContext: { fairProbability: 0.99 } },
       { status: "closed", pnl: null, entryContext: { fairProbability: 0.1 } },
     ], { bucketCount: 5 });
 
     expect(calibration).toMatchObject({
       schemaVersion: "dogeedge.probability-calibration.v1",
-      labelKnownCount: 2,
+      labelKnownCount: 3,
       calibrationReady: false,
       brierScore: expect.any(Number),
       logLoss: expect.any(Number),
       expectedCalibrationError: expect.any(Number),
     });
-    expect(calibration.reliabilityBuckets.reduce((sum, bucket) => sum + bucket.count, 0)).toBe(2);
+    expect(calibration.reliabilityBuckets.reduce((sum, bucket) => sum + bucket.count, 0)).toBe(3);
   });
 
   it("prefers finalized official settlement rows over weaker duplicates", () => {

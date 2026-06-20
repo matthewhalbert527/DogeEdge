@@ -15,6 +15,7 @@ import { replayParityReportFromManifest } from "./factory/replay-coverage.mjs";
 import { buildExecutableReadinessGate, readinessKpisFromGate } from "./factory/readiness-gate.mjs";
 import { normalizeOfficialSettlementRow, officialOutcomeMap } from "./factory/official-settlement.mjs";
 import { defaultPromotionThresholds } from "./factory/promotion.mjs";
+import { readPaperEvidence } from "./factory/paper-evidence.mjs";
 import {
   forecastCalibrationForDecisionRows,
   officialForecastCalibrationReport,
@@ -854,8 +855,16 @@ export async function exportEvaluationSnapshot(options = {}) {
       sourceRunId: primaryRun?.runId ?? null,
       sourceSnapshotHash,
     });
+    const executableTradeRows = await readExecutableEvidenceTradeRows({
+      storageDir,
+      snapshotId,
+      metricByAlgoId,
+      identityByAlgoId,
+      sourceRunId: primaryRun?.runId ?? null,
+      sourceSnapshotHash,
+    });
     decisionRows = enrichRowsWithCandidateIdentity(decisionRows, identityByAlgoId);
-    tradeRows = enrichRowsWithCandidateIdentity(tradeRows, identityByAlgoId);
+    tradeRows = dedupeTradeRows(enrichRowsWithCandidateIdentity([...tradeRows, ...executableTradeRows], identityByAlgoId));
   }
   const settlementJoinArtifacts = officialSettlementJoinArtifacts({
     snapshotId,
@@ -2200,35 +2209,69 @@ async function readTradeRows({ filePath, snapshotId, maxRowLines, metricByAlgoId
     .map((trade) => tradeRowFromPaperTrade(trade, { snapshotId, metricByAlgoId, identityByAlgoId, sourceRunId, sourceSnapshotHash }));
 }
 
+async function readExecutableEvidenceTradeRows({ storageDir, snapshotId, metricByAlgoId, identityByAlgoId, sourceRunId, sourceSnapshotHash }) {
+  const evidence = await readPaperEvidence({ storageDir });
+  return (Array.isArray(evidence?.rows) ? evidence.rows : [])
+    .filter((row) => row?.entryContext?.source === "top_traders_executable")
+    .map((trade) => tradeRowFromPaperTrade(trade, {
+      snapshotId,
+      metricByAlgoId,
+      identityByAlgoId,
+      sourceRunId,
+      sourceSnapshotHash,
+    }));
+}
+
+function dedupeTradeRows(rows) {
+  const seen = new Set();
+  const output = [];
+  for (const row of rows) {
+    const key = [
+      row.tradeId,
+      row.algoId,
+      row.marketTicker,
+      row.side,
+      row.openedAt,
+      row.closedAt,
+    ].join("|");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    output.push(row);
+  }
+  return output;
+}
+
 function tradeRowFromPaperTrade(trade, context) {
   const rawAlgoId = trade.strategyId ?? trade.algoId ?? "";
   const algoId = rawAlgoId.startsWith("generated:") ? rawAlgoId.slice("generated:".length) : rawAlgoId;
   const metric = context.metricByAlgoId.get(algoId) ?? context.metricByAlgoId.get(rawAlgoId) ?? {};
   const identity = identityForAlgo(context.identityByAlgoId, algoId);
+  const entryContext = isRecord(trade.entryContext) ? trade.entryContext : {};
+  const exitContext = isRecord(trade.exitContext) ? trade.exitContext : {};
   return {
     snapshotId: context.snapshotId,
     tradeId: trade.id ?? trade.tradeId ?? "",
     marketTicker: trade.marketTicker ?? trade.market_id ?? "",
     algoId,
     displayId: displayIdFromAlgo(algoId),
-    family: trade.family ?? metric.family ?? "",
-    researchCandidateId: identity?.researchCandidateId ?? "",
-    candidateConfigHash: identity?.candidateConfigHash ?? "",
-    promotionStage: metric.promotionStage ?? "paper_evidence",
-    promotionVerdict: metric.promotionVerdict ?? "dry_run_evidence_only",
+    family: trade.family ?? entryContext.family ?? metric.family ?? "",
+    researchCandidateId: identity?.researchCandidateId ?? trade.researchCandidateId ?? "",
+    candidateConfigHash: identity?.candidateConfigHash ?? trade.candidateConfigHash ?? "",
+    promotionStage: trade.promotionStage ?? metric.promotionStage ?? "paper_evidence",
+    promotionVerdict: trade.promotionVerdict ?? metric.promotionVerdict ?? "dry_run_evidence_only",
     openedAt: trade.openedAt ?? trade.timestamp ?? "",
     closedAt: trade.closedAt ?? "",
     decisionTimestamp: trade.decisionTimestamp ?? trade.openedAt ?? trade.timestamp ?? "",
     featureTimestamp: trade.featureTimestamp ?? trade.openedAt ?? trade.timestamp ?? "",
     labelTimestamp: trade.labelTimestamp ?? trade.closedAt ?? "",
     settlementTimestamp: trade.settlementTimestamp ?? trade.closedAt ?? "",
-    labelSource: trade.labelSource ?? trade.entryContext?.labelSource ?? "unknown",
+    labelSource: trade.labelSource ?? entryContext.labelSource ?? "unknown",
     settlementSource: trade.settlementSource ?? "estimated",
     officialResolutionAvailable: trade.officialResolutionAvailable === true || trade.settlementSource === "official_resolution",
     outcomeSide: trade.outcomeSide ?? "",
-    fairProbability: numberOrNull(trade.fairProbability ?? trade.entryContext?.fairProbability),
-    modelConfidence: numberOrNull(trade.modelConfidence ?? trade.entryContext?.confidence),
-    modelEdgeAfterFees: numberOrNull(trade.modelEdgeAfterFees ?? trade.entryContext?.edgeAfterFees),
+    fairProbability: numberOrNull(trade.fairProbability ?? entryContext.fairProbability),
+    modelConfidence: numberOrNull(trade.modelConfidence ?? entryContext.confidence),
+    modelEdgeAfterFees: numberOrNull(trade.modelEdgeAfterFees ?? entryContext.edgeAfterFees),
     status: trade.status ?? "",
     side: trade.side ?? "",
     contracts: numberOrZero(trade.contracts ?? trade.size),
@@ -2239,22 +2282,22 @@ function tradeRowFromPaperTrade(trade, context) {
     pnl: numberOrNull(trade.pnl),
     roiPerTrade: numberOrNull(trade.roi ?? trade.roiPerTrade),
     holdingSeconds: holdingSeconds(trade),
-    fillProbability: numberOrNull(trade.fillProbability ?? trade.entryContext?.fillProbability),
-    partialFillRatio: numberOrNull(trade.partialFillRatio ?? trade.entryContext?.partialFillRatio),
-    slippageCents: numberOrNull(trade.slippageCents ?? trade.entryContext?.slippageCents),
-    depthUtilization: numberOrNull(trade.depthUtilization ?? trade.entryContext?.fillDepthUtilization),
-    queueMiss: Boolean(trade.queueMiss ?? trade.entryContext?.queueMiss),
+    fillProbability: numberOrNull(trade.fillProbability ?? entryContext.fillProbability),
+    partialFillRatio: numberOrNull(trade.partialFillRatio ?? entryContext.partialFillRatio),
+    slippageCents: numberOrNull(trade.slippageCents ?? entryContext.slippageCents),
+    depthUtilization: numberOrNull(trade.depthUtilization ?? entryContext.fillDepthUtilization),
+    queueMiss: Boolean(trade.queueMiss ?? entryContext.queueMiss),
     rejectCode: trade.rejectCode ?? "",
-    entryReason: trade.entryReason ?? trade.reason ?? "",
-    exitReason: trade.exitReason ?? "",
-    entryRegimeTimeToClose: trade.entryContext?.regime?.timeToClose ?? "",
-    entryRegimeSpread: trade.entryContext?.regime?.spread ?? "",
-    entryRegimeLiquidity: trade.entryContext?.regime?.liquidity ?? "",
-    entryRegimeVolatility: trade.entryContext?.regime?.volatility ?? "",
-    entryRegimeMomentum: trade.entryContext?.regime?.momentum ?? "",
-    entryRegimeDistance: trade.entryContext?.regime?.distance ?? "",
-    sourceRunId: context.sourceRunId,
-    sourceSnapshotHash: context.sourceSnapshotHash,
+    entryReason: trade.entryReason ?? trade.reason ?? entryContext.source ?? "",
+    exitReason: trade.exitReason ?? exitContext.exitReason ?? "",
+    entryRegimeTimeToClose: entryContext.regime?.timeToClose ?? "",
+    entryRegimeSpread: entryContext.regime?.spread ?? "",
+    entryRegimeLiquidity: entryContext.regime?.liquidity ?? "",
+    entryRegimeVolatility: entryContext.regime?.volatility ?? "",
+    entryRegimeMomentum: entryContext.regime?.momentum ?? "",
+    entryRegimeDistance: entryContext.regime?.distance ?? "",
+    sourceRunId: trade.sourceRunId ?? entryContext.sourceRunId ?? context.sourceRunId,
+    sourceSnapshotHash: trade.sourceSnapshotHash ?? entryContext.sourceSnapshotHash ?? context.sourceSnapshotHash,
   };
 }
 

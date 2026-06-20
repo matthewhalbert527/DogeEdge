@@ -179,7 +179,13 @@ function probabilityForTrade(trade) {
     ?? context.fairProbability
     ?? context.confidence
     ?? inferProbabilityFromEdge(context.edgeAfterFees);
-  if (typeof raw !== "number" || !Number.isFinite(raw)) return probabilityForForecastRow(trade, normalizeSide(trade.side));
+  if (typeof raw !== "number" || !Number.isFinite(raw)) {
+    const forecastProbability = probabilityForForecastRow(trade, normalizeSide(trade.side));
+    if (forecastProbability !== null) return forecastProbability;
+    const entryPrice = numeric(trade.entryPrice);
+    if (entryPrice !== null) return clampProb(entryPrice > 1 ? entryPrice / 100 : entryPrice);
+    return null;
+  }
   return clampProb(raw);
 }
 

@@ -10,11 +10,12 @@ export async function readPaperEvidence({ storageDir, paperTradesPath = null, si
   const executableRows = await readExecutablePaperRows(executablePath);
   const rows = dedupeEvidenceRows([...tradeRows, ...executableRows]);
   const filtered = rows.filter((row) => inWindow(row, since, until));
+  const normalizedRows = dedupeEvidenceRows(filtered.map((row) => normalizePaperTrade(row)));
   const byAlgoId = {};
-  for (const row of filtered) {
+  for (const row of normalizedRows) {
     for (const key of paperAlgoKeys(row)) {
       byAlgoId[key] ??= [];
-      byAlgoId[key].push(normalizePaperTrade(row));
+      byAlgoId[key].push(row);
     }
   }
   return {
@@ -23,6 +24,7 @@ export async function readPaperEvidence({ storageDir, paperTradesPath = null, si
       paperTrades: sourcePath,
       topTradersExecutable: executablePath,
     },
+    rows: normalizedRows,
     byAlgoId,
     summary: {
       sourcePath,
@@ -131,6 +133,11 @@ function normalizePaperTrade(row) {
     sourceAlgoId: stringOrNull(row?.sourceAlgoId) ?? stringOrNull(row?.algoSourceId) ?? stringOrNull(row?.sourceResearchAlgoId),
     researchCandidateId: stringOrNull(row?.researchCandidateId),
     candidateConfigHash: stringOrNull(row?.candidateConfigHash),
+    sourceRunId: stringOrNull(row?.sourceRunId),
+    sourceSnapshotHash: stringOrNull(row?.sourceSnapshotHash),
+    family: stringOrNull(row?.family) ?? stringOrNull(row?.algoFamily) ?? stringOrNull(row?.entryContext?.family),
+    promotionStage: stringOrNull(row?.promotionStage),
+    promotionVerdict: stringOrNull(row?.promotionVerdict),
     marketTicker: stringOrNull(row?.marketTicker) ?? stringOrNull(row?.ticker) ?? "unknown",
     side: row?.side === "NO" ? "NO" : "YES",
     contracts: numberOrDefault(row?.contracts, 0),
@@ -182,6 +189,11 @@ function normalizeExecutablePosition(position, exactStats) {
     sourceResearchAlgoId: stringOrNull(stat.sourceResearchAlgoId) ?? sourceAlgoId,
     researchCandidateId: stringOrNull(stat.researchCandidateId),
     candidateConfigHash: stringOrNull(stat.candidateConfigHash),
+    sourceRunId: stringOrNull(stat.sourceRunId),
+    sourceSnapshotHash: stringOrNull(stat.sourceSnapshotHash),
+    family: stringOrNull(stat.family) ?? stringOrNull(position.algoFamily),
+    promotionStage: "evidence_probe_only",
+    promotionVerdict: "evidence_probe_only",
     marketTicker: stringOrNull(position.ticker) ?? stringOrNull(position.marketTicker),
     side: position.side === "NO" ? "NO" : "YES",
     contracts: numberOrDefault(position.contracts, 0),
@@ -199,6 +211,9 @@ function normalizeExecutablePosition(position, exactStats) {
       evidenceStatus: stat.evidenceStatus ?? null,
       displayId: stat.displayId ?? position.algoDisplayId ?? null,
       family: stat.family ?? position.algoFamily ?? null,
+      fairProbability: numberOrNull(position.entryPrice),
+      sourceRunId: stat.sourceRunId ?? null,
+      sourceSnapshotHash: stat.sourceSnapshotHash ?? null,
     },
     exitContext: position.status === "closed" ? { exitReason: position.exitReason ?? null } : null,
   };

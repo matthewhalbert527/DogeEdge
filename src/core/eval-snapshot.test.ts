@@ -603,6 +603,13 @@ describe("continuous evaluation snapshot exporter", () => {
     expect(allocations).toContain("execution-canary-sweep-scalp-0001");
     expect(allocations).toContain("execution_canary_watch\tfalse\texecution_canary_paper_only");
     expect(allocations).toContain("execution_canary_paper_only");
+
+    const tradeRows = gunzipSync(readFileSync(path.join(result.snapshotDir, "tradeRows.tsv.gz"))).toString("utf8");
+    expect(tradeRows).toContain("execution-canary-sweep-scalp-0001");
+    expect(tradeRows).toContain("evidence_probe_only");
+    const calibration = JSON.parse(readFileSync(path.join(result.snapshotDir, "calibration_report.json"), "utf8"));
+    expect(calibration.tradeOutcomeCalibration.labelKnownCount).toBeGreaterThanOrEqual(1);
+    expect(calibration.simulatorCalibration.attempts).toBeGreaterThanOrEqual(1);
   });
 
   it("keeps older exact-linked execution stats linked when canary lane fields were dropped", async () => {
@@ -821,6 +828,7 @@ function writeEvalFixture(options: { liveSwitch?: unknown; rawSnapshotMarketTick
       family: "sweep-scalp",
       researchCandidateId: "rcid-111111111111111111111111",
       candidateConfigHash: "a".repeat(64),
+      exactLinked: true,
       sourceResearchAlgoId: "sweep-scalp-s100-f40-e0-no-only-none",
       sourceRunId: "older-supported-run",
       sourceSnapshotHash: "b".repeat(64),
@@ -844,6 +852,24 @@ function writeEvalFixture(options: { liveSwitch?: unknown; rawSnapshotMarketTick
       executionCanaryStats.paperOnly = true;
     }
     topTradersExecutable.topTradersExecutable.stats["execution-canary-sweep-scalp-0001"] = executionCanaryStats;
+    topTradersExecutable.topTradersExecutable.positions.push({
+      id: "execution-canary-position-1",
+      algoId: "generated:execution-canary-sweep-scalp-0001",
+      algoDisplayId: "E-0001",
+      algoName: "Execution Canary Scalp",
+      algoFamily: "sweep-scalp",
+      algoSourceId: "execution-canary-sweep-scalp-0001",
+      ticker: "KXDOGE15M-CANARY",
+      side: "YES",
+      contracts: 2,
+      entryPrice: 0.4,
+      exitPrice: 0.48,
+      openedAt: "2026-06-07T20:10:00.000Z",
+      closedAt: "2026-06-07T20:12:00.000Z",
+      status: "closed",
+      realizedPnl: 0.16,
+      exitReason: "test take-profit",
+    });
   }
 
   writeFileSync(path.join(storageDir, "latest.json"), `${JSON.stringify({
