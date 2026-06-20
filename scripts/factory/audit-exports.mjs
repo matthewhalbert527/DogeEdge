@@ -1,4 +1,4 @@
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { chronologicalSplit, cpcvApproximationFolds, purgedEmbargoFolds } from "./splits.mjs";
@@ -18,7 +18,8 @@ export async function auditReviewExports({
   gateReport = false,
   reconcileTopRoster = false,
 } = {}) {
-  const inputRoot = path.resolve(repoRoot, input);
+  const requestedInputRoot = path.resolve(repoRoot, input);
+  const inputRoot = await resolveReviewInputRoot(requestedInputRoot);
   const outputRoot = path.resolve(repoRoot, outDir);
   await mkdir(outputRoot, { recursive: true });
   await mkdir(path.join(inputRoot, "normalized"), { recursive: true }).catch(() => {});
@@ -51,6 +52,7 @@ export async function auditReviewExports({
   const reproducibility = reproducibilityWarnings({ repoSnapshot, fullRun, registry, roles });
   const audit = {
     generatedAtUtc: new Date().toISOString(),
+    requestedInputRoot,
     inputRoot,
     roles,
     schema,
@@ -83,6 +85,42 @@ export async function auditReviewExports({
   await writeJson(path.join(outputRoot, "final-review.json"), finalReview);
   await writeFile(path.join(outputRoot, "final-review.md"), finalReviewMarkdown(finalReview));
   return audit;
+}
+
+async function resolveReviewInputRoot(inputRoot) {
+  if (await fileExists(path.join(inputRoot, "manifest.json"))) return inputRoot;
+  const latestBundleRoot = await latestBundleDirectory(path.join(inputRoot, "bundles"));
+  return latestBundleRoot ?? inputRoot;
+}
+
+async function latestBundleDirectory(bundlesRoot) {
+  let entries;
+  try {
+    entries = await readdir(bundlesRoot, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+
+  const candidates = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const dir = path.join(bundlesRoot, entry.name);
+    const manifestPath = path.join(dir, "manifest.json");
+    if (!await fileExists(manifestPath)) continue;
+    const manifestStat = await stat(manifestPath).catch(() => null);
+    const dirStat = await stat(dir).catch(() => null);
+    candidates.push({
+      dir,
+      name: entry.name,
+      mtimeMs: manifestStat?.mtimeMs ?? dirStat?.mtimeMs ?? 0,
+    });
+  }
+
+  candidates.sort((left, right) => {
+    const byTime = right.mtimeMs - left.mtimeMs;
+    return byTime !== 0 ? byTime : right.name.localeCompare(left.name);
+  });
+  return candidates[0]?.dir ?? null;
 }
 
 async function discoverRoles(root) {
@@ -903,6 +941,15 @@ async function listFiles(dir) {
     return nested.flat();
   } catch {
     return [];
+  }
+}
+
+async function fileExists(file) {
+  try {
+    const info = await stat(file);
+    return info.isFile();
+  } catch {
+    return false;
   }
 }
 

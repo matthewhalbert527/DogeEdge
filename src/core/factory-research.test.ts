@@ -1054,6 +1054,32 @@ describe("factory research safeguards", () => {
     expect(finalReview).toContain("Hash-skipped source sample: raw/snapshots/records.jsonl (60000000 bytes)");
   });
 
+  it("audits the latest review bundle when given the review_exports parent", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "dogeedge-review-bundle-parent-"));
+    const input = path.join(root, "review_exports");
+    const bundle = path.join(input, "bundles", "dogeedge-review-bundle-20260620T030521Z");
+    const out = path.join(root, "artifacts", "factory-audit");
+    mkdirSync(bundle, { recursive: true });
+    writeReviewBundleFixture(bundle);
+
+    const audit = await auditReviewExports({ input, outDir: out, foldCount: 2, embargoMs: 60_000, gateReport: true });
+    const finalReview = readFileSync(path.join(out, "final-review.md"), "utf8");
+
+    expect(audit.inputRoot).toBe(path.resolve(bundle));
+    expect(audit.requestedInputRoot).toBe(path.resolve(input));
+    expect(audit.bundleEvidence).toMatchObject({
+      rowExport: {
+        mode: "capped",
+        rowsCapped: true,
+      },
+      rawTicks: {
+        availabilityStatus: "target_samples_absent",
+      },
+    });
+    expect(finalReview).toContain("Rows: capped at 1000");
+    expect(finalReview).not.toContain("No bundle manifest was present");
+  });
+
   it("strict export audit fails closed on post-close decision rows", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "dogeedge-postclose-audit-"));
     const input = path.join(root, "review_exports");
