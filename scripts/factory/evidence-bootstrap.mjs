@@ -566,8 +566,9 @@ export function executionCanaryHealth(executable, {
     .filter((value) => value.length > 0);
   if (unhealthyByRowLoss.length > 0) reasonCodes.push("canary_row_loss_limit_exceeded");
   const rejectRate = totals.attempts > 0 ? totals.rejected / totals.attempts : 0;
+  const enoughRejectEvidence = totals.attempts >= Math.max(1, Number(minRejectRateAttempts ?? 25));
   if (
-    totals.attempts >= Math.max(1, Number(minRejectRateAttempts ?? 25))
+    enoughRejectEvidence
     && rejectRate >= Math.max(0, Number(maxRejectRate ?? 0.7))
   ) {
     reasonCodes.push("canary_reject_rate_exceeded");
@@ -588,11 +589,18 @@ export function executionCanaryHealth(executable, {
     .filter((row) => rowHasUnhealthyCanaryEvidence(row, reasonCodes, unhealthyByRowLoss))
     .map((row) => String(row.sourceAlgoId ?? ""))
     .filter((value) => value.length > 0);
-  const blockingReasons = reasonCodes.filter((code) => code !== "no_execution_canary_stats");
+  const blockingReasonSet = new Set(["canary_loss_limit_exceeded", "canary_row_loss_limit_exceeded", "canary_reject_rate_exceeded", "canary_idle_without_attempts"]);
+  const hasBlockingReason = reasonCodes.some((code) => blockingReasonSet.has(code));
+  const aggregateSampleReady = rows.length > 0 && enoughLossEvidence && enoughRejectEvidence;
+  if (rows.length > 0 && !aggregateSampleReady && !hasBlockingReason) reasonCodes.push("canary_warming_up_insufficient_sample");
+  const blockingReasons = reasonCodes.filter((code) => (
+    code !== "no_execution_canary_stats"
+    && code !== "canary_warming_up_insufficient_sample"
+  ));
   return {
     schemaVersion: "dogeedge.execution-canary-health.v1",
     generatedAt: now,
-    status: blockingReasons.length > 0 ? "fail" : rows.length === 0 ? "unknown" : "pass",
+    status: blockingReasons.length > 0 ? "fail" : rows.length === 0 ? "unknown" : aggregateSampleReady ? "pass" : "warming_up",
     reasonCodes,
     unhealthySourceAlgoIds: [...new Set(unhealthySourceAlgoIds)],
     rejectRate: Math.round(rejectRate * 10_000) / 10_000,

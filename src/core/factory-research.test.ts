@@ -1640,6 +1640,38 @@ describe("factory research safeguards", () => {
     });
   });
 
+  it("marks small execution canary samples as warming up instead of pass", () => {
+    const health = executionCanaryHealth({
+      stats: {
+        "fresh-canary": {
+          sourceAlgoId: "fresh-canary",
+          lane: "exact_linked_execution_canary",
+          attempts: 15,
+          acceptedBuys: 0,
+          rejected: 15,
+          sells: 0,
+          open: 0,
+          totalPnl: 0,
+          startedAt: "2026-06-20T00:00:00.000Z",
+          lastAttemptAt: "2026-06-20T00:12:00.000Z",
+        },
+      },
+    }, {
+      minAttempts: 30,
+      minSells: 10,
+      minRejectRateAttempts: 25,
+      maxRejectRate: 0.7,
+      now: "2026-06-20T00:15:00.000Z",
+    });
+    expect(health).toMatchObject({
+      status: "warming_up",
+      reasonCodes: ["canary_warming_up_insufficient_sample"],
+      rejectRate: 1,
+      attempts: 15,
+      acceptedBuys: 0,
+    });
+  });
+
   it("carries forward prior unhealthy canary exclusions across reseeds", () => {
     expect(mergedCanaryExclusions(
       { excludedSourceAlgoIds: ["old-bad", "still-bad"] },
