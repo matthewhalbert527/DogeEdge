@@ -6,7 +6,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { gunzipSync, gzipSync } from "node:zlib";
-import { normalizeReplayRawEvent, replaySequenceReport } from "./raw-tick-extract.mjs";
+import { normalizeReplayRawEvent, selectReplaySegment } from "./raw-tick-extract.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const execFileAsync = promisify(execFile);
@@ -49,23 +49,29 @@ const targetMarkets = markets.length ? markets : [...eventsByMarket.keys()].sort
 const marketSummaries = [];
 const gapRows = [];
 for (const marketTicker of targetMarkets) {
-  const events = (eventsByMarket.get(marketTicker) ?? []).sort(compareReplayEvents);
+  const sourceEvents = (eventsByMarket.get(marketTicker) ?? []).sort(compareReplayEvents);
+  const selectedSegment = selectReplaySegment(sourceEvents);
+  const events = selectedSegment.events;
   const marketDir = path.join(outputRoot, safeSegment(marketTicker));
   await mkdir(marketDir, { recursive: true });
   const replayPayload = events.map((event) => JSON.stringify(event)).join("\n") + (events.length ? "\n" : "");
   const replayPath = path.join(marketDir, "replay.jsonl.gz");
   await writeFile(replayPath, gzipSync(replayPayload));
-  const sequence = replaySequenceReport(events);
+  const sequence = selectedSegment.sequence;
   const index = {
     schemaVersion: "dogeedge.replay-index.v1",
     marketTicker,
     rowCount: events.length,
+    sourceEventCount: selectedSegment.sourceEventCount,
+    evaluatedSegmentCount: selectedSegment.evaluatedSegmentCount,
+    selectedSegmentKey: selectedSegment.selectedSegmentKey,
     firstReceiveTs: events[0]?.receiveTs ?? null,
     lastReceiveTs: events.at(-1)?.receiveTs ?? null,
     firstSeq: firstNumber(events.map((event) => event.seq)),
     lastSeq: lastNumber(events.map((event) => event.seq)),
     sha256: sha256(replayPayload),
     sequence,
+    segmentSummaries: selectedSegment.segmentSummaries,
   };
   const manifest = {
     schemaVersion: "dogeedge.replay-market-manifest.v1",
@@ -81,6 +87,9 @@ for (const marketTicker of targetMarkets) {
     replayFile: "replay.jsonl.gz",
     indexFile: "replay.index.json",
     rowCount: events.length,
+    sourceEventCount: selectedSegment.sourceEventCount,
+    evaluatedSegmentCount: selectedSegment.evaluatedSegmentCount,
+    selectedSegmentKey: selectedSegment.selectedSegmentKey,
     sha256: index.sha256,
     gitCommit,
     captureRunId,

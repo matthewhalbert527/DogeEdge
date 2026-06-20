@@ -222,6 +222,84 @@ export function replaySequenceReport(events = []) {
   };
 }
 
+export function selectReplaySegment(events = []) {
+  const normalized = events.filter(Boolean);
+  if (normalized.length === 0) {
+    const report = replaySequenceReport([]);
+    return {
+      events: [],
+      sequence: report,
+      selectedSegmentKey: null,
+      evaluatedSegmentCount: 0,
+      sourceEventCount: 0,
+      segmentSummaries: [],
+    };
+  }
+  const groups = new Map();
+  for (const event of normalized) {
+    const key = replaySegmentKey(event);
+    const rows = groups.get(key) ?? [];
+    rows.push(event);
+    groups.set(key, rows);
+  }
+  const segmentSummaries = [...groups.entries()].map(([segmentKey, rows]) => {
+    const sortedRows = sortReplayEvents(rows);
+    const sequence = replaySequenceReport(sortedRows);
+    return {
+      segmentKey,
+      captureRunId: rows.find((event) => event.captureRunId)?.captureRunId ?? null,
+      wsSessionId: rows.find((event) => event.wsSessionId)?.wsSessionId ?? null,
+      rowCount: sortedRows.length,
+      firstReceiveTs: sortedRows[0]?.receiveTs ?? null,
+      lastReceiveTs: sortedRows.at(-1)?.receiveTs ?? null,
+      replayGradeAvailable: sequence.replayGradeAvailable,
+      snapshotCount: sequence.snapshotCount,
+      deltaCount: sequence.deltaCount,
+      tradeCount: sequence.tradeCount,
+      gapCount: sequence.gapCount,
+      duplicateCount: sequence.duplicateCount,
+      outOfOrderCount: sequence.outOfOrderCount,
+      events: sortedRows,
+      sequence,
+    };
+  }).sort(compareReplaySegmentSummaries);
+  const selected = segmentSummaries[0];
+  return {
+    events: selected?.events ?? [],
+    sequence: selected?.sequence ?? replaySequenceReport([]),
+    selectedSegmentKey: selected?.segmentKey ?? null,
+    evaluatedSegmentCount: segmentSummaries.length,
+    sourceEventCount: normalized.length,
+    segmentSummaries: segmentSummaries.map(({ events: _events, sequence: _sequence, ...summary }) => summary),
+  };
+}
+
+function replaySegmentKey(event) {
+  const run = stringOrNull(event.captureRunId) ?? "manual";
+  const session = stringOrNull(event.wsSessionId) ?? stringOrNull(event.sid) ?? "sessionless";
+  return `${run}::${session}`;
+}
+
+function compareReplaySegmentSummaries(left, right) {
+  if (left.replayGradeAvailable !== right.replayGradeAvailable) return left.replayGradeAvailable ? -1 : 1;
+  const leftQualityPenalty = left.gapCount * 1000000 + left.duplicateCount * 1000 + left.outOfOrderCount;
+  const rightQualityPenalty = right.gapCount * 1000000 + right.duplicateCount * 1000 + right.outOfOrderCount;
+  if (leftQualityPenalty !== rightQualityPenalty) return leftQualityPenalty - rightQualityPenalty;
+  if ((left.snapshotCount > 0) !== (right.snapshotCount > 0)) return left.snapshotCount > 0 ? -1 : 1;
+  if ((left.deltaCount > 0) !== (right.deltaCount > 0)) return left.deltaCount > 0 ? -1 : 1;
+  if (left.rowCount !== right.rowCount) return right.rowCount - left.rowCount;
+  return Date.parse(right.lastReceiveTs ?? "") - Date.parse(left.lastReceiveTs ?? "");
+}
+
+function sortReplayEvents(events) {
+  return [...events].sort((left, right) => {
+    const leftSeq = numberOrNull(left.seq);
+    const rightSeq = numberOrNull(right.seq);
+    if (leftSeq !== null && rightSeq !== null && leftSeq !== rightSeq) return leftSeq - rightSeq;
+    return Date.parse(left.receiveTs ?? "") - Date.parse(right.receiveTs ?? "");
+  });
+}
+
 function uniqueStrings(values) {
   return [...new Set(values.map((value) => typeof value === "string" ? value.trim() : "").filter(Boolean))];
 }

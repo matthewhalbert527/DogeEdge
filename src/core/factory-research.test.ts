@@ -28,7 +28,7 @@ import {
   officialOutcomeMap,
   officialSettlementCoverageForEvents,
 } from "../../scripts/factory/official-settlement.mjs";
-import { compactReplayTickRow, normalizeReplayRawEvent, rawTickReplayManifest, replaySequenceReport } from "../../scripts/factory/raw-tick-extract.mjs";
+import { compactReplayTickRow, normalizeReplayRawEvent, rawTickReplayManifest, replaySequenceReport, selectReplaySegment } from "../../scripts/factory/raw-tick-extract.mjs";
 import { replayParityReportFromManifest } from "../../scripts/factory/replay-coverage.mjs";
 import { buildExecutableReadinessGate } from "../../scripts/factory/readiness-gate.mjs";
 import { forecastCalibrationForDecisionRows, officialForecastCalibrationReport, probabilityCalibrationForTrades, tradeCalibrationByCandidate } from "../../scripts/factory/probability-calibration.mjs";
@@ -2478,6 +2478,42 @@ describe("factory research safeguards", () => {
     expect(replaySequenceReport(polling)).toMatchObject({
       replayGradeAvailable: false,
       fallbackKind: "polling_diagnostic_only",
+    });
+  });
+
+  it("selects one replay-grade websocket segment when overlapping captures reset sequence numbers", () => {
+    const firstCapture = [
+      normalizeReplayRawEvent({ marketTicker: "KXDOGE15M-OVERLAP", captureRunId: "capture-a", wsSessionId: "session-a", messageType: "snapshot", seq: 1, receiveTs: "2026-06-20T09:34:44.000Z", sourceFileOrdinal: 1, bookSnapshot: { yes: [[0.5, 10]] } }),
+      normalizeReplayRawEvent({ marketTicker: "KXDOGE15M-OVERLAP", captureRunId: "capture-a", wsSessionId: "session-a", messageType: "delta", seq: 2, receiveTs: "2026-06-20T09:34:45.000Z", sourceFileOrdinal: 2, side: "YES", price: 0.51, delta: 1 }),
+    ];
+    const overlappingCapture = [
+      normalizeReplayRawEvent({ marketTicker: "KXDOGE15M-OVERLAP", captureRunId: "capture-b", wsSessionId: "session-b", messageType: "snapshot", seq: 1, receiveTs: "2026-06-20T09:38:44.000Z", sourceFileOrdinal: 10, bookSnapshot: { yes: [[0.5, 10]] } }),
+      normalizeReplayRawEvent({ marketTicker: "KXDOGE15M-OVERLAP", captureRunId: "capture-b", wsSessionId: "session-b", messageType: "delta", seq: 2, receiveTs: "2026-06-20T09:38:45.000Z", sourceFileOrdinal: 11, side: "YES", price: 0.52, delta: 1 }),
+    ];
+    const combined = [...firstCapture, ...overlappingCapture].filter(Boolean);
+
+    expect(replaySequenceReport(combined)).toMatchObject({
+      replayGradeAvailable: false,
+      duplicateCount: 2,
+    });
+    expect(selectReplaySegment(combined)).toMatchObject({
+      sourceEventCount: 4,
+      evaluatedSegmentCount: 2,
+      sequence: {
+        replayGradeAvailable: true,
+        gapCount: 0,
+        duplicateCount: 0,
+      },
+      segmentSummaries: [
+        {
+          replayGradeAvailable: true,
+          rowCount: 2,
+        },
+        {
+          replayGradeAvailable: true,
+          rowCount: 2,
+        },
+      ],
     });
   });
 
