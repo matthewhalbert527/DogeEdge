@@ -2066,6 +2066,19 @@ describe("factory research safeguards", () => {
       allowedToLoadArenaBatch: false,
       reasonCodes: ["research_validated_roster_empty"],
     })}\n`);
+    writeFileSync(path.join(evidenceDir, "research_roster_blockers.json"), `${JSON.stringify({
+      currentBottleneck: "conservative_holdout_not_passing",
+      validationStatus: "supported_family_holdout_failure_partial_search",
+      nextEvidenceNeed: "Need a supported exact-linked candidate with positive conservative holdout P/L.",
+      supportedExecutableSweepCoverage: {
+        requested: 972,
+        selected: 500,
+        fullyCovered: false,
+      },
+      topReasons: [
+        { code: "holdout_failed", count: 500 },
+      ],
+    })}\n`);
 
     await writeReadinessPercent({
       finishedAt: "2026-06-19T17:24:23.215Z",
@@ -2084,6 +2097,16 @@ describe("factory research safeguards", () => {
       evidenceCollectionProgressPercent: 100,
       promotionGateSource: "executable_readiness_gate",
       promotionGateReasonCodes: ["research_validated_roster_empty"],
+      promotionBlockerDetail: {
+        currentBottleneck: "conservative_holdout_not_passing",
+        validationStatus: "supported_family_holdout_failure_partial_search",
+        nextEvidenceNeed: "Need a supported exact-linked candidate with positive conservative holdout P/L.",
+        supportedExecutableSweepCoverage: {
+          requested: 972,
+          selected: 500,
+          fullyCovered: false,
+        },
+      },
       canPlaceOrders: false,
     });
   });

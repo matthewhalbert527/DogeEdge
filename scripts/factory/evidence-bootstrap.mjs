@@ -344,7 +344,10 @@ export async function writeReadinessPercent(report) {
   const factoryBatches = await readJsonMaybe(path.join(report.storageDir, "factory-batches.json"));
   const targetMarkets = await readJsonMaybe(path.join(report.outDir, "target-markets", "target_markets.json"));
   const executableGate = await readJsonMaybe(path.join(evidenceDir, "executable_readiness_gate.json"))
+    ?? await latestReviewSnapshotJson(report.reviewRoot, "executable_readiness_gate.json")
     ?? await latestBundleExecutableGate(report.reviewRoot);
+  const researchRosterBlockers = await readJsonMaybe(path.join(evidenceDir, "research_roster_blockers.json"))
+    ?? await latestReviewSnapshotJson(report.reviewRoot, "research_roster_blockers.json");
   const officialSettlementCoverage = Number(settlement?.coverage?.officialSettlementCoverage ?? 0);
   const replayGradeTargetMarketCoverage = Number(replay?.replayGradeTargetMarketCoverage ?? 0);
   const exactLinkedProbeCount = Array.isArray(probes?.probes) ? probes.probes.filter((probe) => probe?.exactLinked).length : 0;
@@ -378,6 +381,7 @@ export async function writeReadinessPercent(report) {
     evidenceCollectionReady,
     promotionGateSource: executableGate ? "executable_readiness_gate" : "absent_fail_closed",
     promotionGateReasonCodes: executableGate?.reasonCodes ?? ["executable_readiness_gate_absent"],
+    promotionBlockerDetail: readinessPromotionBlockerDetail(researchRosterBlockers),
     components,
     canPlaceOrders: false,
     note: "Promotion readiness is controlled by the executable readiness gate. Evidence collection progress is a monitoring score, not permission to trade.",
@@ -574,6 +578,27 @@ function arrayOfStrings(value) {
     : [];
 }
 
+async function latestReviewSnapshotJson(reviewRoot = path.join(repoRoot, "review_exports"), fileName) {
+  if (!fileName) return null;
+  const snapshotsDir = path.join(reviewRoot, "snapshots");
+  let entries = [];
+  try {
+    entries = await readdir(snapshotsDir, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  const candidates = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const filePath = path.join(snapshotsDir, entry.name, fileName);
+    const info = await stat(filePath).catch(() => null);
+    if (!info) continue;
+    candidates.push({ filePath, mtimeMs: info.mtimeMs });
+  }
+  candidates.sort((left, right) => right.mtimeMs - left.mtimeMs);
+  return candidates.length > 0 ? readJsonMaybe(candidates[0].filePath) : null;
+}
+
 async function latestBundleExecutableGate(reviewRoot = path.join(repoRoot, "review_exports")) {
   const bundlesDir = path.join(reviewRoot, "bundles");
   let entries = [];
@@ -594,6 +619,17 @@ async function latestBundleExecutableGate(reviewRoot = path.join(repoRoot, "revi
   return candidates.length > 0 ? readJsonMaybe(candidates[0].gatePath) : null;
 }
 
+function readinessPromotionBlockerDetail(blockers) {
+  if (!blockers || typeof blockers !== "object") return null;
+  return {
+    currentBottleneck: blockers.currentBottleneck ?? null,
+    validationStatus: blockers.validationStatus ?? null,
+    nextEvidenceNeed: blockers.nextEvidenceNeed ?? null,
+    supportedExecutableSweepCoverage: blockers.supportedExecutableSweepCoverage ?? null,
+    topReasons: Array.isArray(blockers.topReasons) ? blockers.topReasons.slice(0, 5) : [],
+  };
+}
+
 function readinessMarkdown(readiness) {
   return [
     "# DogeEdge Readiness Percent",
@@ -609,6 +645,9 @@ function readinessMarkdown(readiness) {
       const suffix = component.unit === "percent" ? "%" : "";
       return `| ${component.kpi} | ${component.value}${suffix} | ${component.target}${suffix} | ${component.status} |`;
     }),
+    "",
+    readiness.promotionBlockerDetail?.nextEvidenceNeed ? `Promotion blocker: ${readiness.promotionBlockerDetail.nextEvidenceNeed}` : "",
+    readiness.promotionBlockerDetail?.currentBottleneck ? `Current bottleneck: ${readiness.promotionBlockerDetail.currentBottleneck}` : "",
     "",
     readiness.note,
     "",

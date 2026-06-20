@@ -566,6 +566,103 @@ describe("continuous evaluation snapshot exporter", () => {
     expect(manifest.files.map((file: { relativePath: string }) => file.relativePath)).not.toContain("snapshots/raw_market_ticks/jsonl/KXDOGE15M-FIXTURE.jsonl");
   }, 15_000);
 
+  it("explains empty roster holdout failures with supported sweep coverage", async () => {
+    const fixture = writeEvalFixture();
+    const latestSweepPath = path.join(fixture.backtestsDir, "latest-sweep.json");
+    const latestSweep = JSON.parse(readFileSync(latestSweepPath, "utf8"));
+    const rejectedMetric = {
+      ...latestSweep.topMetrics[0],
+      family: "sweep-scalp",
+      promotionVerdict: "reject",
+      promotionStage: "rejected",
+      nonPromotable: true,
+      holdoutPass: false,
+      holdoutConservativeClosed: 14,
+      holdoutConservativeTotalPnl: -2.12,
+      holdoutLowerCi: -0.53,
+      holdoutSummary: {
+        ...(latestSweep.topMetrics[0].holdoutSummary ?? {}),
+        holdoutConservativeClosed: 14,
+        holdoutConservativeMarkets: 12,
+        holdoutMarkets: 46,
+      },
+      reasonCodes: [
+        "holdout_failed",
+        "holdout_roi_too_low",
+        "holdout_expectancy_ci_below_zero",
+      ],
+    };
+    latestSweep.topMetrics = [rejectedMetric];
+    latestSweep.candidates = [];
+    latestSweep.promoteCheckMode = true;
+    latestSweep.promoteCheckMaxSweepAlgos = 500;
+    latestSweep.searchBudget = {
+      limited: true,
+      reasonCodes: ["promote_check_diagnostic_cap"],
+      requestedSweepAlgos: 6036,
+      maxGeneratedAlgos: 500,
+      promoteCheckDiagnosticCap: {
+        applied: true,
+        maxGeneratedAlgos: 500,
+        requestedSweepAlgos: 6036,
+      },
+      familyBudget: {
+        selectedAlgos: 500,
+        families: [
+          {
+            family: "sweep-model",
+            requested: 1152,
+            selected: 0,
+            researchSupported: true,
+            labOnly: true,
+            budgetLane: "research_only_family",
+          },
+          {
+            family: "sweep-scalp",
+            requested: 810,
+            selected: 338,
+            researchSupported: true,
+            labOnly: false,
+            budgetLane: "executable_linked_family",
+          },
+          {
+            family: "sweep-liquidity-imbalance",
+            requested: 162,
+            selected: 162,
+            researchSupported: true,
+            labOnly: false,
+            budgetLane: "executable_linked_family",
+          },
+        ],
+      },
+    };
+    writeFileSync(latestSweepPath, `${JSON.stringify(latestSweep)}\n`);
+
+    const result = await exportEvaluationSnapshot({
+      dataRoot: fixture.dataRoot,
+      storageDir: fixture.storageDir,
+      backtestsDir: fixture.backtestsDir,
+      outDir: fixture.outDir,
+      now: "2026-06-07T20:40:00.000Z",
+      maxMetrics: 10,
+    });
+    const blockers = JSON.parse(readFileSync(path.join(result.snapshotDir, "research_roster_blockers.json"), "utf8"));
+
+    expect(blockers).toMatchObject({
+      failClosed: true,
+      validationStatus: "supported_family_holdout_failure_partial_search",
+      currentBottleneck: "conservative_holdout_not_passing",
+      supportedExecutableSweepCoverage: {
+        requested: 972,
+        selected: 500,
+        fullyCovered: false,
+      },
+    });
+    expect(blockers.nextEvidenceNeed).toContain("positive conservative holdout P/L");
+    expect(blockers.nextEvidenceNeed).toContain("500/972 supported executable sweep variants");
+    expect(blockers.nextEvidenceNeed).not.toContain("Need more conservative-cost holdout evidence");
+  });
+
   it("counts immutable execution canaries as exact-linked diagnostics without promoting them", async () => {
     const fixture = writeEvalFixture({ executionCanary: true });
     const result = await exportEvaluationSnapshot({

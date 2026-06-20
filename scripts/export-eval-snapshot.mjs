@@ -982,7 +982,7 @@ export async function exportEvaluationSnapshot(options = {}) {
   const replayParityReport = replayParityReportFromRawManifest({ snapshotId, generatedAt, rawTickManifest, replayManifestSummary });
   const rejectStreamSummary = rejectStreamSummaryReport({ snapshotId, generatedAt, decisionRows, tradeRows, topStats });
   const topRosterAudit = topRosterDefaultSortAudit({ snapshotId, alignmentArtifacts });
-  const researchRosterBlockers = researchRosterBlockerReport({ snapshotId, generatedAt, metrics, topRosterAudit });
+  const researchRosterBlockers = researchRosterBlockerReport({ snapshotId, generatedAt, metrics, topRosterAudit, primaryRun });
   const executableReadinessGate = executableReadinessGateReport({
     snapshotId,
     generatedAt,
@@ -3586,7 +3586,7 @@ function rejectStreamSummaryReport({ snapshotId, generatedAt, decisionRows, trad
   };
 }
 
-function researchRosterBlockerReport({ snapshotId, generatedAt, metrics = [], topRosterAudit = {} }) {
+function researchRosterBlockerReport({ snapshotId, generatedAt, metrics = [], topRosterAudit = {}, primaryRun = null }) {
   const rows = Array.isArray(metrics) ? metrics : [];
   const reasonCounts = {};
   const verdictCounts = {};
@@ -3609,6 +3609,7 @@ function researchRosterBlockerReport({ snapshotId, generatedAt, metrics = [], to
   const topReasons = sortedCountRows(reasonCounts).slice(0, 15);
   const topFamilies = sortedCountRows(familyCounts).slice(0, 15);
   const topCandidate = blockedCandidates[0] ?? null;
+  const searchBudget = researchRosterSearchBudgetSummary(primaryRun);
   const thresholds = {
     minClosedTrades: defaultPromotionThresholds.minClosedTrades,
     minResearchMarkets: defaultPromotionThresholds.minResearchMarkets,
@@ -3631,9 +3632,12 @@ function researchRosterBlockerReport({ snapshotId, generatedAt, metrics = [], to
     verdictCounts,
     topReasons,
     topFamilies,
+    validationStatus: researchRosterValidationStatus({ topReasons, topCandidate, validatedRows, searchBudget }),
+    searchBudget,
+    supportedExecutableSweepCoverage: searchBudget?.supportedExecutableSweepCoverage ?? null,
     thresholds,
     currentBottleneck: researchRosterBottleneck({ topReasons, topCandidate, validatedRows }),
-    nextEvidenceNeed: researchRosterNextEvidenceNeed({ topReasons, topCandidate, validatedRows }),
+    nextEvidenceNeed: researchRosterNextEvidenceNeed({ topReasons, topCandidate, validatedRows, searchBudget }),
     topBlockedCandidates: blockedCandidates,
     note: "Rejected or insufficient-data rows remain excluded from trusted roster surfaces; this report explains the empty roster but does not relax gates.",
   };
@@ -3678,19 +3682,101 @@ function researchRosterBottleneck({ topReasons, topCandidate, validatedRows }) {
   return "no_gate_passing_research_candidate";
 }
 
-function researchRosterNextEvidenceNeed({ topReasons, topCandidate, validatedRows }) {
+function researchRosterNextEvidenceNeed({ topReasons, topCandidate, validatedRows, searchBudget = null }) {
   if (validatedRows.length > 0) return "validated candidates exist; continue exact-linked paper evidence collection before any tiny-live review.";
   const reasonSet = new Set(topReasons.map((row) => row.code));
-  if (reasonSet.has("insufficient_holdout_closed") || reasonSet.has("insufficient_holdout_markets")) {
-    return `Need more conservative-cost holdout evidence for the leading supported candidates: current best has ${topCandidate?.holdoutConservativeClosed ?? 0}/${defaultPromotionThresholds.minHoldoutClosed} conservative holdout closes and ${topCandidate?.holdoutConservativeMarkets ?? 0}/${defaultPromotionThresholds.minHoldoutMarkets} conservative holdout markets.`;
+  const hasHoldoutLossReason = reasonSet.has("holdout_roi_too_low") || reasonSet.has("holdout_expectancy_ci_below_zero");
+  const hasHoldoutCountReason = reasonSet.has("insufficient_holdout_closed") || reasonSet.has("insufficient_holdout_markets");
+  const topCandidateHasHoldoutCounts = (
+    numberOrZero(topCandidate?.holdoutConservativeClosed) >= defaultPromotionThresholds.minHoldoutClosed
+    && numberOrZero(topCandidate?.holdoutConservativeMarkets) >= defaultPromotionThresholds.minHoldoutMarkets
+  );
+  const budgetNote = researchRosterBudgetNeed(searchBudget);
+  if (hasHoldoutLossReason && (!hasHoldoutCountReason || topCandidateHasHoldoutCounts)) {
+    return [
+      `Need a supported exact-linked candidate with positive conservative holdout P/L and non-negative holdout lower CI; current best holdout conservative P/L is ${topCandidate?.holdoutConservativeTotalPnl ?? null}.`,
+      budgetNote,
+    ].filter(Boolean).join(" ");
   }
-  if (reasonSet.has("holdout_roi_too_low") || reasonSet.has("holdout_expectancy_ci_below_zero")) {
-    return `Need a supported exact-linked candidate with positive conservative holdout P/L and non-negative holdout lower CI; current best holdout conservative P/L is ${topCandidate?.holdoutConservativeTotalPnl ?? null}.`;
+  if (hasHoldoutCountReason) {
+    return `Need more conservative-cost holdout evidence for the leading supported candidates: current best has ${topCandidate?.holdoutConservativeClosed ?? 0}/${defaultPromotionThresholds.minHoldoutClosed} conservative holdout closes and ${topCandidate?.holdoutConservativeMarkets ?? 0}/${defaultPromotionThresholds.minHoldoutMarkets} conservative holdout markets.`;
   }
   if (reasonSet.has("too_few_closed_trades") || reasonSet.has("insufficient_independent_markets")) {
     return "Need more independent settled markets before research candidates can be trusted.";
   }
   return "Need a candidate that passes the existing research, holdout, multiple-testing, official-settlement, replay, and paper-evidence gates.";
+}
+
+function researchRosterValidationStatus({ topReasons, topCandidate, validatedRows, searchBudget }) {
+  if (validatedRows.length > 0) return "validated_rows_available";
+  const reasonSet = new Set(topReasons.map((row) => row.code));
+  const coverage = searchBudget?.supportedExecutableSweepCoverage;
+  const hasHoldoutLossReason = reasonSet.has("holdout_failed")
+    && (reasonSet.has("holdout_roi_too_low") || reasonSet.has("holdout_expectancy_ci_below_zero"));
+  if (hasHoldoutLossReason && coverage?.fullyCovered === true) return "supported_families_exhausted_no_holdout_survivor";
+  if (hasHoldoutLossReason && coverage?.fullyCovered === false) return "supported_family_holdout_failure_partial_search";
+  if (topCandidate?.paperEvidenceClosedMarkets === 0) return "paper_evidence_not_yet_matched";
+  return "no_gate_passing_research_candidate";
+}
+
+function researchRosterSearchBudgetSummary(primaryRun = null) {
+  const budget = primaryRun?.searchBudget;
+  if (!budget || typeof budget !== "object") return null;
+  const familyBudget = budget.familyBudget && typeof budget.familyBudget === "object" ? budget.familyBudget : {};
+  const families = Array.isArray(familyBudget.families) ? familyBudget.families.map((row) => ({
+    family: stringOrNull(row.family) ?? "unknown",
+    requested: numberOrZero(row.requested),
+    selected: numberOrZero(row.selected),
+    researchSupported: row.researchSupported === true,
+    labOnly: row.labOnly === true,
+    budgetLane: stringOrNull(row.budgetLane) ?? null,
+    budgetBucket: stringOrNull(row.budgetBucket) ?? null,
+    action: stringOrNull(row.action) ?? null,
+  })) : [];
+  const supportedExecutableRows = families.filter((row) => (
+    row.researchSupported === true
+    && row.labOnly !== true
+    && (row.budgetLane === "executable_linked_family" || row.budgetBucket === "executable_linked_family")
+  ));
+  const supportedRequested = supportedExecutableRows.reduce((sum, row) => sum + row.requested, 0);
+  const supportedSelected = supportedExecutableRows.reduce((sum, row) => sum + row.selected, 0);
+  const supportedPartialFamilies = supportedExecutableRows
+    .filter((row) => row.requested > 0 && row.selected < row.requested)
+    .map((row) => ({
+      family: row.family,
+      requested: row.requested,
+      selected: row.selected,
+      missing: Math.max(0, row.requested - row.selected),
+    }));
+  const diagnosticCap = budget.promoteCheckDiagnosticCap && typeof budget.promoteCheckDiagnosticCap === "object"
+    ? budget.promoteCheckDiagnosticCap
+    : null;
+  return {
+    schemaVersion: "dogeedge.research-roster-search-budget.v1",
+    runId: stringOrNull(primaryRun?.runId),
+    mode: stringOrNull(primaryRun?.mode),
+    promoteCheckMaxSweepAlgos: numberOrNull(primaryRun?.promoteCheckMaxSweepAlgos ?? diagnosticCap?.maxGeneratedAlgos),
+    limited: budget.limited === true,
+    reasonCodes: Array.isArray(budget.reasonCodes) ? budget.reasonCodes : [],
+    requestedSweepAlgos: numberOrZero(budget.requestedSweepAlgos),
+    maxGeneratedAlgos: numberOrZero(budget.maxGeneratedAlgos),
+    selectedSweepAlgos: numberOrZero(familyBudget.selectedAlgos),
+    diagnosticCapApplied: diagnosticCap?.applied === true,
+    supportedExecutableSweepCoverage: {
+      requested: supportedRequested,
+      selected: supportedSelected,
+      coverage: supportedRequested > 0 ? roundDisplayRatio(supportedSelected / supportedRequested) : null,
+      fullyCovered: supportedRequested > 0 && supportedPartialFamilies.length === 0,
+      partialFamilies: supportedPartialFamilies,
+    },
+    familyBudget: families,
+  };
+}
+
+function researchRosterBudgetNeed(searchBudget = null) {
+  const coverage = searchBudget?.supportedExecutableSweepCoverage;
+  if (!coverage || coverage.fullyCovered === true) return "";
+  return `Scheduled promote-check has covered ${coverage.selected}/${coverage.requested} supported executable sweep variants; run a full-supported diagnostic cap before treating the current supported family menu as exhausted.`;
 }
 
 function sortedCountRows(counts) {

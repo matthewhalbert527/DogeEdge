@@ -348,6 +348,8 @@ if (sweepMode) {
     randomSeed,
     embargoMs,
     foldCount,
+    promoteCheckMode,
+    promoteCheckMaxSweepAlgos: promoteCheckMode ? promoteCheckMaxSweepAlgos : null,
     registry,
     replayManifestCheck,
     promoteCheck: promoteCheckSummary(metrics, candidates),
