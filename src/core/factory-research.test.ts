@@ -1509,6 +1509,38 @@ describe("factory research safeguards", () => {
     });
   });
 
+  it("fails execution canary health when closed sells prove row loss before the attempt threshold", () => {
+    const health = executionCanaryHealth({
+      stats: {
+        "closed-loss": {
+          sourceAlgoId: "closed-loss",
+          lane: "exact_linked_execution_canary",
+          attempts: 7,
+          acceptedBuys: 5,
+          rejected: 2,
+          sells: 5,
+          open: 0,
+          totalPnl: -17.66,
+          startedAt: "2026-06-20T00:00:00.000Z",
+          lastAttemptAt: "2026-06-20T00:12:00.000Z",
+        },
+      },
+    }, {
+      minAttempts: 30,
+      minSells: 10,
+      maxLossDollars: 25,
+      minRowAttempts: 8,
+      minRowSells: 5,
+      maxRowLossDollars: 15,
+      now: "2026-06-20T00:15:00.000Z",
+    });
+    expect(health).toMatchObject({
+      status: "fail",
+      reasonCodes: ["canary_row_loss_limit_exceeded"],
+      unhealthySourceAlgoIds: ["closed-loss"],
+    });
+  });
+
   it("carries forward prior unhealthy canary exclusions across reseeds", () => {
     expect(mergedCanaryExclusions(
       { excludedSourceAlgoIds: ["old-bad", "still-bad"] },

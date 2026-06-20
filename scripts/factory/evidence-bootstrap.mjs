@@ -439,11 +439,12 @@ export function executionCanaryHealth(executable, {
     reasonCodes.push("canary_loss_limit_exceeded");
   }
   const unhealthyByRowLoss = rows
-    .filter((row) => (
-      numberOrZero(row.attempts) >= Math.max(1, Number(minRowAttempts ?? 8))
-      && numberOrZero(row.sells) >= Math.max(1, Number(minRowSells ?? 5))
-      && numberOrZero(row.totalPnl) <= -Math.max(0, Number(maxRowLossDollars ?? 15))
-    ))
+    .filter((row) => {
+      const hasEnoughRowLossEvidence = numberOrZero(row.attempts) >= Math.max(1, Number(minRowAttempts ?? 8))
+        || numberOrZero(row.sells) >= Math.max(1, Number(minRowSells ?? 5));
+      return hasEnoughRowLossEvidence
+        && numberOrZero(row.totalPnl) <= -Math.max(0, Number(maxRowLossDollars ?? 15));
+    })
     .map((row) => String(row.sourceAlgoId ?? ""))
     .filter((value) => value.length > 0);
   if (unhealthyByRowLoss.length > 0) reasonCodes.push("canary_row_loss_limit_exceeded");
