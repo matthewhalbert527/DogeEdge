@@ -190,13 +190,27 @@ async function evidenceLaneCli() {
   const source = await loadSourceSweep(args, dataRoot);
   const maxProbes = Math.max(0, Number(args["max-probes"] ?? 5));
   const executableOnly = Boolean(args["executable-only"] ?? args["execution-canary"] ?? args["execution-canaries"]);
+  const excludedSourceAlgoIds = new Set(splitList(args["exclude-source-algos"]));
   const rows = materializeExactLinkageForSource(source);
-  const sorted = rows.sort((left, right) => numberOrDefault(right.robustScore, 0) - numberOrDefault(left.robustScore, 0));
+  const candidateRows = excludedSourceAlgoIds.size > 0
+    ? rows.filter((row) => !excludedSourceAlgoIds.has(String(row.algoId ?? row.id ?? row.sourceAlgoId ?? "")))
+    : rows;
+  const excludedRows = excludedSourceAlgoIds.size > 0
+    ? rows
+      .filter((row) => excludedSourceAlgoIds.has(String(row.algoId ?? row.id ?? row.sourceAlgoId ?? "")))
+      .map((row) => ({
+        algoId: row?.algoId ?? row?.id ?? row?.sourceAlgoId ?? "unknown",
+        family: row?.family ?? "unknown",
+        reasonCodes: ["excluded_unhealthy_execution_canary"],
+      }))
+    : [];
+  const sorted = candidateRows.sort((left, right) => numberOrDefault(right.robustScore, 0) - numberOrDefault(left.robustScore, 0));
   const result = selectEvidenceProbes(sorted, {
     maxProbes,
     allowInsufficientDataProbe: Boolean(args["allow-insufficient-data-probe"]),
     executableOnly,
   });
+  result.rejected = [...excludedRows, ...result.rejected];
   await mkdir(storageDir, { recursive: true });
   const laneKind = executableOnly ? executionCanaryLaneKind : evidenceProbeLaneKind;
   const lane = {
@@ -209,6 +223,7 @@ async function evidenceLaneCli() {
     lane: laneKind,
     executableOnly,
     supportedExecutionCanaryFamilies: executableOnly ? supportedExecutionCanaryFamilies : [],
+    excludedSourceAlgoIds: [...excludedSourceAlgoIds],
     probes: result.selected,
     rejected: result.rejected,
     summary: {
@@ -692,6 +707,15 @@ function isRecord(value) {
 
 function numberOrDefault(value, fallback) {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function splitList(value) {
+  if (Array.isArray(value)) return value.flatMap(splitList);
+  if (typeof value !== "string") return [];
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 function parseArgs(values) {

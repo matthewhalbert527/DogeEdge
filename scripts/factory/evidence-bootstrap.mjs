@@ -164,14 +164,24 @@ async function evidenceBootstrapCli() {
   }
 
   const executionCanaries = await readJsonMaybe(path.join(storageDir, "execution-canaries.json"));
+  const executableFile = await readJsonMaybe(path.join(storageDir, "top-traders-executable.json"));
   const sourceRunId = await evidenceLaneSourceRunId({ dataRoot, probeSource, probeSourceMode });
   const maxExecutionCanaries = Math.min(3, maxProbes);
+  const canaryHealth = executionCanaryHealth(executableFile?.topTradersExecutable, {
+    minAttempts: Number(args["min-canary-health-attempts"] ?? 30),
+    minSells: Number(args["min-canary-health-sells"] ?? 10),
+    maxLossDollars: Number(args["max-canary-loss-dollars"] ?? 25),
+    maxRejectRate: Number(args["max-canary-reject-rate"] ?? 0.7),
+    minRejectRateAttempts: Number(args["min-canary-reject-rate-attempts"] ?? 25),
+    maxIdleMinutes: Number(args["max-canary-idle-minutes"] ?? 120),
+  });
   const canariesStale = executionCanariesNeedReseed({
     executionCanaries,
     sourceRunId,
     maxExecutionCanaries,
     maxSourceAgeHours: Number(args["max-canary-source-age-hours"] ?? 72),
     force: Boolean(args["force-reseed-probes"]),
+    canaryHealth,
   });
   if (args["skip-execution-canaries"] !== true && maxExecutionCanaries > 0 && canariesStale) {
     const canaryArgs = [
@@ -181,6 +191,9 @@ async function evidenceBootstrapCli() {
       "--max-probes", String(maxExecutionCanaries),
       "--executable-only",
     ];
+    if (canaryHealth.status === "fail" && canaryHealth.unhealthySourceAlgoIds.length > 0) {
+      canaryArgs.push("--exclude-source-algos", canaryHealth.unhealthySourceAlgoIds.join(","));
+    }
     if (probeSource) canaryArgs.push("--from", probeSource);
     else canaryArgs.push("--from", probeSourceMode);
     await runStep("reseed-execution-canaries", canaryArgs, { optional: true });
@@ -206,6 +219,7 @@ async function evidenceBootstrapCli() {
     mockSettlements,
     mockReplayRaw,
     targetMarketsFile,
+    executionCanaryHealth: canaryHealth,
     canPlaceOrders: false,
     steps,
   };
@@ -336,6 +350,7 @@ export function executionCanariesNeedReseed({
   sourceRunId = null,
   maxSourceAgeHours = 72,
   force = false,
+  canaryHealth = null,
 } = {}) {
   const targetCount = Math.max(0, Math.floor(Number(maxExecutionCanaries ?? 0)));
   const canaryCount = Array.isArray(executionCanaries?.probes) ? executionCanaries.probes.length : 0;
@@ -360,8 +375,109 @@ export function executionCanariesNeedReseed({
     || canaryCount === 0
     || canaryCount < targetCount
     || staleSource
+    || canaryHealth?.status === "fail"
     || !healthyCanaries
   );
+}
+
+export function executionCanaryHealth(executable, {
+  minAttempts = 30,
+  minSells = 10,
+  maxLossDollars = 25,
+  maxRejectRate = 0.7,
+  minRejectRateAttempts = 25,
+  maxIdleMinutes = 120,
+  now = new Date().toISOString(),
+} = {}) {
+  const rows = executionCanaryStatsRows(executable);
+  const totals = rows.reduce((summary, row) => {
+    summary.attempts += numberOrZero(row.attempts);
+    summary.acceptedBuys += numberOrZero(row.acceptedBuys);
+    summary.rejected += numberOrZero(row.rejected);
+    summary.sells += numberOrZero(row.sells);
+    summary.open += numberOrZero(row.open);
+    summary.totalPnl += numberOrZero(row.totalPnl);
+    const lastAttemptAt = typeof row.lastAttemptAt === "string" ? row.lastAttemptAt : null;
+    if (lastAttemptAt && (!summary.lastAttemptAt || lastAttemptAt > summary.lastAttemptAt)) summary.lastAttemptAt = lastAttemptAt;
+    const startedAt = typeof row.startedAt === "string" ? row.startedAt : null;
+    if (startedAt && (!summary.startedAt || startedAt < summary.startedAt)) summary.startedAt = startedAt;
+    return summary;
+  }, {
+    rows: rows.length,
+    attempts: 0,
+    acceptedBuys: 0,
+    rejected: 0,
+    sells: 0,
+    open: 0,
+    totalPnl: 0,
+    startedAt: null,
+    lastAttemptAt: null,
+  });
+  totals.totalPnl = roundMoney(totals.totalPnl);
+  const reasonCodes = [];
+  if (rows.length === 0) reasonCodes.push("no_execution_canary_stats");
+  const enoughLossEvidence = totals.attempts >= Math.max(1, Number(minAttempts ?? 30))
+    && totals.sells >= Math.max(1, Number(minSells ?? 10));
+  if (enoughLossEvidence && totals.totalPnl <= -Math.max(0, Number(maxLossDollars ?? 25))) {
+    reasonCodes.push("canary_loss_limit_exceeded");
+  }
+  const rejectRate = totals.attempts > 0 ? totals.rejected / totals.attempts : 0;
+  if (
+    totals.attempts >= Math.max(1, Number(minRejectRateAttempts ?? 25))
+    && rejectRate >= Math.max(0, Number(maxRejectRate ?? 0.7))
+  ) {
+    reasonCodes.push("canary_reject_rate_exceeded");
+  }
+  const idleLimitMs = Math.max(1, Number(maxIdleMinutes ?? 120)) * 60 * 1000;
+  const startedMs = Date.parse(totals.startedAt ?? "");
+  const lastAttemptMs = Date.parse(totals.lastAttemptAt ?? "");
+  const nowMs = Date.parse(now);
+  if (
+    Number.isFinite(nowMs)
+    && Number.isFinite(startedMs)
+    && totals.attempts === 0
+    && nowMs - startedMs >= idleLimitMs
+  ) {
+    reasonCodes.push("canary_idle_without_attempts");
+  }
+  const unhealthySourceAlgoIds = rows
+    .filter((row) => rowHasUnhealthyCanaryEvidence(row, reasonCodes))
+    .map((row) => String(row.sourceAlgoId ?? ""))
+    .filter((value) => value.length > 0);
+  const blockingReasons = reasonCodes.filter((code) => code !== "no_execution_canary_stats");
+  return {
+    schemaVersion: "dogeedge.execution-canary-health.v1",
+    generatedAt: now,
+    status: blockingReasons.length > 0 ? "fail" : rows.length === 0 ? "unknown" : "pass",
+    reasonCodes,
+    unhealthySourceAlgoIds: [...new Set(unhealthySourceAlgoIds)],
+    rejectRate: Math.round(rejectRate * 10_000) / 10_000,
+    thresholds: {
+      minAttempts,
+      minSells,
+      maxLossDollars,
+      maxRejectRate,
+      minRejectRateAttempts,
+      maxIdleMinutes,
+    },
+    ...totals,
+  };
+}
+
+function rowHasUnhealthyCanaryEvidence(row, reasonCodes) {
+  if (!reasonCodes.some((code) => code === "canary_loss_limit_exceeded" || code === "canary_reject_rate_exceeded")) return false;
+  const attempts = numberOrZero(row.attempts);
+  if (reasonCodes.includes("canary_loss_limit_exceeded") && numberOrZero(row.totalPnl) < 0) return true;
+  if (reasonCodes.includes("canary_reject_rate_exceeded") && attempts > 0 && numberOrZero(row.rejected) / attempts >= 0.5) return true;
+  return false;
+}
+
+function executionCanaryStatsRows(executable) {
+  const stats = executable?.stats && typeof executable.stats === "object" ? executable.stats : {};
+  return Object.values(stats).filter((row) => (
+    row?.lane === "exact_linked_execution_canary"
+    || row?.evidenceStatus === "execution_canary_only"
+  ));
 }
 
 async function latestBundleExecutableGate(reviewRoot = path.join(repoRoot, "review_exports")) {
@@ -478,6 +594,15 @@ function tail(value, max = 6000) {
 
 function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
+}
+
+function numberOrZero(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : 0;
+}
+
+function roundMoney(value) {
+  return Math.round(numberOrZero(value) * 100) / 100;
 }
 
 async function defaultDataRoot() {

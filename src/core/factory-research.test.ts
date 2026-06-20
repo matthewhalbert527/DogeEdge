@@ -34,7 +34,7 @@ import { buildExecutableReadinessGate } from "../../scripts/factory/readiness-ga
 import { forecastCalibrationForDecisionRows, officialForecastCalibrationReport, probabilityCalibrationForTrades, tradeCalibrationByCandidate } from "../../scripts/factory/probability-calibration.mjs";
 import { deterministicLinkageBackfill } from "../../scripts/factory/backfill-linkage.mjs";
 import { loadSourceSweep, materializeExactLinkageForSource, mergeTopTradersExecutable, selectEvidenceProbes } from "../../scripts/factory/evidence-lane.mjs";
-import { executionCanariesNeedReseed, readinessComponent, writeReadinessPercent } from "../../scripts/factory/evidence-bootstrap.mjs";
+import { executionCanariesNeedReseed, executionCanaryHealth, readinessComponent, writeReadinessPercent } from "../../scripts/factory/evidence-bootstrap.mjs";
 import { canarySelectionStatus, shouldRestartChrome } from "../../scripts/dogeedge-headless-app.mjs";
 import { runEvidencePreflight } from "../../scripts/factory/evidence-preflight.mjs";
 import { fetchKalshiHistoricalSettlements } from "../../scripts/factory/provider-kalshi.mjs";
@@ -1403,6 +1403,110 @@ describe("factory research safeguards", () => {
       sourceRunId: "run-2",
       maxExecutionCanaries: 3,
     })).toBe(false);
+  });
+
+  it("fails execution canary health after enough negative paper evidence and triggers reseed", () => {
+    const health = executionCanaryHealth({
+      stats: {
+        "canary-a": {
+          sourceAlgoId: "canary-a",
+          lane: "exact_linked_execution_canary",
+          attempts: 16,
+          acceptedBuys: 8,
+          rejected: 2,
+          sells: 8,
+          open: 0,
+          totalPnl: -14,
+          startedAt: "2026-06-20T00:00:00.000Z",
+          lastAttemptAt: "2026-06-20T00:20:00.000Z",
+        },
+        "canary-b": {
+          sourceAlgoId: "canary-b",
+          evidenceStatus: "execution_canary_only",
+          attempts: 18,
+          acceptedBuys: 8,
+          rejected: 3,
+          sells: 8,
+          open: 0,
+          totalPnl: -13,
+          startedAt: "2026-06-20T00:00:00.000Z",
+          lastAttemptAt: "2026-06-20T00:21:00.000Z",
+        },
+      },
+    }, {
+      minAttempts: 30,
+      minSells: 10,
+      maxLossDollars: 25,
+      now: "2026-06-20T00:30:00.000Z",
+    });
+    expect(health).toMatchObject({
+      status: "fail",
+      totalPnl: -27,
+      reasonCodes: ["canary_loss_limit_exceeded"],
+      unhealthySourceAlgoIds: ["canary-a", "canary-b"],
+    });
+    expect(executionCanariesNeedReseed({
+      executionCanaries: {
+        sourceRunId: "run-2",
+        paperOnly: true,
+        executableOnly: true,
+        lane: "exact_linked_execution_canary",
+        probes: [
+          { exactLinked: true, paperOnly: true, enabled: true, lane: "exact_linked_execution_canary", researchCandidateId: "rcid-a", candidateConfigHash: "hash-a" },
+          { exactLinked: true, paperOnly: true, enabled: true, lane: "exact_linked_execution_canary", researchCandidateId: "rcid-b", candidateConfigHash: "hash-b" },
+          { exactLinked: true, paperOnly: true, enabled: true, lane: "exact_linked_execution_canary", researchCandidateId: "rcid-c", candidateConfigHash: "hash-c" },
+        ],
+      },
+      sourceRunId: "run-2",
+      maxExecutionCanaries: 3,
+      canaryHealth: health,
+    })).toBe(true);
+  });
+
+  it("does not reinstall source algos excluded after unhealthy execution canary evidence", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "dogeedge-canary-exclude-"));
+    const storageDir = path.join(dir, "local-worker");
+    mkdirSync(storageDir, { recursive: true });
+    const sourcePath = path.join(dir, "source.json");
+    const candidate = (algoId: string, robustScore: number, family = "sweep-scalp") => ({
+      algoId,
+      algoName: algoId,
+      family,
+      params: family === "sweep-liquidity-imbalance"
+        ? { maxSpread: 0.04, minBidDepth: 1, minImbalance: 0.25, minEdge: 0, yesMode: "none" }
+        : { maxSpread: 0.04, feeBuffer: 0.004, minEdge: 0, sideMode: "best", yesMode: "loose" },
+      researchCandidateId: `rcid-${algoId}`,
+      candidateConfigHash: `hash-${algoId}`,
+      conservativeTotalPnl: 1,
+      closed: 20,
+      independentClosedMarkets: 20,
+      walkForwardClosed: 5,
+      robustScore,
+    });
+    writeFileSync(sourcePath, `${JSON.stringify({
+      runId: "run-canary-exclude",
+      candidates: [
+        candidate("bad-scalp", 100),
+        candidate("bad-liquidity", 90, "sweep-liquidity-imbalance"),
+        candidate("replacement-scalp", 80),
+        candidate("replacement-liquidity", 70, "sweep-liquidity-imbalance"),
+      ],
+    })}\n`);
+    execFileSync(process.execPath, [
+      "scripts/factory/evidence-lane.mjs",
+      "--data-root", dir,
+      "--storage-dir", storageDir,
+      "--from", sourcePath,
+      "--max-probes", "2",
+      "--executable-only",
+      "--exclude-source-algos", "bad-scalp,bad-liquidity",
+    ], { cwd: process.cwd() });
+    const lane = JSON.parse(readFileSync(path.join(storageDir, "execution-canaries.json"), "utf8"));
+    expect(lane.probes.map((probe: { sourceAlgoId: string }) => probe.sourceAlgoId)).toEqual([
+      "replacement-scalp",
+      "replacement-liquidity",
+    ]);
+    expect(lane.rejected.filter((row: { reasonCodes: string[] }) => row.reasonCodes.includes("excluded_unhealthy_execution_canary"))).toHaveLength(2);
   });
 
   it("marks headless top-trader selection stale when it is not on the installed execution canary lane", () => {
