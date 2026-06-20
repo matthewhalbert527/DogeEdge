@@ -1,6 +1,6 @@
 {
   "schemaVersion": "dogeedge.replay-e2e-final-report.v1",
-  "generatedAt": "2026-06-20T19:47:10.583Z",
+  "generatedAt": "2026-06-20T19:52:15.696Z",
   "branch": "fix/replay-e2e-evidence-20260620T182153Z",
   "startingBranch": "fix/replay-capture-evidence-20260613T182501Z",
   "startingCommit": "1ff62b8536b6b6175d9f66007a0a794dc54f33da",
@@ -94,7 +94,7 @@
     "lint": "pass with two pre-existing React hook dependency warnings in src/App.tsx",
     "build": "pass, Vite chunk-size warning only",
     "factoryBacktest": "pass, no viable candidate",
-    "factorySweep": "timed out after 15 minutes in this worktree",
+    "factorySweep": "completed after the shell wrapper timeout; run 2026-06-20T19-24-30Z, 981 algos, 49938 frames, 557 events, 0 ready",
     "factoryPromoteCheck": "pass, 0 ready / 109 non-promotable",
     "evalBundle": "pass",
     "gateReport": "pass, usable_with_warnings",
@@ -111,7 +111,6 @@
   },
   "remainingBlockers": [
     "Only one truth-labeled replay-backed paper evaluation exists; this is infrastructure proof, not statistical validation.",
-    "Research Validated Roster and promotion-ready candidates remain blocked until existing sample-size, fold, holdout, cost, replay, calibration, and paper-evidence thresholds pass.",
-    "factory:sweep did not complete within a 15 minute verification timeout in this worktree."
+    "Research Validated Roster and promotion-ready candidates remain blocked until existing sample-size, fold, holdout, cost, replay, calibration, and paper-evidence thresholds pass."
   ]
 }

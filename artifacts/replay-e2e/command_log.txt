@@ -9,7 +9,7 @@ npm.cmd test: pass, 173 tests
 npm.cmd run lint: pass with 2 warnings
 npm.cmd run build: pass
 npm.cmd run factory:backtest: pass
-npm.cmd run factory:sweep: timed out after 15 minutes
+npm.cmd run factory:sweep: shell wrapper timed out, but child sweep completed; run 2026-06-20T19-24-30Z, runDir D:\DogeEdge\data\backtests\sweeps\2026-06-20T19-24-30Z, 0 ready
 npm.cmd run factory:promote-check: pass, 0 ready
 npm.cmd run eval:bundle -- --out review_exports --full-rows: pass
 npm.cmd run factory:gate-report -- --input review_exports: pass usable_with_warnings

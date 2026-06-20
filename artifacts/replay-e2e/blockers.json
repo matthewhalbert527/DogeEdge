@@ -1,11 +1,10 @@
 {
   "schemaVersion": "dogeedge.replay-e2e-blockers.v1",
-  "generatedAt": "2026-06-20T19:47:10.583Z",
+  "generatedAt": "2026-06-20T19:52:15.696Z",
   "e2eBlockers": [],
   "remainingBlockers": [
     "Only one truth-labeled replay-backed paper evaluation exists; this is infrastructure proof, not statistical validation.",
-    "Research Validated Roster and promotion-ready candidates remain blocked until existing sample-size, fold, holdout, cost, replay, calibration, and paper-evidence thresholds pass.",
-    "factory:sweep did not complete within a 15 minute verification timeout in this worktree."
+    "Research Validated Roster and promotion-ready candidates remain blocked until existing sample-size, fold, holdout, cost, replay, calibration, and paper-evidence thresholds pass."
   ],
   "promotionEligible": false
 }

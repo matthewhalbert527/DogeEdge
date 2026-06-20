@@ -36,7 +36,7 @@ This proves the evidence pipeline is operational at infrastructure scale. It doe
 - lint: pass with two existing React hook dependency warnings
 - build: pass
 - factory:backtest: pass
-- factory:sweep: timed out after 15 minutes
+- factory:sweep: completed after shell wrapper timeout; run 2026-06-20T19-24-30Z, 0 ready
 - factory:promote-check: pass, 0 ready
 - eval:bundle: pass, review_exports\bundles\dogeedge-review-bundle-20260620T194419Z.zip
 - gate-report: pass, usable_with_warnings

@@ -1,12 +1,12 @@
 {
   "schemaVersion": "dogeedge.replay-e2e-test-results.v1",
-  "generatedAt": "2026-06-20T19:47:10.583Z",
+  "generatedAt": "2026-06-20T19:52:15.696Z",
   "results": {
     "npmTest": "pass, 173 tests",
     "lint": "pass with two pre-existing React hook dependency warnings in src/App.tsx",
     "build": "pass, Vite chunk-size warning only",
     "factoryBacktest": "pass, no viable candidate",
-    "factorySweep": "timed out after 15 minutes in this worktree",
+    "factorySweep": "completed after the shell wrapper timeout; run 2026-06-20T19-24-30Z, 981 algos, 49938 frames, 557 events, 0 ready",
     "factoryPromoteCheck": "pass, 0 ready / 109 non-promotable",
     "evalBundle": "pass",
     "gateReport": "pass, usable_with_warnings",
