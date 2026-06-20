@@ -1520,18 +1520,32 @@ describe("factory research safeguards", () => {
     expect(evidenceLoopHealth({
       status: "running",
       startedAt: "2026-06-20T01:10:00.000Z",
+      loopPid: process.pid,
       canPlaceOrders: false,
     }, { nowMs, heartbeatSeconds: 30 })).toMatchObject({
       ok: true,
+      loopAlive: true,
       runningFresh: true,
       status: "running",
     });
     expect(evidenceLoopHealth({
       status: "running",
-      startedAt: "2026-06-20T00:30:00.000Z",
+      startedAt: "2026-06-20T01:10:00.000Z",
       canPlaceOrders: false,
     }, { nowMs, heartbeatSeconds: 30 })).toMatchObject({
       ok: false,
+      loopAlive: false,
+      runningFresh: false,
+      status: "running",
+    });
+    expect(evidenceLoopHealth({
+      status: "running",
+      startedAt: "2026-06-20T00:30:00.000Z",
+      loopPid: process.pid,
+      canPlaceOrders: false,
+    }, { nowMs, heartbeatSeconds: 30 })).toMatchObject({
+      ok: false,
+      loopAlive: true,
       runningFresh: false,
       status: "running",
     });

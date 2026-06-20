@@ -31,7 +31,7 @@ async function runOnceInternal() {
     bootstrapArgs.push(`--${key}`);
     if (value !== true) bootstrapArgs.push(String(value));
   }
-  const record = { startedAt, command: ["node", ...bootstrapArgs], canPlaceOrders: false };
+  const record = { startedAt, loopPid: process.pid, command: ["node", ...bootstrapArgs], canPlaceOrders: false };
   await writeFile(path.join(outDir, "latest.json"), `${JSON.stringify({
     ...record,
     status: "running",

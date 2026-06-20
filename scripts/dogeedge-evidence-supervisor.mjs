@@ -180,13 +180,17 @@ export function evidenceLoopHealth(doc, { nowMs = Date.now(), heartbeatSeconds =
   const nextRunAt = doc?.nextRunAt ? Date.parse(doc.nextRunAt) : null;
   const finishedAt = doc?.finishedAt ? Date.parse(doc.finishedAt) : null;
   const startedAt = doc?.startedAt ? Date.parse(doc.startedAt) : null;
+  const loopPid = Number(doc?.loopPid);
+  const loopAlive = Number.isInteger(loopPid) && loopPid > 0 ? processExists(loopPid) : false;
   const overdue = nextRunAt ? nowMs > nextRunAt + Math.max(5 * 60_000, heartbeatSeconds * 4 * 1000) : false;
   const recentEnough = finishedAt ? nowMs - finishedAt <= 60 * 60_000 : false;
   const running = doc?.status === "running";
-  const runningFresh = running && startedAt ? nowMs - startedAt <= Math.max(45 * 60_000, heartbeatSeconds * 8 * 1000) : false;
+  const runningFresh = running && loopAlive && startedAt ? nowMs - startedAt <= Math.max(45 * 60_000, heartbeatSeconds * 8 * 1000) : false;
   return {
     ok: Boolean((doc?.status === "ok" && !overdue && recentEnough) || runningFresh),
     status: doc?.status ?? null,
+    loopPid: Number.isInteger(loopPid) && loopPid > 0 ? loopPid : null,
+    loopAlive,
     startedAt: doc?.startedAt ?? null,
     finishedAt: doc?.finishedAt ?? null,
     nextRunAt: doc?.nextRunAt ?? null,
@@ -247,6 +251,15 @@ function numberArg(name, fallback) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function processExists(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function shutdown(code) {
