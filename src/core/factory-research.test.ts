@@ -47,6 +47,7 @@ import {
   kalshiReplaySubscription,
   normalizeKalshiWsReplayMessage,
 } from "../../scripts/factory/kalshi-ws-replay.mjs";
+import { shouldCaptureReplayEvent } from "../../scripts/factory/capture-replay.mjs";
 import {
   hasResearchPromotionCandidate,
   researchEvidenceCanMature,
@@ -2118,6 +2119,14 @@ describe("factory research safeguards", () => {
       deltaContracts: 3,
     });
     expect(replaySequenceReport([snapshot, delta]).replayGradeAvailable).toBe(true);
+  });
+
+  it("filters provider replay events to the selected target markets", () => {
+    const targetSet = new Set(["KXDOGE15M-TARGET"]);
+    expect(shouldCaptureReplayEvent({ marketTicker: "KXDOGE15M-TARGET" }, targetSet)).toBe(true);
+    expect(shouldCaptureReplayEvent({ marketTicker: "KXMLB-NONTARGET" }, targetSet)).toBe(false);
+    expect(shouldCaptureReplayEvent(null, targetSet)).toBe(true);
+    expect(shouldCaptureReplayEvent({ marketTicker: "KXMLB-NONTARGET" }, new Set())).toBe(true);
   });
 
   it("joins finalized settlement-store rows into forecast calibration inputs", () => {

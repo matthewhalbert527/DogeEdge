@@ -222,7 +222,10 @@ async function captureKalshiProviderReplay({ outRoot, provider, mode, markets, c
     eventsByMarket: new Map(),
     errors: [],
     localSeq: 0,
+    ignoredNonTargetEventCount: 0,
+    ignoredNonTargetMarkets: new Set(),
   };
+  const targetMarketSet = new Set(markets);
   let socket = null;
   try {
     socket = await openKalshiWebSocket({ wsUrl, keyId: auth.keyId, privateKeyPem: auth.privateKeyPem, timeoutMs: 10_000 });
@@ -232,11 +235,11 @@ async function captureKalshiProviderReplay({ outRoot, provider, mode, markets, c
       subscription,
       durationMs: durationSeconds * 1000,
       onRawMessage: (raw) => {
-        state.rawMessages.push({ receivedAt: new Date().toISOString(), raw });
         state.localSeq += 1;
+        const receiveTs = new Date().toISOString();
         const event = normalizeKalshiWsReplayMessage(raw, {
           provider,
-          receiveTs: new Date().toISOString(),
+          receiveTs,
           receiveMonotonicNs: safeHrtimeNs(),
           wsSessionId,
           captureRunId,
@@ -244,6 +247,12 @@ async function captureKalshiProviderReplay({ outRoot, provider, mode, markets, c
           sourceFileOrdinal: state.localSeq,
           useYesPrice,
         });
+        if (event && !shouldCaptureReplayEvent(event, targetMarketSet)) {
+          state.ignoredNonTargetEventCount += 1;
+          state.ignoredNonTargetMarkets.add(event.marketTicker);
+          return;
+        }
+        state.rawMessages.push({ receivedAt: receiveTs, raw });
         if (!event) return;
         const marketRows = state.eventsByMarket.get(event.marketTicker) ?? [];
         marketRows.push(event);
@@ -295,7 +304,13 @@ async function captureKalshiProviderReplay({ outRoot, provider, mode, markets, c
         channels,
         useYesPrice,
         reasonCode: state.rawMessages.length ? "provider_websocket_no_target_replay_events" : "provider_websocket_no_messages",
-        details: { wsUrl, observedTypes, errors: state.errors },
+        details: {
+          wsUrl,
+          observedTypes,
+          errors: state.errors,
+          ignoredNonTargetEventCount: state.ignoredNonTargetEventCount,
+          ignoredNonTargetMarketCount: state.ignoredNonTargetMarkets.size,
+        },
       }),
     };
   }
@@ -312,6 +327,8 @@ async function captureKalshiProviderReplay({ outRoot, provider, mode, markets, c
     useYesPrice,
     priceScale: useYesPrice ? "yes_leg" : "provider_default",
     observedTypes,
+    ignoredNonTargetEventCount: state.ignoredNonTargetEventCount,
+    ignoredNonTargetMarketCount: state.ignoredNonTargetMarkets.size,
     errors: state.errors,
     canPlaceOrders: false,
   }, null, 2)}\n`, "utf8");
@@ -458,6 +475,12 @@ function targetMarketValues(parsed, { preferActive = false } = {}) {
     ...(preferActive && Array.isArray(parsed.closedTargets) ? parsed.closedTargets : []),
   ];
   return [...primary, ...fallback].map(tickerFromTarget).filter(Boolean);
+}
+
+export function shouldCaptureReplayEvent(event, targetMarketSet) {
+  if (!event) return true;
+  if (!(targetMarketSet instanceof Set) || targetMarketSet.size === 0) return true;
+  return targetMarketSet.has(event.marketTicker);
 }
 
 function tickerFromTarget(value) {
