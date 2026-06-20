@@ -34,7 +34,8 @@ import { buildExecutableReadinessGate } from "../../scripts/factory/readiness-ga
 import { forecastCalibrationForDecisionRows, officialForecastCalibrationReport, probabilityCalibrationForTrades, tradeCalibrationByCandidate } from "../../scripts/factory/probability-calibration.mjs";
 import { deterministicLinkageBackfill } from "../../scripts/factory/backfill-linkage.mjs";
 import { loadSourceSweep, materializeExactLinkageForSource, mergeTopTradersExecutable, selectEvidenceProbes } from "../../scripts/factory/evidence-lane.mjs";
-import { executionCanariesNeedReseed, executionCanaryHealth, readinessComponent, writeReadinessPercent } from "../../scripts/factory/evidence-bootstrap.mjs";
+import { executionCanariesNeedReseed, executionCanaryHealth, mergedCanaryExclusions, readinessComponent, writeReadinessPercent } from "../../scripts/factory/evidence-bootstrap.mjs";
+import { evidenceLoopHealth } from "../../scripts/dogeedge-evidence-supervisor.mjs";
 import { canarySelectionStatus, shouldRestartChrome } from "../../scripts/dogeedge-headless-app.mjs";
 import { runEvidencePreflight } from "../../scripts/factory/evidence-preflight.mjs";
 import { fetchKalshiHistoricalSettlements } from "../../scripts/factory/provider-kalshi.mjs";
@@ -1461,6 +1462,79 @@ describe("factory research safeguards", () => {
       maxExecutionCanaries: 3,
       canaryHealth: health,
     })).toBe(true);
+  });
+
+  it("fails execution canary health when one paper canary breaches row loss limits", () => {
+    const health = executionCanaryHealth({
+      stats: {
+        "fast-fail": {
+          sourceAlgoId: "fast-fail",
+          lane: "exact_linked_execution_canary",
+          attempts: 9,
+          acceptedBuys: 6,
+          rejected: 1,
+          sells: 6,
+          open: 0,
+          totalPnl: -16.25,
+          startedAt: "2026-06-20T00:00:00.000Z",
+          lastAttemptAt: "2026-06-20T00:12:00.000Z",
+        },
+        "still-collecting": {
+          sourceAlgoId: "still-collecting",
+          lane: "exact_linked_execution_canary",
+          attempts: 2,
+          acceptedBuys: 1,
+          rejected: 0,
+          sells: 1,
+          open: 0,
+          totalPnl: 0.25,
+          startedAt: "2026-06-20T00:00:00.000Z",
+          lastAttemptAt: "2026-06-20T00:12:00.000Z",
+        },
+      },
+    }, {
+      minAttempts: 30,
+      minSells: 10,
+      maxLossDollars: 25,
+      minRowAttempts: 8,
+      minRowSells: 5,
+      maxRowLossDollars: 15,
+      now: "2026-06-20T00:15:00.000Z",
+    });
+    expect(health).toMatchObject({
+      status: "fail",
+      reasonCodes: ["canary_row_loss_limit_exceeded"],
+      unhealthySourceAlgoIds: ["fast-fail"],
+    });
+  });
+
+  it("carries forward prior unhealthy canary exclusions across reseeds", () => {
+    expect(mergedCanaryExclusions(
+      { excludedSourceAlgoIds: ["old-bad", "still-bad"] },
+      { unhealthySourceAlgoIds: ["still-bad", "new-bad"] },
+    )).toEqual(["old-bad", "still-bad", "new-bad"]);
+  });
+
+  it("treats a fresh running evidence loop as healthy and stale running loops as unhealthy", () => {
+    const nowMs = Date.parse("2026-06-20T01:30:00.000Z");
+    expect(evidenceLoopHealth({
+      status: "running",
+      startedAt: "2026-06-20T01:10:00.000Z",
+      canPlaceOrders: false,
+    }, { nowMs, heartbeatSeconds: 30 })).toMatchObject({
+      ok: true,
+      runningFresh: true,
+      status: "running",
+    });
+    expect(evidenceLoopHealth({
+      status: "running",
+      startedAt: "2026-06-20T00:30:00.000Z",
+      canPlaceOrders: false,
+    }, { nowMs, heartbeatSeconds: 30 })).toMatchObject({
+      ok: false,
+      runningFresh: false,
+      status: "running",
+    });
   });
 
   it("does not reinstall source algos excluded after unhealthy execution canary evidence", () => {

@@ -13,7 +13,17 @@ const once = args.once === true;
 const outDir = path.resolve(args.out ?? "artifacts/evidence-loop");
 await mkdir(outDir, { recursive: true });
 
+let activeRun = null;
+
 async function runOnce() {
+  if (activeRun) return activeRun;
+  activeRun = runOnceInternal().finally(() => {
+    activeRun = null;
+  });
+  return activeRun;
+}
+
+async function runOnceInternal() {
   const startedAt = new Date().toISOString();
   const bootstrapArgs = ["scripts/factory/evidence-bootstrap.mjs"];
   for (const [key, value] of Object.entries(args)) {
@@ -22,6 +32,11 @@ async function runOnce() {
     if (value !== true) bootstrapArgs.push(String(value));
   }
   const record = { startedAt, command: ["node", ...bootstrapArgs], canPlaceOrders: false };
+  await writeFile(path.join(outDir, "latest.json"), `${JSON.stringify({
+    ...record,
+    status: "running",
+    nextRunAt: null,
+  }, null, 2)}\n`, "utf8");
   try {
     const { stdout, stderr } = await execFileAsync(process.execPath, bootstrapArgs, {
       cwd: repoRoot,

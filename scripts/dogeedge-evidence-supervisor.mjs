@@ -22,10 +22,11 @@ const children = new Map();
 await mkdir(path.dirname(supervisorStatusFile), { recursive: true });
 await mkdir(logsDir, { recursive: true });
 
-process.on("SIGINT", () => shutdown(0));
-process.on("SIGTERM", () => shutdown(0));
-
-await run();
+if (isMainModule()) {
+  process.on("SIGINT", () => shutdown(0));
+  process.on("SIGTERM", () => shutdown(0));
+  await run();
+}
 
 async function run() {
   for (;;) {
@@ -172,16 +173,24 @@ async function checkHeadless() {
 async function checkEvidenceLoop() {
   const latestPath = path.join(evidenceLoopOut, "latest.json");
   const doc = await readJsonMaybe(latestPath);
-  const now = Date.now();
+  return evidenceLoopHealth(doc, { nowMs: Date.now(), heartbeatSeconds });
+}
+
+export function evidenceLoopHealth(doc, { nowMs = Date.now(), heartbeatSeconds = 30 } = {}) {
   const nextRunAt = doc?.nextRunAt ? Date.parse(doc.nextRunAt) : null;
   const finishedAt = doc?.finishedAt ? Date.parse(doc.finishedAt) : null;
-  const overdue = nextRunAt ? now > nextRunAt + Math.max(5 * 60_000, heartbeatSeconds * 4 * 1000) : false;
-  const recentEnough = finishedAt ? now - finishedAt <= 60 * 60_000 : false;
+  const startedAt = doc?.startedAt ? Date.parse(doc.startedAt) : null;
+  const overdue = nextRunAt ? nowMs > nextRunAt + Math.max(5 * 60_000, heartbeatSeconds * 4 * 1000) : false;
+  const recentEnough = finishedAt ? nowMs - finishedAt <= 60 * 60_000 : false;
+  const running = doc?.status === "running";
+  const runningFresh = running && startedAt ? nowMs - startedAt <= Math.max(45 * 60_000, heartbeatSeconds * 8 * 1000) : false;
   return {
-    ok: Boolean(doc?.status === "ok" && !overdue && recentEnough),
+    ok: Boolean((doc?.status === "ok" && !overdue && recentEnough) || runningFresh),
     status: doc?.status ?? null,
+    startedAt: doc?.startedAt ?? null,
     finishedAt: doc?.finishedAt ?? null,
     nextRunAt: doc?.nextRunAt ?? null,
+    runningFresh,
     overdue,
     recentEnough,
     canPlaceOrders: doc?.canPlaceOrders === true ? true : false,
@@ -245,4 +254,8 @@ function shutdown(code) {
     if (child && !child.killed) child.kill();
   }
   process.exit(code);
+}
+
+function isMainModule() {
+  return process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 }

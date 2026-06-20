@@ -171,6 +171,9 @@ async function evidenceBootstrapCli() {
     minAttempts: Number(args["min-canary-health-attempts"] ?? 30),
     minSells: Number(args["min-canary-health-sells"] ?? 10),
     maxLossDollars: Number(args["max-canary-loss-dollars"] ?? 25),
+    minRowAttempts: Number(args["min-canary-row-health-attempts"] ?? 8),
+    minRowSells: Number(args["min-canary-row-health-sells"] ?? 5),
+    maxRowLossDollars: Number(args["max-canary-row-loss-dollars"] ?? 15),
     maxRejectRate: Number(args["max-canary-reject-rate"] ?? 0.7),
     minRejectRateAttempts: Number(args["min-canary-reject-rate-attempts"] ?? 25),
     maxIdleMinutes: Number(args["max-canary-idle-minutes"] ?? 120),
@@ -191,8 +194,9 @@ async function evidenceBootstrapCli() {
       "--max-probes", String(maxExecutionCanaries),
       "--executable-only",
     ];
-    if (canaryHealth.status === "fail" && canaryHealth.unhealthySourceAlgoIds.length > 0) {
-      canaryArgs.push("--exclude-source-algos", canaryHealth.unhealthySourceAlgoIds.join(","));
+    const excludedSourceAlgoIds = mergedCanaryExclusions(executionCanaries, canaryHealth);
+    if (canaryHealth.status === "fail" && excludedSourceAlgoIds.length > 0) {
+      canaryArgs.push("--exclude-source-algos", excludedSourceAlgoIds.join(","));
     }
     if (probeSource) canaryArgs.push("--from", probeSource);
     else canaryArgs.push("--from", probeSourceMode);
@@ -384,6 +388,9 @@ export function executionCanaryHealth(executable, {
   minAttempts = 30,
   minSells = 10,
   maxLossDollars = 25,
+  minRowAttempts = 8,
+  minRowSells = 5,
+  maxRowLossDollars = 15,
   maxRejectRate = 0.7,
   minRejectRateAttempts = 25,
   maxIdleMinutes = 120,
@@ -421,6 +428,15 @@ export function executionCanaryHealth(executable, {
   if (enoughLossEvidence && totals.totalPnl <= -Math.max(0, Number(maxLossDollars ?? 25))) {
     reasonCodes.push("canary_loss_limit_exceeded");
   }
+  const unhealthyByRowLoss = rows
+    .filter((row) => (
+      numberOrZero(row.attempts) >= Math.max(1, Number(minRowAttempts ?? 8))
+      && numberOrZero(row.sells) >= Math.max(1, Number(minRowSells ?? 5))
+      && numberOrZero(row.totalPnl) <= -Math.max(0, Number(maxRowLossDollars ?? 15))
+    ))
+    .map((row) => String(row.sourceAlgoId ?? ""))
+    .filter((value) => value.length > 0);
+  if (unhealthyByRowLoss.length > 0) reasonCodes.push("canary_row_loss_limit_exceeded");
   const rejectRate = totals.attempts > 0 ? totals.rejected / totals.attempts : 0;
   if (
     totals.attempts >= Math.max(1, Number(minRejectRateAttempts ?? 25))
@@ -441,7 +457,7 @@ export function executionCanaryHealth(executable, {
     reasonCodes.push("canary_idle_without_attempts");
   }
   const unhealthySourceAlgoIds = rows
-    .filter((row) => rowHasUnhealthyCanaryEvidence(row, reasonCodes))
+    .filter((row) => rowHasUnhealthyCanaryEvidence(row, reasonCodes, unhealthyByRowLoss))
     .map((row) => String(row.sourceAlgoId ?? ""))
     .filter((value) => value.length > 0);
   const blockingReasons = reasonCodes.filter((code) => code !== "no_execution_canary_stats");
@@ -456,6 +472,9 @@ export function executionCanaryHealth(executable, {
       minAttempts,
       minSells,
       maxLossDollars,
+      minRowAttempts,
+      minRowSells,
+      maxRowLossDollars,
       maxRejectRate,
       minRejectRateAttempts,
       maxIdleMinutes,
@@ -464,8 +483,13 @@ export function executionCanaryHealth(executable, {
   };
 }
 
-function rowHasUnhealthyCanaryEvidence(row, reasonCodes) {
-  if (!reasonCodes.some((code) => code === "canary_loss_limit_exceeded" || code === "canary_reject_rate_exceeded")) return false;
+function rowHasUnhealthyCanaryEvidence(row, reasonCodes, unhealthyByRowLoss = []) {
+  if (!reasonCodes.some((code) => (
+    code === "canary_loss_limit_exceeded"
+    || code === "canary_row_loss_limit_exceeded"
+    || code === "canary_reject_rate_exceeded"
+  ))) return false;
+  if (unhealthyByRowLoss.includes(String(row?.sourceAlgoId ?? ""))) return true;
   const attempts = numberOrZero(row.attempts);
   if (reasonCodes.includes("canary_loss_limit_exceeded") && numberOrZero(row.totalPnl) < 0) return true;
   if (reasonCodes.includes("canary_reject_rate_exceeded") && attempts > 0 && numberOrZero(row.rejected) / attempts >= 0.5) return true;
@@ -478,6 +502,21 @@ function executionCanaryStatsRows(executable) {
     row?.lane === "exact_linked_execution_canary"
     || row?.evidenceStatus === "execution_canary_only"
   ));
+}
+
+export function mergedCanaryExclusions(executionCanaries, canaryHealth) {
+  return [
+    ...new Set([
+      ...arrayOfStrings(executionCanaries?.excludedSourceAlgoIds),
+      ...arrayOfStrings(canaryHealth?.unhealthySourceAlgoIds),
+    ]),
+  ];
+}
+
+function arrayOfStrings(value) {
+  return Array.isArray(value)
+    ? value.map((item) => String(item ?? "").trim()).filter(Boolean)
+    : [];
 }
 
 async function latestBundleExecutableGate(reviewRoot = path.join(repoRoot, "review_exports")) {
