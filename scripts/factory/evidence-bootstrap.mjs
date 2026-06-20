@@ -129,6 +129,7 @@ async function evidenceBootstrapCli() {
   if (args["series-ticker"]) targetMarketArgs.push("--series-ticker", String(args["series-ticker"]));
   if (args["base-url"]) targetMarketArgs.push("--base-url", String(args["base-url"]));
   if (args["provider-active-horizon-minutes"]) targetMarketArgs.push("--provider-active-horizon-minutes", String(args["provider-active-horizon-minutes"]));
+  if (args["active-min-lead-minutes"]) targetMarketArgs.push("--active-min-lead-minutes", String(args["active-min-lead-minutes"]));
   await runStep("select-target-markets", targetMarketArgs);
   await mirrorTargetMarketSelectionArtifacts(path.join(outDir, "target-markets"), path.join(evidenceDir, "target-markets"));
   await maybeReseedExecutionCanaries("pre-capture");

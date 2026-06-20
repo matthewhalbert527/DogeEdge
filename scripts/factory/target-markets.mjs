@@ -17,6 +17,8 @@ export async function selectTargetMarkets(options = {}) {
   const maxActiveTargets = Math.max(0, Number(options.maxActiveTargets ?? 25));
   const activeHorizonMinutes = Math.max(1, Number(options.activeHorizonMinutes ?? 180));
   const activeHorizonMs = activeHorizonMinutes * 60_000;
+  const activeMinLeadMinutes = Math.max(0, Number(options.activeMinLeadMinutes ?? options.minActiveLeadMinutes ?? 5));
+  const activeMinLeadMs = activeMinLeadMinutes * 60_000;
   const providerActive = Boolean(options.providerActive);
   const providerActiveHorizonMinutes = Math.max(1, Number(options.providerActiveHorizonMinutes ?? 24 * 60));
   const closed = new Map();
@@ -53,7 +55,7 @@ export async function selectTargetMarkets(options = {}) {
   ]) {
     const json = await readJsonMaybe(file);
     if (!json) continue;
-    collectFromResearchRun(json, { nowMs, activeHorizonMs, addTarget, closed, active });
+    collectFromResearchRun(json, { nowMs, activeHorizonMs, activeMinLeadMs, addTarget, closed, active });
   }
 
   const frameFiles = await latestFilesRecursive(path.join(dataRoot, "features", "decision-frames"), [".jsonl", ".ndjson"], Number(options.maxFrameFiles ?? 12));
@@ -63,7 +65,7 @@ export async function selectTargetMarkets(options = {}) {
       const closeMs = parseTime(row.marketCloseTime ?? row.marketCloseTimestamp ?? row.market_close_timestamp_utc);
       if (!marketTicker || closeMs === null) continue;
       if (closeMs <= nowMs) addTarget(closed, marketTicker, "decision_frame_closed", { closeTime: closeMs, family: row.family, priority: 80 });
-      else if (closeMs <= nowMs + activeHorizonMs) addTarget(active, marketTicker, "decision_frame_active", { closeTime: closeMs, family: row.family, priority: 70 });
+      else if (activeCloseIsCaptureEligible(closeMs, nowMs, activeHorizonMs, activeMinLeadMs)) addTarget(active, marketTicker, "decision_frame_active", { closeTime: closeMs, family: row.family, priority: 70 });
     }
   }
 
@@ -83,7 +85,7 @@ export async function selectTargetMarkets(options = {}) {
   }
 
   const latest = await readJsonMaybe(path.join(storageDir, "latest.json"));
-  collectCurrentLocalMarkets(latest, { nowMs, activeHorizonMs, addTarget, active });
+  collectCurrentLocalMarkets(latest, { nowMs, activeHorizonMs, activeMinLeadMs, addTarget, active });
 
   if (providerActive && active.size < maxActiveTargets && maxActiveTargets > 0) {
     try {
@@ -94,6 +96,7 @@ export async function selectTargetMarkets(options = {}) {
         fetchImpl: options.fetchImpl,
         nowMs,
         horizonMs: providerActiveHorizonMinutes * 60_000,
+        minLeadMs: activeMinLeadMs,
         limit: Math.max(maxActiveTargets * 4, 20),
       });
       for (const row of providerRows) {
@@ -122,6 +125,7 @@ export async function selectTargetMarkets(options = {}) {
     maxClosedTargets,
     maxActiveTargets,
     activeHorizonMinutes,
+    activeMinLeadMinutes,
     closedTargets,
     activeTargets,
     closedTargetCount: closedTargets.length,
@@ -159,6 +163,7 @@ async function targetMarketCli() {
     maxClosedTargets: args["max-closed"],
     maxActiveTargets: args["max-active"],
     activeHorizonMinutes: args["active-horizon-minutes"],
+    activeMinLeadMinutes: args["active-min-lead-minutes"],
     providerActive: args["provider-active"] === true || args.online === true,
     providerActiveHorizonMinutes: args["provider-active-horizon-minutes"],
     provider: args.provider,
@@ -172,7 +177,7 @@ async function targetMarketCli() {
   console.log(`Output: ${paths.jsonPath}`);
 }
 
-function collectFromResearchRun(run, { nowMs, activeHorizonMs, addTarget, closed, active }) {
+function collectFromResearchRun(run, { nowMs, activeHorizonMs, activeMinLeadMs, addTarget, closed, active }) {
   const rows = [
     ...(Array.isArray(run?.candidates) ? run.candidates : []),
     ...(Array.isArray(run?.topMetrics) ? run.topMetrics : []),
@@ -194,8 +199,10 @@ function collectFromResearchRun(run, { nowMs, activeHorizonMs, addTarget, closed
       const marketTicker = stringOrNull(item?.marketTicker ?? item?.ticker ?? item?.id);
       const closeMs = parseTime(item?.closeTime ?? item?.marketCloseTime ?? item?.marketCloseTimestamp);
       if (!marketTicker) continue;
-      if (closeMs !== null && closeMs > nowMs && closeMs <= nowMs + activeHorizonMs) {
-        addTarget(active, marketTicker, "research_metric_active_market", { ...row, closeTime: closeMs, priority });
+      if (closeMs !== null && closeMs > nowMs) {
+        if (activeCloseIsCaptureEligible(closeMs, nowMs, activeHorizonMs, activeMinLeadMs)) {
+          addTarget(active, marketTicker, "research_metric_active_market", { ...row, closeTime: closeMs, priority });
+        }
       } else {
         addTarget(closed, marketTicker, "research_metric_closed_market", { ...row, closeTime: closeMs, priority });
       }
@@ -203,7 +210,7 @@ function collectFromResearchRun(run, { nowMs, activeHorizonMs, addTarget, closed
   }
 }
 
-function collectCurrentLocalMarkets(latest, { nowMs, activeHorizonMs, addTarget, active }) {
+function collectCurrentLocalMarkets(latest, { nowMs, activeHorizonMs, activeMinLeadMs, addTarget, active }) {
   const candidates = [
     latest?.market,
     latest?.currentMarket,
@@ -213,13 +220,13 @@ function collectCurrentLocalMarkets(latest, { nowMs, activeHorizonMs, addTarget,
   for (const row of candidates) {
     const marketTicker = stringOrNull(row?.marketTicker ?? row?.ticker ?? row?.market_ticker);
     const closeMs = parseTime(row?.marketCloseTime ?? row?.marketCloseTimestamp ?? row?.closeTime);
-    if (marketTicker && (closeMs === null || closeMs >= nowMs && closeMs <= nowMs + activeHorizonMs)) {
+    if (marketTicker && (closeMs === null || activeCloseIsCaptureEligible(closeMs, nowMs, activeHorizonMs, activeMinLeadMs))) {
       addTarget(active, marketTicker, "local_worker_current_market", { closeTime: closeMs, priority: 75 });
     }
   }
 }
 
-async function fetchProviderActiveMarkets({ provider, seriesTicker, baseUrl, fetchImpl = globalThis.fetch, nowMs, horizonMs, limit }) {
+async function fetchProviderActiveMarkets({ provider, seriesTicker, baseUrl, fetchImpl = globalThis.fetch, nowMs, horizonMs, minLeadMs = 0, limit }) {
   if (provider !== "kalshi") throw new Error(`unsupported_provider:${provider}`);
   if (typeof fetchImpl !== "function") throw new Error("fetch_unavailable");
   const url = new URL(`${normalizeKalshiBaseUrl(baseUrl)}/markets`);
@@ -254,8 +261,13 @@ async function fetchProviderActiveMarkets({ provider, seriesTicker, baseUrl, fet
     })
     .filter((row) => row.marketTicker)
     .filter((row) => row.status !== "closed" && row.status !== "finalized")
-    .filter((row) => row.closeMs === null || row.millisecondsToClose >= -15_000 && row.millisecondsToClose <= horizonMs)
-    .sort((left, right) => right.priority - left.priority || Math.abs(left.millisecondsToClose) - Math.abs(right.millisecondsToClose) || left.marketTicker.localeCompare(right.marketTicker));
+    .filter((row) => row.closeMs === null || row.millisecondsToClose > minLeadMs && row.millisecondsToClose <= horizonMs)
+    .sort((left, right) => right.priority - left.priority || left.millisecondsToClose - right.millisecondsToClose || left.marketTicker.localeCompare(right.marketTicker));
+}
+
+function activeCloseIsCaptureEligible(closeMs, nowMs, activeHorizonMs, activeMinLeadMs) {
+  if (closeMs === null) return true;
+  return closeMs > nowMs + activeMinLeadMs && closeMs <= nowMs + activeHorizonMs;
 }
 
 function normalizeKalshiBaseUrl(baseUrl) {

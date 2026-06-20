@@ -2860,11 +2860,18 @@ describe("factory research safeguards", () => {
         return {
           ok: true,
           json: async () => ({
-            markets: [{
-              ticker: "KXDOGE15M-26JUN171800-00",
-              status: "active",
-              close_time: "2026-06-17T22:00:00.000Z",
-            }],
+            markets: [
+              {
+                ticker: "KXDOGE15M-26JUN171405-05",
+                status: "active",
+                close_time: "2026-06-17T14:05:00.000Z",
+              },
+              {
+                ticker: "KXDOGE15M-26JUN171415-15",
+                status: "active",
+                close_time: "2026-06-17T14:15:00.000Z",
+              },
+            ],
           }),
         };
       },
@@ -2872,7 +2879,8 @@ describe("factory research safeguards", () => {
 
     expect(calls[0]).toContain("series_ticker=KXDOGE15M");
     expect(selection.activeTargetCount).toBe(1);
-    expect(selection.activeTickers).toEqual(["KXDOGE15M-26JUN171800-00"]);
+    expect(selection.activeMinLeadMinutes).toBe(5);
+    expect(selection.activeTickers).toEqual(["KXDOGE15M-26JUN171415-15"]);
     expect(selection.activeTargets[0].evidenceSources).toContain("kalshi_provider_open_market");
     expect(selection.reasonCodes).not.toContain("active_target_markets_absent");
   });
