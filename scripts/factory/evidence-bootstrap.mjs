@@ -22,6 +22,7 @@ async function evidenceBootstrapCli() {
   const probeSource = args["probe-source"] ? path.resolve(String(args["probe-source"])) : null;
   const probeSourceMode = String(args["probe-source-mode"] ?? "best-supported-research");
   const maxProbes = Math.max(0, Number(args["max-probes"] ?? 5));
+  const promoteCheckMaxSweepAlgos = Math.max(1, Math.floor(Number(args["promote-check-max-sweep-algos"] ?? args["research-sweep-max-algos"] ?? 500)));
   await mkdir(outDir, { recursive: true });
   await mkdir(evidenceDir, { recursive: true });
 
@@ -209,7 +210,13 @@ async function evidenceBootstrapCli() {
 
   if (args["run-backtest"]) {
     await runStep("backtest", ["scripts/dogeedge-backtest.mjs", "--data-root", dataRoot], { optional: true });
-    await runStep("promote-check", ["scripts/dogeedge-backtest.mjs", "--sweep", "--promote-check", "--data-root", dataRoot], { optional: true });
+    await runStep("promote-check", [
+      "scripts/dogeedge-backtest.mjs",
+      "--sweep",
+      "--promote-check",
+      "--promote-check-max-sweep-algos", String(promoteCheckMaxSweepAlgos),
+      "--data-root", dataRoot,
+    ], { optional: true });
   }
 
   await maybeReseedExecutionCanaries("post-backtest");

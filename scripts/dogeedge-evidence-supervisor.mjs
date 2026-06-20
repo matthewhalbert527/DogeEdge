@@ -98,6 +98,8 @@ async function superviseOnce() {
           "--interval-minutes",
           "20",
           "--run-backtest",
+          "--promote-check-max-sweep-algos",
+          "500",
           "--refresh-bundle",
           "--max-probes",
           String(maxProbes),
