@@ -1672,6 +1672,52 @@ describe("factory research safeguards", () => {
     });
   });
 
+  it("fails stalled execution canary warmup so the supervisor can reseed", () => {
+    const health = executionCanaryHealth({
+      stats: {
+        "stalled-canary": {
+          sourceAlgoId: "stalled-canary",
+          lane: "exact_linked_execution_canary",
+          attempts: 5,
+          acceptedBuys: 0,
+          rejected: 5,
+          sells: 0,
+          open: 0,
+          totalPnl: 0,
+          startedAt: "2026-06-20T00:00:00.000Z",
+          lastAttemptAt: "2026-06-20T00:10:00.000Z",
+        },
+      },
+    }, {
+      minAttempts: 30,
+      minSells: 10,
+      minRejectRateAttempts: 25,
+      maxWarmupIdleMinutes: 60,
+      now: "2026-06-20T01:15:00.000Z",
+    });
+    expect(health).toMatchObject({
+      status: "fail",
+      reasonCodes: ["canary_warmup_stalled"],
+      unhealthySourceAlgoIds: ["stalled-canary"],
+    });
+    expect(executionCanariesNeedReseed({
+      executionCanaries: {
+        sourceRunId: "run-2",
+        paperOnly: true,
+        executableOnly: true,
+        lane: "exact_linked_execution_canary",
+        probes: [
+          { exactLinked: true, paperOnly: true, enabled: true, lane: "exact_linked_execution_canary", researchCandidateId: "rcid-a", candidateConfigHash: "hash-a" },
+          { exactLinked: true, paperOnly: true, enabled: true, lane: "exact_linked_execution_canary", researchCandidateId: "rcid-b", candidateConfigHash: "hash-b" },
+          { exactLinked: true, paperOnly: true, enabled: true, lane: "exact_linked_execution_canary", researchCandidateId: "rcid-c", candidateConfigHash: "hash-c" },
+        ],
+      },
+      sourceRunId: "run-2",
+      maxExecutionCanaries: 3,
+      canaryHealth: health,
+    })).toBe(true);
+  });
+
   it("carries forward prior unhealthy canary exclusions across reseeds", () => {
     expect(mergedCanaryExclusions(
       { excludedSourceAlgoIds: ["old-bad", "still-bad"] },

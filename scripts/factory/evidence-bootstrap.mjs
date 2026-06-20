@@ -521,6 +521,7 @@ export function executionCanaryHealth(executable, {
   maxRejectRate = 0.7,
   minRejectRateAttempts = 25,
   maxIdleMinutes = 120,
+  maxWarmupIdleMinutes = 60,
   now = new Date().toISOString(),
 } = {}) {
   const rows = executionCanaryStatsRows(executable);
@@ -585,13 +586,24 @@ export function executionCanaryHealth(executable, {
   ) {
     reasonCodes.push("canary_idle_without_attempts");
   }
+  const warmupIdleLimitMs = Math.max(1, Number(maxWarmupIdleMinutes ?? 60)) * 60 * 1000;
+  const aggregateSampleReady = rows.length > 0 && enoughLossEvidence && enoughRejectEvidence;
+  if (
+    rows.length > 0
+    && !aggregateSampleReady
+    && totals.attempts > 0
+    && Number.isFinite(nowMs)
+    && Number.isFinite(lastAttemptMs)
+    && nowMs - lastAttemptMs >= warmupIdleLimitMs
+  ) {
+    reasonCodes.push("canary_warmup_stalled");
+  }
   const unhealthySourceAlgoIds = rows
     .filter((row) => rowHasUnhealthyCanaryEvidence(row, reasonCodes, unhealthyByRowLoss))
     .map((row) => String(row.sourceAlgoId ?? ""))
     .filter((value) => value.length > 0);
-  const blockingReasonSet = new Set(["canary_loss_limit_exceeded", "canary_row_loss_limit_exceeded", "canary_reject_rate_exceeded", "canary_idle_without_attempts"]);
+  const blockingReasonSet = new Set(["canary_loss_limit_exceeded", "canary_row_loss_limit_exceeded", "canary_reject_rate_exceeded", "canary_idle_without_attempts", "canary_warmup_stalled"]);
   const hasBlockingReason = reasonCodes.some((code) => blockingReasonSet.has(code));
-  const aggregateSampleReady = rows.length > 0 && enoughLossEvidence && enoughRejectEvidence;
   if (rows.length > 0 && !aggregateSampleReady && !hasBlockingReason) reasonCodes.push("canary_warming_up_insufficient_sample");
   const blockingReasons = reasonCodes.filter((code) => (
     code !== "no_execution_canary_stats"
@@ -614,6 +626,7 @@ export function executionCanaryHealth(executable, {
       maxRejectRate,
       minRejectRateAttempts,
       maxIdleMinutes,
+      maxWarmupIdleMinutes,
     },
     ...totals,
   };
@@ -624,11 +637,13 @@ function rowHasUnhealthyCanaryEvidence(row, reasonCodes, unhealthyByRowLoss = []
     code === "canary_loss_limit_exceeded"
     || code === "canary_row_loss_limit_exceeded"
     || code === "canary_reject_rate_exceeded"
+    || code === "canary_warmup_stalled"
   ))) return false;
   if (unhealthyByRowLoss.includes(String(row?.sourceAlgoId ?? ""))) return true;
   const attempts = numberOrZero(row.attempts);
   if (reasonCodes.includes("canary_loss_limit_exceeded") && numberOrZero(row.totalPnl) < 0) return true;
   if (reasonCodes.includes("canary_reject_rate_exceeded") && attempts > 0 && numberOrZero(row.rejected) / attempts >= 0.5) return true;
+  if (reasonCodes.includes("canary_warmup_stalled")) return true;
   return false;
 }
 
