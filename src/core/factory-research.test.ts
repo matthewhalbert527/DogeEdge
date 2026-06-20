@@ -35,7 +35,7 @@ import { forecastCalibrationForDecisionRows, officialForecastCalibrationReport, 
 import { deterministicLinkageBackfill } from "../../scripts/factory/backfill-linkage.mjs";
 import { loadSourceSweep, materializeExactLinkageForSource, mergeTopTradersExecutable, selectEvidenceProbes } from "../../scripts/factory/evidence-lane.mjs";
 import { countTargetMarkets, evalBundleArgsForBootstrap, executionCanariesNeedReseed, executionCanaryHealth, mergedCanaryExclusions, mirrorTargetMarketSelectionArtifacts, readinessComponent, writeReadinessPercent } from "../../scripts/factory/evidence-bootstrap.mjs";
-import { evidenceLoopHealth, executionCanarySupervisorHealth } from "../../scripts/dogeedge-evidence-supervisor.mjs";
+import { evidenceLoopArgsForSupervisor, evidenceLoopHealth, executionCanarySupervisorHealth } from "../../scripts/dogeedge-evidence-supervisor.mjs";
 import { canarySelectionStatus, shouldRestartChrome } from "../../scripts/dogeedge-headless-app.mjs";
 import { runEvidencePreflight } from "../../scripts/factory/evidence-preflight.mjs";
 import { fetchKalshiHistoricalSettlements } from "../../scripts/factory/provider-kalshi.mjs";
@@ -1709,6 +1709,23 @@ describe("factory research safeguards", () => {
       runningFresh: false,
       status: "running",
     });
+  });
+
+  it("starts the evidence loop frequently enough to catch 15-minute replay targets", () => {
+    const args = evidenceLoopArgsForSupervisor({
+      maxProbes: 3,
+      evidenceLoopOut: "C:\\Users\\matth\\DogeEdge\\artifacts\\evidence-live-run",
+      evidenceOut: "C:\\Users\\matth\\DogeEdge\\artifacts\\evidence",
+    });
+
+    expect(args).toEqual(expect.arrayContaining([
+      "--interval-minutes",
+      "10",
+      "--active-min-lead-minutes",
+      "1",
+      "--provider-active-horizon-minutes",
+      "180",
+    ]));
   });
 
   it("does not reinstall source algos excluded after unhealthy execution canary evidence", () => {

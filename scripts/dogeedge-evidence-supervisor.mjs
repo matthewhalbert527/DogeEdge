@@ -84,30 +84,7 @@ async function superviseOnce() {
     if (!checks.evidenceLoop.ok) {
       actions.push(await startManaged("evidence-loop", [
         process.execPath,
-        [
-          "scripts/factory/evidence-loop.mjs",
-          "--online",
-          "--max-closed",
-          "50",
-          "--max-active",
-          "10",
-          "--mode",
-          "websocket",
-          "--duration-seconds",
-          "900",
-          "--interval-minutes",
-          "20",
-          "--run-backtest",
-          "--promote-check-max-sweep-algos",
-          "500",
-          "--refresh-bundle",
-          "--max-probes",
-          String(maxProbes),
-          "--out",
-          evidenceLoopOut,
-          "--evidence-out",
-          evidenceOut,
-        ],
+        evidenceLoopArgsForSupervisor({ maxProbes, evidenceLoopOut, evidenceOut }),
         process.env,
       ]));
     }
@@ -129,6 +106,37 @@ async function superviseOnce() {
     actions,
     canPlaceOrders: false,
   };
+}
+
+export function evidenceLoopArgsForSupervisor({ maxProbes = 3, evidenceLoopOut, evidenceOut } = {}) {
+  return [
+    "scripts/factory/evidence-loop.mjs",
+    "--online",
+    "--max-closed",
+    "50",
+    "--max-active",
+    "10",
+    "--mode",
+    "websocket",
+    "--duration-seconds",
+    "900",
+    "--interval-minutes",
+    "10",
+    "--active-min-lead-minutes",
+    "1",
+    "--provider-active-horizon-minutes",
+    "180",
+    "--run-backtest",
+    "--promote-check-max-sweep-algos",
+    "500",
+    "--refresh-bundle",
+    "--max-probes",
+    String(maxProbes),
+    "--out",
+    evidenceLoopOut,
+    "--evidence-out",
+    evidenceOut,
+  ];
 }
 
 async function startManaged(name, spec) {
