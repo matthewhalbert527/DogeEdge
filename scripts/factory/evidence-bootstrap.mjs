@@ -21,6 +21,7 @@ async function evidenceBootstrapCli() {
   const mockReplayRaw = args["mock-replay-raw"] ? path.resolve(String(args["mock-replay-raw"])) : null;
   const probeSource = args["probe-source"] ? path.resolve(String(args["probe-source"])) : null;
   const probeSourceMode = String(args["probe-source-mode"] ?? "best-supported-research");
+  const maxProbes = Math.max(0, Number(args["max-probes"] ?? 5));
   await mkdir(outDir, { recursive: true });
   await mkdir(evidenceDir, { recursive: true });
 
@@ -52,6 +53,53 @@ async function evidenceBootstrapCli() {
       return row;
     }
   };
+  let lastExecutionCanaryHealth = null;
+
+  const maybeReseedExecutionCanaries = async (phase) => {
+    const executionCanaries = await readJsonMaybe(path.join(storageDir, "execution-canaries.json"));
+    const executableFile = await readJsonMaybe(path.join(storageDir, "top-traders-executable.json"));
+    const sourceRunId = await evidenceLaneSourceRunId({ dataRoot, probeSource, probeSourceMode });
+    const maxExecutionCanaries = Math.min(3, maxProbes);
+    const canaryHealth = executionCanaryHealth(executableFile?.topTradersExecutable, {
+      minAttempts: Number(args["min-canary-health-attempts"] ?? 30),
+      minSells: Number(args["min-canary-health-sells"] ?? 10),
+      maxLossDollars: Number(args["max-canary-loss-dollars"] ?? 25),
+      minRowAttempts: Number(args["min-canary-row-health-attempts"] ?? 8),
+      minRowSells: Number(args["min-canary-row-health-sells"] ?? 5),
+      maxRowLossDollars: Number(args["max-canary-row-loss-dollars"] ?? 15),
+      maxRejectRate: Number(args["max-canary-reject-rate"] ?? 0.7),
+      minRejectRateAttempts: Number(args["min-canary-reject-rate-attempts"] ?? 25),
+      maxIdleMinutes: Number(args["max-canary-idle-minutes"] ?? 120),
+    });
+    lastExecutionCanaryHealth = { ...canaryHealth, phase };
+    await writeFile(path.join(evidenceDir, "execution_canary_health.json"), `${JSON.stringify(lastExecutionCanaryHealth, null, 2)}\n`, "utf8");
+    const canariesStale = executionCanariesNeedReseed({
+      executionCanaries,
+      sourceRunId,
+      maxExecutionCanaries,
+      maxSourceAgeHours: Number(args["max-canary-source-age-hours"] ?? 72),
+      force: Boolean(args["force-reseed-probes"]),
+      canaryHealth,
+    });
+    if (args["skip-execution-canaries"] === true || maxExecutionCanaries <= 0 || !canariesStale) {
+      return canaryHealth;
+    }
+    const canaryArgs = [
+      "scripts/factory/evidence-lane.mjs",
+      "--data-root", dataRoot,
+      "--storage-dir", storageDir,
+      "--max-probes", String(maxExecutionCanaries),
+      "--executable-only",
+    ];
+    const excludedSourceAlgoIds = mergedCanaryExclusions(executionCanaries, canaryHealth);
+    if (canaryHealth.status === "fail" && excludedSourceAlgoIds.length > 0) {
+      canaryArgs.push("--exclude-source-algos", excludedSourceAlgoIds.join(","));
+    }
+    if (probeSource) canaryArgs.push("--from", probeSource);
+    else canaryArgs.push("--from", probeSourceMode);
+    await runStep(`${phase}-reseed-execution-canaries`, canaryArgs, { optional: true });
+    return canaryHealth;
+  };
 
   const preflightArgs = [
     "scripts/factory/evidence-preflight.mjs",
@@ -81,6 +129,7 @@ async function evidenceBootstrapCli() {
   if (args["base-url"]) targetMarketArgs.push("--base-url", String(args["base-url"]));
   if (args["provider-active-horizon-minutes"]) targetMarketArgs.push("--provider-active-horizon-minutes", String(args["provider-active-horizon-minutes"]));
   await runStep("select-target-markets", targetMarketArgs);
+  await maybeReseedExecutionCanaries("pre-capture");
 
   const closedTargetsFile = targetMarketsFile ?? path.join(outDir, "target-markets", "closed-targets.json");
   const activeTargetsFile = targetMarketsFile ?? path.join(outDir, "target-markets", "active-targets.json");
@@ -145,7 +194,6 @@ async function evidenceBootstrapCli() {
 
   const evidenceProbes = await readJsonMaybe(path.join(storageDir, "evidence-probes.json"));
   const probeCount = Array.isArray(evidenceProbes?.probes) ? evidenceProbes.probes.length : 0;
-  const maxProbes = Math.max(0, Number(args["max-probes"] ?? 5));
   if (probeCount === 0 || args["force-reseed-probes"]) {
     const reseedArgs = [
       "scripts/factory/evidence-lane.mjs",
@@ -163,45 +211,7 @@ async function evidenceBootstrapCli() {
     await runStep("promote-check", ["scripts/dogeedge-backtest.mjs", "--sweep", "--promote-check", "--data-root", dataRoot], { optional: true });
   }
 
-  const executionCanaries = await readJsonMaybe(path.join(storageDir, "execution-canaries.json"));
-  const executableFile = await readJsonMaybe(path.join(storageDir, "top-traders-executable.json"));
-  const sourceRunId = await evidenceLaneSourceRunId({ dataRoot, probeSource, probeSourceMode });
-  const maxExecutionCanaries = Math.min(3, maxProbes);
-  const canaryHealth = executionCanaryHealth(executableFile?.topTradersExecutable, {
-    minAttempts: Number(args["min-canary-health-attempts"] ?? 30),
-    minSells: Number(args["min-canary-health-sells"] ?? 10),
-    maxLossDollars: Number(args["max-canary-loss-dollars"] ?? 25),
-    minRowAttempts: Number(args["min-canary-row-health-attempts"] ?? 8),
-    minRowSells: Number(args["min-canary-row-health-sells"] ?? 5),
-    maxRowLossDollars: Number(args["max-canary-row-loss-dollars"] ?? 15),
-    maxRejectRate: Number(args["max-canary-reject-rate"] ?? 0.7),
-    minRejectRateAttempts: Number(args["min-canary-reject-rate-attempts"] ?? 25),
-    maxIdleMinutes: Number(args["max-canary-idle-minutes"] ?? 120),
-  });
-  const canariesStale = executionCanariesNeedReseed({
-    executionCanaries,
-    sourceRunId,
-    maxExecutionCanaries,
-    maxSourceAgeHours: Number(args["max-canary-source-age-hours"] ?? 72),
-    force: Boolean(args["force-reseed-probes"]),
-    canaryHealth,
-  });
-  if (args["skip-execution-canaries"] !== true && maxExecutionCanaries > 0 && canariesStale) {
-    const canaryArgs = [
-      "scripts/factory/evidence-lane.mjs",
-      "--data-root", dataRoot,
-      "--storage-dir", storageDir,
-      "--max-probes", String(maxExecutionCanaries),
-      "--executable-only",
-    ];
-    const excludedSourceAlgoIds = mergedCanaryExclusions(executionCanaries, canaryHealth);
-    if (canaryHealth.status === "fail" && excludedSourceAlgoIds.length > 0) {
-      canaryArgs.push("--exclude-source-algos", excludedSourceAlgoIds.join(","));
-    }
-    if (probeSource) canaryArgs.push("--from", probeSource);
-    else canaryArgs.push("--from", probeSourceMode);
-    await runStep("reseed-execution-canaries", canaryArgs, { optional: true });
-  }
+  await maybeReseedExecutionCanaries("post-backtest");
 
   if (args["refresh-bundle"]) {
     await runStep("eval-bundle", ["scripts/export-eval-snapshot.mjs", "--bundle", "--window-minutes", "30", "--bundle-hours", "2", "--out", "review_exports", "--full-rows"], { optional: true });
@@ -223,7 +233,7 @@ async function evidenceBootstrapCli() {
     mockSettlements,
     mockReplayRaw,
     targetMarketsFile,
-    executionCanaryHealth: canaryHealth,
+    executionCanaryHealth: lastExecutionCanaryHealth,
     canPlaceOrders: false,
     steps,
   };
