@@ -1,13 +1,16 @@
 import crypto from "node:crypto";
+import { execFile } from "node:child_process";
 import { access, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import tls from "node:tls";
+import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { selectEvidenceProbes } from "./evidence-lane.mjs";
 import { defaultKalshiHistoricalBaseUrl, kalshiHistoricalMarketsUrl } from "./official-settlement.mjs";
 import { selectTargetMarkets, writeTargetMarketSelection } from "./target-markets.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+const execFileAsync = promisify(execFile);
 const defaultKalshiWsUrl = "wss://external-api-ws.kalshi.com/trade-api/ws/v2";
 
 export async function runEvidencePreflight(options = {}) {
@@ -407,13 +410,24 @@ async function readJsonMaybe(filePath) {
 }
 
 async function gitBranchMaybe() {
-  try {
-    const head = await readFile(path.join(repoRoot, ".git", "HEAD"), "utf8");
-    if (head.startsWith("ref:")) return head.slice(5).trim().split("/").slice(2).join("/");
-    return head.trim();
-  } catch {
-    return "UNKNOWN";
+  for (const gitBinary of gitCandidates()) {
+    try {
+      const { stdout } = await execFileAsync(gitBinary, ["-C", repoRoot, "rev-parse", "--abbrev-ref", "HEAD"], { windowsHide: true });
+      return stdout.trim();
+    } catch {
+      // Try the next common Git location.
+    }
   }
+  return "UNKNOWN";
+}
+
+function gitCandidates() {
+  if (process.platform !== "win32") return ["git"];
+  return [
+    "git",
+    "C:\\Program Files\\Git\\cmd\\git.exe",
+    "C:\\Program Files (x86)\\Git\\cmd\\git.exe",
+  ];
 }
 
 function errorMessage(error) {

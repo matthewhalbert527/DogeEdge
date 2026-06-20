@@ -1,12 +1,15 @@
 import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { access, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { normalizeReplayRawEvent, replaySequenceReport } from "./raw-tick-extract.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+const execFileAsync = promisify(execFile);
 const args = parseArgs(process.argv.slice(2));
 if (args.help) {
   console.log("Usage: node scripts/factory/build-replay-dataset.mjs --input raw-root --markets-file file [--out replay-final-root] [--data-root dir] [--provider kalshi] [--mode websocket|polling] [--capture-run-id id]");
@@ -215,16 +218,24 @@ function tsv(columns, rows) {
 }
 
 async function gitCommitMaybe() {
-  try {
-    const head = await readFile(path.join(repoRoot, ".git", "HEAD"), "utf8");
-    if (head.startsWith("ref:")) {
-      const ref = head.slice(5).trim();
-      return (await readFile(path.join(repoRoot, ".git", ref), "utf8")).trim();
+  for (const gitBinary of gitCandidates()) {
+    try {
+      const { stdout } = await execFileAsync(gitBinary, ["-C", repoRoot, "rev-parse", "HEAD"], { windowsHide: true });
+      return stdout.trim();
+    } catch {
+      // Try the next common Git location.
     }
-    return head.trim();
-  } catch {
-    return "UNAVAILABLE";
   }
+  return "UNAVAILABLE";
+}
+
+function gitCandidates() {
+  if (process.platform !== "win32") return ["git"];
+  return [
+    "git",
+    "C:\\Program Files\\Git\\cmd\\git.exe",
+    "C:\\Program Files (x86)\\Git\\cmd\\git.exe",
+  ];
 }
 
 async function defaultDataRoot() {

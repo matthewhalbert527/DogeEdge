@@ -1,7 +1,9 @@
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
 import crypto from "node:crypto";
 import path from "node:path";
 import tls from "node:tls";
+import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { normalizeReplayRawEvent } from "./raw-tick-extract.mjs";
 import {
@@ -15,6 +17,7 @@ import {
 } from "./kalshi-ws-replay.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+const execFileAsync = promisify(execFile);
 const defaultKalshiWsUrl = defaultKalshiReplayWsUrl;
 const args = parseArgs(process.argv.slice(2));
 if (args.help) {
@@ -527,13 +530,24 @@ function stringOrNull(value) {
 }
 
 async function gitCommitMaybe() {
-  try {
-    const head = await readFile(path.join(repoRoot, ".git", "HEAD"), "utf8");
-    if (head.startsWith("ref:")) return (await readFile(path.join(repoRoot, ".git", head.slice(5).trim()), "utf8")).trim();
-    return head.trim();
-  } catch {
-    return "UNAVAILABLE";
+  for (const gitBinary of gitCandidates()) {
+    try {
+      const { stdout } = await execFileAsync(gitBinary, ["-C", repoRoot, "rev-parse", "HEAD"], { windowsHide: true });
+      return stdout.trim();
+    } catch {
+      // Try the next common Git location.
+    }
   }
+  return "UNAVAILABLE";
+}
+
+function gitCandidates() {
+  if (process.platform !== "win32") return ["git"];
+  return [
+    "git",
+    "C:\\Program Files\\Git\\cmd\\git.exe",
+    "C:\\Program Files (x86)\\Git\\cmd\\git.exe",
+  ];
 }
 
 async function defaultDataRoot() {
