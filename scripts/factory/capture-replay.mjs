@@ -1,7 +1,9 @@
+import { createWriteStream } from "node:fs";
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import crypto from "node:crypto";
 import path from "node:path";
+import { finished } from "node:stream/promises";
 import tls from "node:tls";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
@@ -86,6 +88,8 @@ if (args["mock-input"]) {
       rawMessageCount: result.rawMessageCount ?? 0,
       eventCount: result.eventCount ?? 0,
       durationSeconds,
+      rawMessagesFile: result.rawMessagesFile ?? null,
+      eventPartFile: result.eventPartFile ?? null,
     });
     if (result.eventCount > 0) console.log(`Replay provider capture complete: ${result.eventCount} events across ${result.capturedMarkets.length} markets -> ${outRoot}`);
     else {
@@ -133,6 +137,8 @@ async function writeManifest({
   rawMessageCount = 0,
   eventCount = 0,
   durationSeconds = null,
+  rawMessagesFile = null,
+  eventPartFile = null,
 }) {
   const replayGradeIntended = mode === "websocket" || mode === "provider" || mode === "live";
   const manifest = {
@@ -157,6 +163,8 @@ async function writeManifest({
     rawMessageCount,
     eventCount,
     durationSeconds,
+    rawMessagesFile,
+    eventPartFile,
     mockInput,
     unavailableReason,
     blockerArtifact,
@@ -219,7 +227,10 @@ async function captureKalshiProviderReplay({ outRoot, provider, mode, markets, c
   }
   const wsUrl = process.env.KALSHI_WS_URL ?? defaultKalshiWsUrl;
   const wsSessionId = `kalshi-ws-${new Date().toISOString().replaceAll(":", "-")}-${crypto.randomBytes(4).toString("hex")}`;
-  const rawMessagesPath = path.join(outRoot, "raw-websocket-messages.jsonl");
+  const runSegment = safeSegment(captureRunId);
+  const rawMessagesFile = `raw-websocket-messages-${runSegment}.jsonl`;
+  const eventPartFile = `part-${runSegment}.jsonl`;
+  const rawMessagesPath = path.join(outRoot, rawMessagesFile);
   const state = {
     rawMessages: [],
     eventsByMarket: new Map(),
@@ -229,6 +240,14 @@ async function captureKalshiProviderReplay({ outRoot, provider, mode, markets, c
     ignoredNonTargetMarkets: new Set(),
   };
   const targetMarketSet = new Set(markets);
+  const streams = [];
+  const rawStream = createJsonlStream(rawMessagesPath, streams, state);
+  const marketStreams = new Map();
+  for (const marketTicker of markets) {
+    const marketDir = path.join(outRoot, safeSegment(marketTicker));
+    await mkdir(marketDir, { recursive: true });
+    marketStreams.set(marketTicker, createJsonlStream(path.join(marketDir, eventPartFile), streams, state));
+  }
   let socket = null;
   try {
     socket = await openKalshiWebSocket({ wsUrl, keyId: auth.keyId, privateKeyPem: auth.privateKeyPem, timeoutMs: 10_000 });
@@ -255,20 +274,27 @@ async function captureKalshiProviderReplay({ outRoot, provider, mode, markets, c
           state.ignoredNonTargetMarkets.add(event.marketTicker);
           return;
         }
-        state.rawMessages.push({ receivedAt: receiveTs, raw });
+        const rawRow = { receivedAt: receiveTs, raw };
+        state.rawMessages.push(rawRow);
+        writeJsonl(rawStream, rawRow, state);
         if (!event) return;
         const marketRows = state.eventsByMarket.get(event.marketTicker) ?? [];
         marketRows.push(event);
         state.eventsByMarket.set(event.marketTicker, marketRows);
+        const stream = marketStreams.get(event.marketTicker);
+        if (stream) writeJsonl(stream, event, state);
       },
       onError: (error) => state.errors.push(error instanceof Error ? error.message : String(error)),
     });
   } catch (error) {
+    await closeJsonlStreams(streams, state);
     return {
       capturedMarkets: [],
       eventCount: 0,
       rawMessageCount: state.rawMessages.length,
       websocketSessionId: wsSessionId,
+      rawMessagesFile,
+      eventPartFile,
       blocker: await providerCaptureBlocker({
         outRoot,
         provider,
@@ -284,12 +310,7 @@ async function captureKalshiProviderReplay({ outRoot, provider, mode, markets, c
     if (socket) socket.destroy();
   }
 
-  await writeFile(rawMessagesPath, `${state.rawMessages.map((row) => JSON.stringify(row)).join("\n")}${state.rawMessages.length ? "\n" : ""}`, "utf8");
-  for (const [marketTicker, marketRows] of state.eventsByMarket) {
-    const marketDir = path.join(outRoot, safeSegment(marketTicker));
-    await mkdir(marketDir, { recursive: true });
-    await writeFile(path.join(marketDir, "part-0001.jsonl"), `${marketRows.map((row) => JSON.stringify(row)).join("\n")}\n`, "utf8");
-  }
+  await closeJsonlStreams(streams, state);
   const capturedMarkets = [...state.eventsByMarket.keys()].sort();
   const eventCount = [...state.eventsByMarket.values()].reduce((total, rows) => total + rows.length, 0);
   const observedTypes = [...new Set(state.rawMessages.map((row) => row.raw?.type).filter(Boolean))].sort();
@@ -299,6 +320,8 @@ async function captureKalshiProviderReplay({ outRoot, provider, mode, markets, c
       eventCount,
       rawMessageCount: state.rawMessages.length,
       websocketSessionId: wsSessionId,
+      rawMessagesFile,
+      eventPartFile,
       blocker: await providerCaptureBlocker({
         outRoot,
         provider,
@@ -326,6 +349,8 @@ async function captureKalshiProviderReplay({ outRoot, provider, mode, markets, c
     capturedMarketCount: capturedMarkets.length,
     rawMessageCount: state.rawMessages.length,
     eventCount,
+    rawMessagesFile,
+    eventPartFile,
     channels,
     useYesPrice,
     priceScale: useYesPrice ? "yes_leg" : "provider_default",
@@ -335,7 +360,33 @@ async function captureKalshiProviderReplay({ outRoot, provider, mode, markets, c
     errors: state.errors,
     canPlaceOrders: false,
   }, null, 2)}\n`, "utf8");
-  return { capturedMarkets, eventCount, rawMessageCount: state.rawMessages.length, websocketSessionId: wsSessionId, blocker: null };
+  return { capturedMarkets, eventCount, rawMessageCount: state.rawMessages.length, websocketSessionId: wsSessionId, rawMessagesFile, eventPartFile, blocker: null };
+}
+
+function createJsonlStream(filePath, streams, state) {
+  const stream = createWriteStream(filePath, { flags: "w", encoding: "utf8" });
+  stream.on("error", (error) => state.errors.push(error instanceof Error ? error.message : String(error)));
+  streams.push(stream);
+  return stream;
+}
+
+function writeJsonl(stream, row, state) {
+  try {
+    stream.write(`${JSON.stringify(row)}\n`);
+  } catch (error) {
+    state.errors.push(error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function closeJsonlStreams(streams, state) {
+  await Promise.all(streams.map(async (stream) => {
+    try {
+      stream.end();
+      await finished(stream);
+    } catch (error) {
+      state.errors.push(error instanceof Error ? error.message : String(error));
+    }
+  }));
 }
 
 async function openKalshiWebSocket({ wsUrl, keyId, privateKeyPem, timeoutMs }) {
