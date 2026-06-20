@@ -88,7 +88,7 @@ async function fetchProviderRows({ provider, args, tickers }) {
 }
 
 async function readMockRows(filePath, options) {
-  const text = await readFile(filePath, "utf8");
+  const text = stripBom(await readFile(filePath, "utf8"));
   const parsed = filePath.endsWith(".json")
     ? JSON.parse(text)
     : text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line) => JSON.parse(line));
@@ -116,9 +116,17 @@ async function requestedTargetRows(args, dataRoot) {
 }
 
 async function readTargetFile(filePath) {
-  const text = await readFile(filePath, "utf8");
+  const text = stripBom(await readFile(filePath, "utf8"));
   if (filePath.endsWith(".json")) {
     const parsed = JSON.parse(text);
+    const scalarTarget = typeof parsed?.targetMarket === "string"
+      ? parsed.targetMarket
+      : typeof parsed?.marketTicker === "string"
+        ? parsed.marketTicker
+        : typeof parsed?.ticker === "string"
+          ? parsed.ticker
+          : null;
+    if (scalarTarget) return [{ marketTicker: scalarTarget }];
     if (Array.isArray(parsed?.closedTargets)) return parsed.closedTargets.map(targetRowFromValue).filter(Boolean);
     if (Array.isArray(parsed?.activeTargets)) return parsed.activeTargets.map(targetRowFromValue).filter(Boolean);
     if (Array.isArray(parsed?.targets)) return parsed.targets.map(targetRowFromValue).filter(Boolean);
@@ -238,4 +246,8 @@ function parseArgs(values) {
     }
   }
   return parsed;
+}
+
+function stripBom(value) {
+  return String(value ?? "").replace(/^\uFEFF/, "");
 }

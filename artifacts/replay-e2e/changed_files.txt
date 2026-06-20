@@ -1,0 +1,13 @@
+package.json
+scripts/factory/kalshi-ws-auth.mjs
+scripts/factory/kalshi-ws-smoke.mjs
+scripts/factory/kalshi-ws-replay.mjs
+scripts/factory/capture-replay.mjs
+scripts/factory/orderbook-state.mjs
+scripts/factory/build-replay-dataset.mjs
+scripts/factory/replay-coverage.mjs
+scripts/factory/install-execution-canaries.mjs
+scripts/factory/run-e2e-evidence.mjs
+scripts/factory/evidence-preflight.mjs
+scripts/factory/fetch-official-settlements.mjs
+src/core/factory-research.test.ts

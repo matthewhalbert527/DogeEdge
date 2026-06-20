@@ -16,6 +16,7 @@ import {
   kalshiWsAuthHeaders,
   normalizeKalshiWsReplayMessage,
 } from "./kalshi-ws-replay.mjs";
+import { loadKalshiWsCredentials, redactedCredentialReport } from "./kalshi-ws-auth.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const execFileAsync = promisify(execFile);
@@ -41,7 +42,7 @@ if (args["mock-input"]) {
   const rows = await readRows(inputPath);
   const byMarket = new Map();
   for (const raw of rows) {
-    const event = normalizeReplayRawEvent(raw, { provider, captureMode: mode, captureRunId, gitCommit });
+    const event = normalizeReplayRawEvent(raw, { provider, captureMode: mode, captureRunId, gitCommit, useYesPrice });
     if (!event) continue;
     if (markets.length && !markets.includes(event.marketTicker)) continue;
     const marketRows = byMarket.get(event.marketTicker) ?? [];
@@ -84,9 +85,13 @@ if (args["mock-input"]) {
       channels,
       useYesPrice,
       websocketSessionId: result.websocketSessionId ?? null,
-      rawMessageCount: result.rawMessageCount ?? 0,
-      eventCount: result.eventCount ?? 0,
-      durationSeconds,
+  rawMessageCount: result.rawMessageCount ?? 0,
+  eventCount: result.eventCount ?? 0,
+  subscriptionAcknowledged: result.subscriptionAcknowledged ?? false,
+  initialOrderbookSnapshotReceived: result.initialOrderbookSnapshotReceived ?? false,
+  orderbookDeltaCount: result.orderbookDeltaCount ?? 0,
+  tradeCount: result.tradeCount ?? 0,
+  durationSeconds,
       rawMessagesFile: result.rawMessagesFile ?? null,
       eventPartFile: result.eventPartFile ?? null,
     });
@@ -138,6 +143,10 @@ async function writeManifest({
   durationSeconds = null,
   rawMessagesFile = null,
   eventPartFile = null,
+  subscriptionAcknowledged = false,
+  initialOrderbookSnapshotReceived = false,
+  orderbookDeltaCount = 0,
+  tradeCount = 0,
 }) {
   const replayGradeIntended = mode === "websocket" || mode === "provider" || mode === "live";
   const manifest = {
@@ -164,6 +173,11 @@ async function writeManifest({
     durationSeconds,
     rawMessagesFile,
     eventPartFile,
+    authenticatedConnection: Boolean(websocketSessionId && !unavailableReason),
+    subscriptionAcknowledged: Boolean(subscriptionAcknowledged),
+    initialOrderbookSnapshotReceived: Boolean(initialOrderbookSnapshotReceived),
+    orderbookDeltaCount: Number(orderbookDeltaCount ?? 0),
+    tradeCount: Number(tradeCount ?? 0),
     mockInput,
     unavailableReason,
     blockerArtifact,
@@ -173,7 +187,7 @@ async function writeManifest({
 
 async function providerCaptureBlocker({ outRoot, provider, mode, markets, channels = defaultKalshiReplayChannels, useYesPrice = true, reasonCode = null, details = {} }) {
   if (!(mode === "provider" || mode === "websocket" || mode === "live")) return null;
-  const auth = kalshiAuthFromEnv(process.env);
+  const auth = await loadKalshiWsCredentials(process.env);
   const wsUrl = process.env.KALSHI_WS_URL ?? defaultKalshiWsUrl;
   const artifactName = auth.ok ? "replay_provider_capture_blocked.json" : "replay_auth_blocked.json";
   const finalReasonCode = reasonCode ?? (auth.ok ? "provider_websocket_no_replay_events" : auth.reason);
@@ -186,8 +200,7 @@ async function providerCaptureBlocker({ outRoot, provider, mode, markets, channe
     marketCount: markets.length,
     markets,
     authMaterialPresent: auth.ok,
-    keyIdPresent: Boolean(auth.keyId),
-    privateKeyPresent: Boolean(auth.privateKeyPem),
+    credentials: redactedCredentialReport(auth),
     reasonCode: finalReasonCode,
     channels,
     useYesPrice,
@@ -204,7 +217,7 @@ async function providerCaptureBlocker({ outRoot, provider, mode, markets, channe
 }
 
 async function captureKalshiProviderReplay({ outRoot, provider, mode, markets, channels, useYesPrice, captureRunId, gitCommit, durationSeconds }) {
-  const auth = kalshiAuthFromEnv(process.env);
+  const auth = await loadKalshiWsCredentials(process.env);
   if (!auth.ok) {
     return { capturedMarkets: [], eventCount: 0, rawMessageCount: 0, blocker: await providerCaptureBlocker({ outRoot, provider, mode, markets, channels, useYesPrice }) };
   }
@@ -237,6 +250,13 @@ async function captureKalshiProviderReplay({ outRoot, provider, mode, markets, c
     localSeq: 0,
     ignoredNonTargetEventCount: 0,
     ignoredNonTargetMarkets: new Set(),
+    authenticatedConnection: false,
+    subscriptionAcknowledged: false,
+    initialOrderbookSnapshotReceived: false,
+    orderbookDeltaCount: 0,
+    tradeCount: 0,
+    lifecycleCount: 0,
+    rawTypeCounts: {},
   };
   const targetMarketSet = new Set(markets);
   const streams = [];
@@ -250,6 +270,7 @@ async function captureKalshiProviderReplay({ outRoot, provider, mode, markets, c
   let socket = null;
   try {
     socket = await openKalshiWebSocket({ wsUrl, keyId: auth.keyId, privateKeyPem: auth.privateKeyPem, timeoutMs: 10_000 });
+    state.authenticatedConnection = true;
     const subscription = kalshiReplaySubscription({ marketTickers: markets, channels, useYesPrice, requestId: 1 });
     await captureWebSocketMessages({
       socket,
@@ -258,6 +279,9 @@ async function captureKalshiProviderReplay({ outRoot, provider, mode, markets, c
       onRawMessage: (raw) => {
         state.localSeq += 1;
         const receiveTs = new Date().toISOString();
+        const rawType = rawTypeText(raw);
+        state.rawTypeCounts[rawType] = (state.rawTypeCounts[rawType] ?? 0) + 1;
+        if (isSubscriptionAck(raw)) state.subscriptionAcknowledged = true;
         const event = normalizeKalshiWsReplayMessage(raw, {
           provider,
           receiveTs,
@@ -277,6 +301,10 @@ async function captureKalshiProviderReplay({ outRoot, provider, mode, markets, c
         state.rawMessages.push(rawRow);
         writeJsonl(rawStream, rawRow, state);
         if (!event) return;
+        if (event.channel === "orderbook" && event.messageType === "snapshot") state.initialOrderbookSnapshotReceived = true;
+        if (event.channel === "orderbook" && event.messageType === "delta") state.orderbookDeltaCount += 1;
+        if (event.messageType === "trade") state.tradeCount += 1;
+        if (event.channel === "lifecycle" || event.messageType === "status") state.lifecycleCount += 1;
         const marketRows = state.eventsByMarket.get(event.marketTicker) ?? [];
         marketRows.push(event);
         state.eventsByMarket.set(event.marketTicker, marketRows);
@@ -313,7 +341,24 @@ async function captureKalshiProviderReplay({ outRoot, provider, mode, markets, c
   const capturedMarkets = [...state.eventsByMarket.keys()].sort();
   const eventCount = [...state.eventsByMarket.values()].reduce((total, rows) => total + rows.length, 0);
   const observedTypes = [...new Set(state.rawMessages.map((row) => row.raw?.type).filter(Boolean))].sort();
-  if (eventCount === 0) {
+  const captureComplete = state.authenticatedConnection
+    && state.subscriptionAcknowledged
+    && state.initialOrderbookSnapshotReceived
+    && eventCount > 0
+    && (state.orderbookDeltaCount > 0 || state.tradeCount > 0);
+  await writeSubscriptionHealth({
+    outRoot,
+    wsUrl,
+    wsSessionId,
+    markets,
+    channels,
+    useYesPrice,
+    state,
+    capturedMarkets,
+    eventCount,
+    captureComplete,
+  });
+  if (!captureComplete) {
     return {
       capturedMarkets,
       eventCount,
@@ -328,10 +373,17 @@ async function captureKalshiProviderReplay({ outRoot, provider, mode, markets, c
         markets,
         channels,
         useYesPrice,
-        reasonCode: state.rawMessages.length ? "provider_websocket_no_target_replay_events" : "provider_websocket_no_messages",
+        reasonCode: captureBlockerReason(state),
         details: {
           wsUrl,
           observedTypes,
+          rawTypeCounts: state.rawTypeCounts,
+          authenticatedConnection: state.authenticatedConnection,
+          subscriptionAcknowledged: state.subscriptionAcknowledged,
+          initialOrderbookSnapshotReceived: state.initialOrderbookSnapshotReceived,
+          orderbookDeltaCount: state.orderbookDeltaCount,
+          tradeCount: state.tradeCount,
+          lifecycleCount: state.lifecycleCount,
           errors: state.errors,
           ignoredNonTargetEventCount: state.ignoredNonTargetEventCount,
           ignoredNonTargetMarketCount: state.ignoredNonTargetMarkets.size,
@@ -353,13 +405,88 @@ async function captureKalshiProviderReplay({ outRoot, provider, mode, markets, c
     channels,
     useYesPrice,
     priceScale: useYesPrice ? "yes_leg" : "provider_default",
+    authenticatedConnection: state.authenticatedConnection,
+    subscriptionAcknowledged: state.subscriptionAcknowledged,
+    initialOrderbookSnapshotReceived: state.initialOrderbookSnapshotReceived,
+    captureComplete,
+    orderbookDeltaCount: state.orderbookDeltaCount,
+    tradeCount: state.tradeCount,
+    lifecycleCount: state.lifecycleCount,
+    rawTypeCounts: state.rawTypeCounts,
     observedTypes,
     ignoredNonTargetEventCount: state.ignoredNonTargetEventCount,
     ignoredNonTargetMarketCount: state.ignoredNonTargetMarkets.size,
     errors: state.errors,
     canPlaceOrders: false,
   }, null, 2)}\n`, "utf8");
-  return { capturedMarkets, eventCount, rawMessageCount: state.rawMessages.length, websocketSessionId: wsSessionId, rawMessagesFile, eventPartFile, blocker: null };
+  return {
+    capturedMarkets,
+    eventCount,
+    rawMessageCount: state.rawMessages.length,
+    websocketSessionId: wsSessionId,
+    rawMessagesFile,
+    eventPartFile,
+    subscriptionAcknowledged: state.subscriptionAcknowledged,
+    initialOrderbookSnapshotReceived: state.initialOrderbookSnapshotReceived,
+    orderbookDeltaCount: state.orderbookDeltaCount,
+    tradeCount: state.tradeCount,
+    blocker: null,
+  };
+}
+
+async function writeSubscriptionHealth({ outRoot, wsUrl, wsSessionId, markets, channels, useYesPrice, state, capturedMarkets, eventCount, captureComplete }) {
+  const report = {
+    schemaVersion: "dogeedge.kalshi-subscription-health.v1",
+    generatedAt: new Date().toISOString(),
+    wsUrl,
+    wsSessionId,
+    targetMarkets: markets,
+    capturedMarkets,
+    channels,
+    useYesPrice,
+    priceScale: useYesPrice ? "yes_leg" : "provider_default",
+    authenticatedConnection: state.authenticatedConnection,
+    subscriptionAcknowledged: state.subscriptionAcknowledged,
+    initialOrderbookSnapshotReceived: state.initialOrderbookSnapshotReceived,
+    rawMessagesWritten: state.rawMessages.length,
+    rawEventsWritten: eventCount,
+    orderbookDeltaCount: state.orderbookDeltaCount,
+    tradeCount: state.tradeCount,
+    lifecycleCount: state.lifecycleCount,
+    ignoredNonTargetEventCount: state.ignoredNonTargetEventCount,
+    ignoredNonTargetMarketCount: state.ignoredNonTargetMarkets.size,
+    captureComplete,
+    replayGradeCandidate: captureComplete,
+    canPlaceOrders: false,
+    reasonCodes: [
+      ...(!state.authenticatedConnection ? ["websocket_authentication_missing"] : []),
+      ...(!state.subscriptionAcknowledged ? ["subscription_acknowledgement_missing"] : []),
+      ...(!state.initialOrderbookSnapshotReceived ? ["initial_orderbook_snapshot_missing"] : []),
+      ...(eventCount <= 0 ? ["raw_events_absent"] : []),
+      ...(state.orderbookDeltaCount <= 0 && state.tradeCount <= 0 ? ["market_inactive_no_delta_or_trade"] : []),
+    ],
+    rawTypeCounts: state.rawTypeCounts,
+    errors: state.errors,
+  };
+  await writeFile(path.join(outRoot, "subscription_health.json"), `${JSON.stringify(report, null, 2)}\n`, "utf8");
+}
+
+function captureBlockerReason(state) {
+  if (!state.rawMessages.length) return "provider_websocket_no_messages";
+  if (!state.subscriptionAcknowledged) return "provider_subscription_acknowledgement_missing";
+  if (!state.initialOrderbookSnapshotReceived) return "provider_initial_orderbook_snapshot_missing";
+  if (state.orderbookDeltaCount <= 0 && state.tradeCount <= 0) return "provider_market_inactive_no_delta_or_trade";
+  return "provider_websocket_no_target_replay_events";
+}
+
+function rawTypeText(raw) {
+  const type = raw?.type ?? raw?.message_type ?? raw?.msg?.type ?? raw?.message?.type ?? "unknown";
+  return String(type).toLowerCase();
+}
+
+function isSubscriptionAck(raw) {
+  const text = rawTypeText(raw);
+  return text === "subscribed" || text === "subscription_ack" || text === "subscribed_to_channel" || text === "ok";
 }
 
 function createJsonlStream(filePath, streams, state) {
@@ -522,7 +649,7 @@ function captureWebSocketMessages({ socket, subscription, durationMs, onRawMessa
 }
 
 async function readRows(filePath) {
-  const text = await readFile(filePath, "utf8");
+  const text = stripBom(await readFile(filePath, "utf8"));
   if (filePath.endsWith(".json")) {
     const parsed = JSON.parse(text);
     return Array.isArray(parsed) ? parsed : Array.isArray(parsed.rows) ? parsed.rows : [parsed];
@@ -531,7 +658,7 @@ async function readRows(filePath) {
 }
 
 async function readMarketsFile(filePath) {
-  const text = await readFile(filePath, "utf8");
+  const text = stripBom(await readFile(filePath, "utf8"));
   if (filePath.endsWith(".json")) {
     const parsed = JSON.parse(text);
     return uniqueStrings(targetMarketValues(parsed, { preferActive: true }));
@@ -542,6 +669,8 @@ async function readMarketsFile(filePath) {
 function targetMarketValues(parsed, { preferActive = false } = {}) {
   if (Array.isArray(parsed)) return parsed.map(tickerFromTarget).filter(Boolean);
   if (!parsed || typeof parsed !== "object") return [];
+  const scalarTargets = [parsed.targetMarket, parsed.marketTicker, parsed.ticker].filter((value) => typeof value === "string");
+  if (scalarTargets.length) return scalarTargets;
   const primary = preferActive && Array.isArray(parsed.activeTargets) ? parsed.activeTargets : [];
   if (primary.length) return primary.map(tickerFromTarget).filter(Boolean);
   const fallback = [
@@ -580,27 +709,6 @@ function safeHrtimeNs() {
 
 function uniqueStrings(values) {
   return [...new Set(values.map((value) => typeof value === "string" ? value.trim() : "").filter(Boolean))].sort();
-}
-
-function kalshiAuthFromEnv(env) {
-  const keyId = stringOrNull(env.KALSHI_API_KEY_ID);
-  const privateKeyPem = normalizePrivateKey(env.KALSHI_PRIVATE_KEY_PEM);
-  if (!keyId || !privateKeyPem) return { ok: false, keyId, privateKeyPem, reason: "KALSHI_API_KEY_ID_or_KALSHI_PRIVATE_KEY_PEM_missing" };
-  try {
-    crypto.createPrivateKey(privateKeyPem);
-    return { ok: true, keyId, privateKeyPem };
-  } catch {
-    return { ok: false, keyId, privateKeyPem, reason: "kalshi_private_key_not_parseable" };
-  }
-}
-
-function normalizePrivateKey(value) {
-  if (!value) return null;
-  return String(value).replace(/\\n/g, "\n");
-}
-
-function stringOrNull(value) {
-  return typeof value === "string" && value.trim().length ? value.trim() : null;
 }
 
 async function gitCommitMaybe() {
@@ -650,4 +758,8 @@ function parseArgs(values) {
     }
   }
   return parsed;
+}
+
+function stripBom(value) {
+  return String(value ?? "").replace(/^\uFEFF/, "");
 }

@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import { generateKeyPairSync } from "node:crypto";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -47,6 +48,8 @@ import {
   kalshiReplaySubscription,
   normalizeKalshiWsReplayMessage,
 } from "../../scripts/factory/kalshi-ws-replay.mjs";
+import { loadKalshiWsCredentials, redactedCredentialReport } from "../../scripts/factory/kalshi-ws-auth.mjs";
+import { reconstructOrderBook } from "../../scripts/factory/orderbook-state.mjs";
 import { shouldCaptureReplayEvent } from "../../scripts/factory/capture-replay.mjs";
 import {
   hasResearchPromotionCandidate,
@@ -2666,6 +2669,215 @@ describe("factory research safeguards", () => {
       deltaContracts: 3,
     });
     expect(replaySequenceReport([snapshot, delta]).replayGradeAvailable).toBe(true);
+  });
+
+  it("loads Kalshi websocket credentials from a key file and redacts secret material", async () => {
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const pem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+    const root = mkdtempSync(path.join(tmpdir(), "dogeedge-kalshi-key-"));
+    const keyPath = path.join(root, "kalshi-test-key.pem");
+    writeFileSync(keyPath, pem);
+
+    const credentials = await loadKalshiWsCredentials({
+      KALSHI_API_KEY_ID: "test-key-id",
+      KALSHI_PRIVATE_KEY_PATH: keyPath,
+    });
+    expect(credentials.ok).toBe(true);
+    expect(redactedCredentialReport(credentials)).toEqual({
+      keyIdPresent: true,
+      privateKeyPresent: true,
+      privateKeyPathPresent: true,
+      privateKeySource: "file",
+      reason: null,
+    });
+    expect(JSON.stringify(redactedCredentialReport(credentials))).not.toContain("BEGIN PRIVATE KEY");
+  });
+
+  it("reconstructs a deterministic yes-price order book from snapshot and deltas", () => {
+    const snapshot = normalizeReplayRawEvent({
+      marketTicker: "KXDOGE15M-BOOK",
+      channel: "orderbook",
+      messageType: "snapshot",
+      seq: 1,
+      receiveTs: "2026-06-20T10:00:00.000Z",
+      bookSnapshot: { yes: [[0.49, 10]], no: [[0.5, 8]] },
+      useYesPrice: true,
+    });
+    const add = normalizeReplayRawEvent({
+      marketTicker: "KXDOGE15M-BOOK",
+      channel: "orderbook",
+      messageType: "delta",
+      seq: 2,
+      receiveTs: "2026-06-20T10:00:01.000Z",
+      side: "YES",
+      priceDollars: 0.51,
+      deltaContracts: 3,
+      useYesPrice: true,
+    });
+    const reduce = normalizeReplayRawEvent({
+      marketTicker: "KXDOGE15M-BOOK",
+      channel: "orderbook",
+      messageType: "delta",
+      seq: 3,
+      receiveTs: "2026-06-20T10:00:02.000Z",
+      side: "YES",
+      priceDollars: 0.49,
+      deltaContracts: -10,
+      useYesPrice: true,
+    });
+
+    const reconstruction = reconstructOrderBook([snapshot, add, reduce]);
+    expect(reconstruction).toMatchObject({
+      initialized: true,
+      valid: true,
+      useYesPrice: true,
+      appliedDeltas: 2,
+      finalTopOfBook: {
+        bestYesBid: 0.51,
+        bestYesAsk: 0.5,
+      },
+    });
+    expect(reconstructOrderBook([snapshot, add, reduce]).deterministicHash).toBe(reconstruction.deterministicHash);
+  });
+
+  it("keeps a valid replay segment when Kalshi emits an empty terminal snapshot frame", () => {
+    const snapshot = normalizeReplayRawEvent({
+      marketTicker: "KXDOGE15M-BOOK",
+      channel: "orderbook",
+      messageType: "snapshot",
+      seq: 1,
+      receiveTs: "2026-06-20T10:00:00.000Z",
+      bookSnapshot: { yes_dollars_fp: [["0.1000", "5.00"]], no_dollars_fp: [["0.9000", "4.00"]] },
+      useYesPrice: true,
+    });
+    const delta = normalizeReplayRawEvent({
+      marketTicker: "KXDOGE15M-BOOK",
+      channel: "orderbook",
+      messageType: "delta",
+      seq: 2,
+      receiveTs: "2026-06-20T10:00:01.000Z",
+      side: "NO",
+      priceDollars: 0.9,
+      deltaContracts: -1,
+      useYesPrice: true,
+    });
+    const terminalEmptySnapshot = normalizeReplayRawEvent({
+      marketTicker: "KXDOGE15M-BOOK",
+      channel: "orderbook",
+      messageType: "snapshot",
+      seq: 3,
+      receiveTs: "2026-06-20T10:00:02.000Z",
+      bookSnapshot: { market_ticker: "KXDOGE15M-BOOK" },
+      useYesPrice: true,
+    });
+
+    const reconstruction = reconstructOrderBook([snapshot, delta, terminalEmptySnapshot]);
+    expect(reconstruction.valid).toBe(true);
+    expect(reconstruction.warningCount).toBe(1);
+    expect(reconstruction.warnings[0].reasonCode).toBe("snapshot_without_book_levels_ignored");
+    expect(reconstruction.finalTopOfBook.bestYesBid).toBe(0.1);
+    expect(reconstruction.finalTopOfBook.bestYesAsk).toBe(0.1);
+  });
+
+  it("keeps replay/e2e evidence commands read-only from order routing APIs", () => {
+    const files = [
+      "scripts/factory/capture-replay.mjs",
+      "scripts/factory/kalshi-ws-smoke.mjs",
+      "scripts/factory/run-e2e-evidence.mjs",
+      "scripts/factory/install-execution-canaries.mjs",
+    ];
+    const forbidden = /\b(createOrder|placeOrder|submitOrder|cancelOrder|amendOrder|routeOrder|orderRouter|portfolio\/orders|\/orders)\b/;
+    for (const file of files) {
+      const text = readFileSync(path.join(process.cwd(), file), "utf8");
+      expect(text).not.toMatch(forbidden);
+    }
+  });
+
+  it("builds an offline e2e evidence artifact from exact-linked paper, replay, and settlement fixtures", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "dogeedge-e2e-fixture-"));
+    const dataRoot = path.join(root, "data");
+    const storageDir = path.join(dataRoot, "local-worker");
+    const outDir = path.join(root, "artifacts", "e2e");
+    mkdirSync(storageDir, { recursive: true });
+    writeFileSync(path.join(storageDir, "execution-canaries.json"), JSON.stringify({
+      schemaVersion: "dogeedge.evidence-probe-lane.v1",
+      lane: "exact_linked_execution_canary",
+      paperOnly: true,
+      executableOnly: true,
+      probes: [{
+        id: "generated:e2e-canary",
+        sourceAlgoId: "e2e-canary",
+        family: "sweep-scalp",
+        paperOnly: true,
+        exactLinked: true,
+        researchCandidateId: "rcid-e2e",
+        candidateConfigHash: "hash-e2e",
+        sourceRunId: "run-e2e",
+        sourceSnapshotHash: "snapshot-e2e",
+        seed: "seed-e2e",
+        params: { sideMode: "best", minEdge: 0 },
+      }],
+    }));
+    const targetsPath = path.join(root, "targets.json");
+    writeFileSync(targetsPath, JSON.stringify({ targets: ["KXDOGE15M-E2E"] }));
+    const replayPath = path.join(root, "replay.jsonl");
+    writeFileSync(replayPath, [
+      JSON.stringify({ marketTicker: "KXDOGE15M-E2E", channel: "orderbook", messageType: "snapshot", seq: 1, receiveTs: "2026-06-20T10:00:00.000Z", bookSnapshot: { yes: [[0.49, 10]], no: [[0.5, 8]] }, useYesPrice: true }),
+      JSON.stringify({ marketTicker: "KXDOGE15M-E2E", channel: "orderbook", messageType: "delta", seq: 2, receiveTs: "2026-06-20T10:00:01.000Z", side: "YES", priceDollars: 0.5, deltaContracts: 1, useYesPrice: true }),
+      JSON.stringify({ marketTicker: "KXDOGE15M-E2E", channel: "trade", messageType: "trade", receiveTs: "2026-06-20T10:00:02.000Z", useYesPrice: true }),
+    ].join("\n") + "\n");
+    const settlementPath = path.join(root, "settlements.jsonl");
+    writeFileSync(settlementPath, `${JSON.stringify({
+      marketTicker: "KXDOGE15M-E2E",
+      status: "finalized",
+      finalized: true,
+      provisional: false,
+      officialResolutionAvailable: true,
+      officialOutcome: "YES",
+      outcomeSide: "YES",
+      labelTimestamp: "2026-06-20T10:15:00.000Z",
+      settlementTimestamp: "2026-06-20T10:16:00.000Z",
+      sourceEndpoint: "mock",
+      verificationSource: "mock",
+      fetchedAt: "2026-06-20T10:20:00.000Z",
+      provider: "mock",
+    })}\n`);
+    const paperPath = path.join(root, "paper.jsonl");
+    writeFileSync(paperPath, `${JSON.stringify({
+      id: "decision-e2e",
+      marketTicker: "KXDOGE15M-E2E",
+      decisionTimestamp: "2026-06-20T10:00:01.500Z",
+      action: "buy_yes",
+      researchCandidateId: "rcid-e2e",
+      candidateConfigHash: "hash-e2e",
+      selectedPrice: 0.5,
+    })}\n`);
+
+    execFileSync(process.execPath, [
+      "scripts/factory/run-e2e-evidence.mjs",
+      "--target-markets", targetsPath,
+      "--mock-replay-raw", replayPath,
+      "--mock-settlements", settlementPath,
+      "--paper-decisions", paperPath,
+      "--data-root", dataRoot,
+      "--storage-dir", storageDir,
+      "--out", outDir,
+      "--duration-seconds", "1",
+    ], { cwd: process.cwd(), stdio: "pipe", maxBuffer: 20 * 1024 * 1024 });
+    const runDir = path.join(outDir, readdirSync(outDir).find((name) => name.startsWith("e2e-evidence-")) ?? "");
+    const status = JSON.parse(readFileSync(path.join(runDir, "pipeline_status.json"), "utf8"));
+    expect(status).toMatchObject({
+      pipelineOperational: true,
+      candidateEvaluationComplete: true,
+      candidateStatisticallyValidated: false,
+      candidatePromotionEligible: false,
+      replayGradeEvaluatedMarkets: 1,
+      finalizedSettlementJoinCount: 1,
+      exactLinkedPaperDecisionCount: 1,
+      labelKnownCount: 1,
+      canPlaceOrders: false,
+    });
+    expect(readFileSync(path.join(runDir, "paper_replay_parity_report.json"), "utf8")).toContain("dogeedge.paper-replay-parity-report.v1");
   });
 
   it("filters provider replay events to the selected target markets", () => {

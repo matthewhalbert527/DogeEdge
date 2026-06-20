@@ -1,0 +1,17 @@
+git status / fetch / branch audit: pass
+npm.cmd test -- src/core/factory-research.test.ts: pass, 100 tests
+npm.cmd run factory:ws-smoke -- --online --auto-select-market --duration-seconds 20 --out artifacts/replay-e2e/ws-smoke-2 --data-root D:\DogeEdge\data: pass
+npm.cmd run factory:install-execution-canaries -- --max-candidates 3 --storage-dir D:\DogeEdge\data\local-worker --out artifacts/replay-e2e/execution-canaries: pass, 3/3 probes
+npm.cmd run factory:e2e-evidence -- --online --auto-select-market --auto-select-candidate --duration-seconds 300 --data-root D:\DogeEdge\data --storage-dir D:\DogeEdge\data\local-worker --out artifacts/replay-e2e/online-e2e-4: checkpointed waiting for settlement
+npm.cmd run factory:fetch-settlements -- --tickers-file ... --base-url https://external-api.kalshi.com/trade-api/v2: pass, coverage 1/1
+npm.cmd run factory:e2e-evidence -- --online --resume e2e-evidence-2026-06-20T19-07-55.547Z --data-root D:\DogeEdge\data --storage-dir D:\DogeEdge\data\local-worker --out artifacts/replay-e2e/online-e2e-4: pass, candidate_evaluation_complete
+npm.cmd test: pass, 173 tests
+npm.cmd run lint: pass with 2 warnings
+npm.cmd run build: pass
+npm.cmd run factory:backtest: pass
+npm.cmd run factory:sweep: timed out after 15 minutes
+npm.cmd run factory:promote-check: pass, 0 ready
+npm.cmd run eval:bundle -- --out review_exports --full-rows: pass
+npm.cmd run factory:gate-report -- --input review_exports: pass usable_with_warnings
+npm.cmd run factory:reconcile-top-roster -- --input review_exports: pass usable_with_warnings
+npm.cmd run merge:safety: REQUIRE_HUMAN_APPROVAL expected

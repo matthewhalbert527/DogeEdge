@@ -1,0 +1,16 @@
+{
+  "schemaVersion": "dogeedge.replay-e2e-test-results.v1",
+  "generatedAt": "2026-06-20T19:47:10.583Z",
+  "results": {
+    "npmTest": "pass, 173 tests",
+    "lint": "pass with two pre-existing React hook dependency warnings in src/App.tsx",
+    "build": "pass, Vite chunk-size warning only",
+    "factoryBacktest": "pass, no viable candidate",
+    "factorySweep": "timed out after 15 minutes in this worktree",
+    "factoryPromoteCheck": "pass, 0 ready / 109 non-promotable",
+    "evalBundle": "pass",
+    "gateReport": "pass, usable_with_warnings",
+    "reconcileTopRoster": "pass, usable_with_warnings",
+    "mergeSafety": "REQUIRE_HUMAN_APPROVAL for protected paths, expected"
+  }
+}

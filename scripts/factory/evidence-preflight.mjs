@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { selectEvidenceProbes } from "./evidence-lane.mjs";
 import { defaultKalshiHistoricalBaseUrl, kalshiHistoricalMarketsUrl } from "./official-settlement.mjs";
 import { selectTargetMarkets, writeTargetMarketSelection } from "./target-markets.mjs";
+import { loadKalshiWsCredentials, kalshiWsAuthHeaders, redactedCredentialReport } from "./kalshi-ws-auth.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const execFileAsync = promisify(execFile);
@@ -38,10 +39,9 @@ export async function runEvidencePreflight(options = {}) {
     addCheck(`writable:${dir}`, ok ? "ok" : "blocked", { path: dir, reason: ok ? null : "directory_not_writable" });
   }
 
-  const auth = kalshiAuthFromEnv(process.env);
+  const auth = await loadKalshiWsCredentials(process.env);
   addCheck("kalshi_auth_material", auth.ok ? "ok" : "blocked", {
-    keyIdPresent: Boolean(auth.keyId),
-    privateKeyPresent: Boolean(auth.privateKeyPem),
+    ...redactedCredentialReport(auth),
     reason: auth.ok ? null : auth.reason,
   });
 
@@ -245,7 +245,7 @@ async function historicalRestSmoke(options) {
   const url = kalshiHistoricalMarketsUrl({ baseUrl, limit: 1, status: "finalized" });
   try {
     const response = await fetch(url, { cache: "no-store" });
-    return { ok: response.ok, status: response.status, url, reason: response.ok ? null : `http_${response.status}` };
+    return { ok: response.ok, httpStatus: response.status, url, reason: response.ok ? null : `http_${response.status}` };
   } catch (error) {
     return { ok: false, url, reason: errorMessage(error) };
   }
@@ -269,7 +269,8 @@ async function kalshiWsHandshakeSmoke({ wsUrl = process.env.KALSHI_WS_URL ?? def
     const url = new URL(wsUrl);
     const timestamp = String(Date.now());
     const pathWithQuery = `${url.pathname}${url.search}`;
-    const signature = signPss(privateKeyPem, `${timestamp}GET${url.pathname}`);
+    const authHeaders = kalshiWsAuthHeaders({ keyId, privateKeyPem, timestamp, requestPath: url.pathname });
+    if (!authHeaders.ok) return { ok: false, wsUrl, reason: authHeaders.reason };
     const websocketKey = crypto.randomBytes(16).toString("base64");
     const headers = [
       `GET ${pathWithQuery} HTTP/1.1`,
@@ -279,7 +280,7 @@ async function kalshiWsHandshakeSmoke({ wsUrl = process.env.KALSHI_WS_URL ?? def
       `Sec-WebSocket-Key: ${websocketKey}`,
       "Sec-WebSocket-Version: 13",
       `KALSHI-ACCESS-KEY: ${keyId}`,
-      `KALSHI-ACCESS-SIGNATURE: ${signature}`,
+      `KALSHI-ACCESS-SIGNATURE: ${authHeaders.signature}`,
       `KALSHI-ACCESS-TIMESTAMP: ${timestamp}`,
       "User-Agent: DogeEdge/0.1",
       "",
@@ -288,7 +289,7 @@ async function kalshiWsHandshakeSmoke({ wsUrl = process.env.KALSHI_WS_URL ?? def
     const response = await rawTlsRequest({ host: url.hostname, port: Number(url.port || 443), payload: headers, timeoutMs });
     const statusLine = response.split(/\r?\n/, 1)[0] ?? "";
     const status = Number(statusLine.match(/HTTP\/\d(?:\.\d)?\s+(\d+)/)?.[1] ?? 0);
-    return { ok: status === 101, status, wsUrl, statusLine, reason: status === 101 ? null : "websocket_upgrade_failed" };
+    return { ok: status === 101, httpStatus: status, wsUrl, statusLine, reason: status === 101 ? null : "websocket_upgrade_failed" };
   } catch (error) {
     return { ok: false, wsUrl, reason: errorMessage(error) };
   }
@@ -316,34 +317,6 @@ function rawTlsRequest({ host, port, payload, timeoutMs }) {
       reject(error);
     });
   });
-}
-
-function kalshiAuthFromEnv(env) {
-  const keyId = stringOrNull(env.KALSHI_API_KEY_ID);
-  const privateKeyPem = normalizePrivateKey(env.KALSHI_PRIVATE_KEY_PEM);
-  if (!keyId || !privateKeyPem) return { ok: false, keyId, privateKeyPem, reason: "KALSHI_API_KEY_ID_or_KALSHI_PRIVATE_KEY_PEM_missing" };
-  try {
-    crypto.createPrivateKey(privateKeyPem);
-    return { ok: true, keyId, privateKeyPem };
-  } catch {
-    return { ok: false, keyId, privateKeyPem, reason: "kalshi_private_key_not_parseable" };
-  }
-}
-
-function signPss(privateKeyPem, text) {
-  const signer = crypto.createSign("RSA-SHA256");
-  signer.update(text);
-  signer.end();
-  return signer.sign({
-    key: privateKeyPem,
-    padding: crypto.constants.RSA_PKCS1_PSS_PADDING,
-    saltLength: crypto.constants.RSA_PSS_SALTLEN_DIGEST,
-  }).toString("base64");
-}
-
-function normalizePrivateKey(value) {
-  if (typeof value !== "string" || !value.trim()) return null;
-  return value.includes("\\n") ? value.replace(/\\n/g, "\n") : value;
 }
 
 async function writeEvidenceStatus({ generatedAt, dataRoot, status, preflight, targetSelection, evidenceOut }) {

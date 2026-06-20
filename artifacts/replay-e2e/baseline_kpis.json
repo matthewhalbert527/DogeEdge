@@ -1,0 +1,91 @@
+{
+  "schemaVersion": "dogeedge.readiness-percent.v1",
+  "generatedAt": "2026-06-20T18:13:02.201Z",
+  "headline": "evidence_collection_ready_hold_promotion_gates",
+  "promotionReady": false,
+  "promotionReadinessPercent": 0,
+  "evidenceCollectionProgressPercent": 100,
+  "evidenceCollectionReady": true,
+  "promotionGateSource": "executable_readiness_gate",
+  "promotionGateReasonCodes": [
+    "research_validated_roster_empty"
+  ],
+  "promotionBlockerDetail": {
+    "currentBottleneck": "conservative_holdout_not_passing",
+    "validationStatus": "supported_families_exhausted_no_holdout_survivor",
+    "nextEvidenceNeed": "Need a supported exact-linked candidate with positive conservative holdout P/L and non-negative holdout lower CI; current best holdout conservative P/L is -2.1298.",
+    "supportedExecutableSweepCoverage": {
+      "requested": 972,
+      "selected": 972,
+      "coverage": 1,
+      "fullyCovered": true,
+      "partialFamilies": []
+    },
+    "topReasons": [
+      {
+        "code": "holdout_failed",
+        "count": 600
+      },
+      {
+        "code": "holdout_expectancy_ci_below_zero",
+        "count": 597
+      },
+      {
+        "code": "holdout_roi_too_low",
+        "count": 544
+      },
+      {
+        "code": "non_positive_full_sample_pnl",
+        "count": 450
+      },
+      {
+        "code": "insufficient_holdout_markets",
+        "count": 437
+      }
+    ]
+  },
+  "components": [
+    {
+      "kpi": "official settlement coverage",
+      "value": 99.5,
+      "target": 95,
+      "unit": "percent",
+      "progress": 1,
+      "status": "pass"
+    },
+    {
+      "kpi": "replay-grade target coverage",
+      "value": 100,
+      "target": 100,
+      "unit": "percent",
+      "progress": 1,
+      "status": "pass"
+    },
+    {
+      "kpi": "exact-linked evidence probes",
+      "value": 3,
+      "target": 3,
+      "unit": "count",
+      "progress": 1,
+      "status": "pass"
+    },
+    {
+      "kpi": "active replay targets available",
+      "value": 1,
+      "target": 1,
+      "unit": "count",
+      "progress": 1,
+      "status": "pass"
+    },
+    {
+      "kpi": "exact-linked execution rows",
+      "value": 3,
+      "target": 3,
+      "unit": "count",
+      "progress": 1,
+      "status": "pass"
+    }
+  ],
+  "canPlaceOrders": false,
+  "note": "Promotion readiness is controlled by the executable readiness gate. Evidence collection progress is a monitoring score, not permission to trade."
+}

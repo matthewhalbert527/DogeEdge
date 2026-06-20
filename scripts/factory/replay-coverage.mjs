@@ -64,6 +64,8 @@ async function replayCoverageCli() {
       replayGradeAvailable: manifest?.replayGradeAvailable === true,
       fallbackKind: manifest?.fallbackKind ?? "absent",
       executionSensitivePromotionAllowed: manifest?.executionSensitivePromotionAllowed === true,
+      firstReceiveTs: manifest?.firstReceiveTs ?? "",
+      lastReceiveTs: manifest?.lastReceiveTs ?? "",
     };
   });
   const covered = rows.filter((row) => row.rowCount > 0).length;
@@ -95,7 +97,7 @@ async function replayCoverageCli() {
   const outPath = path.resolve(args.out ?? path.join(inputRoot, "replay_coverage_report.json"));
   await mkdir(path.dirname(outPath), { recursive: true });
   await writeFile(outPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
-  await writeFile(path.join(path.dirname(outPath), "replay_coverage.tsv"), tsv(["marketTicker", "rowCount", "replayGradeAvailable", "fallbackKind", "executionSensitivePromotionAllowed"], rows), "utf8");
+  await writeFile(path.join(path.dirname(outPath), "replay_coverage.tsv"), tsv(["marketTicker", "rowCount", "replayGradeAvailable", "fallbackKind", "executionSensitivePromotionAllowed", "firstReceiveTs", "lastReceiveTs"], rows), "utf8");
   console.log(`Replay coverage: ${replayGrade}/${targetMarkets.length} replay-grade, ${covered}/${targetMarkets.length} covered`);
   console.log(`Report: ${outPath}`);
 }
@@ -128,7 +130,7 @@ async function listFiles(root, name) {
 }
 
 async function readMarketsFile(filePath) {
-  const text = await readFile(filePath, "utf8");
+  const text = stripBom(await readFile(filePath, "utf8"));
   if (filePath.endsWith(".json")) {
     const parsed = JSON.parse(text);
     return uniqueStrings(targetMarketValues(parsed, { preferActive: true }));
@@ -139,6 +141,8 @@ async function readMarketsFile(filePath) {
 function targetMarketValues(parsed, { preferActive = false } = {}) {
   if (Array.isArray(parsed)) return parsed.map(tickerFromTarget).filter(Boolean);
   if (!parsed || typeof parsed !== "object") return [];
+  const scalarTargets = [parsed.targetMarket, parsed.marketTicker, parsed.ticker].filter((value) => typeof value === "string");
+  if (scalarTargets.length) return scalarTargets;
   const primary = preferActive && Array.isArray(parsed.activeTargets) ? parsed.activeTargets : [];
   if (primary.length) return primary.map(tickerFromTarget).filter(Boolean);
   const fallback = [
@@ -179,6 +183,10 @@ function parseArgs(values) {
     }
   }
   return parsed;
+}
+
+function stripBom(value) {
+  return String(value ?? "").replace(/^\uFEFF/, "");
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { normalizeReplayRawEvent, selectReplaySegment } from "./raw-tick-extract.mjs";
+import { reconstructOrderBook } from "./orderbook-state.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const execFileAsync = promisify(execFile);
@@ -52,6 +53,8 @@ for (const marketTicker of targetMarkets) {
   const sourceEvents = (eventsByMarket.get(marketTicker) ?? []).sort(compareReplayEvents);
   const selectedSegment = selectReplaySegment(sourceEvents);
   const events = selectedSegment.events;
+  const reconstruction = reconstructOrderBook(events);
+  const replayGradeForSegment = sequenceGrade(selectedSegment.sequence, reconstruction);
   const marketDir = path.join(outputRoot, safeSegment(marketTicker));
   await mkdir(marketDir, { recursive: true });
   const replayPayload = events.map((event) => JSON.stringify(event)).join("\n") + (events.length ? "\n" : "");
@@ -71,6 +74,7 @@ for (const marketTicker of targetMarkets) {
     lastSeq: lastNumber(events.map((event) => event.seq)),
     sha256: sha256(replayPayload),
     sequence,
+    reconstruction,
     segmentSummaries: selectedSegment.segmentSummaries,
   };
   const manifest = {
@@ -79,23 +83,48 @@ for (const marketTicker of targetMarkets) {
     generatedAt: new Date().toISOString(),
     provider: events[0]?.provider ?? args.provider ?? "kalshi",
     captureMode: events[0]?.captureMode ?? args.mode ?? "absent",
-    useYesPrice: events.some((event) => event.useYesPrice === true),
-    priceScale: events.some((event) => event.useYesPrice === true) ? "yes_leg" : "provider_default",
-    replayGradeAvailable: sequence.replayGradeAvailable,
-    executionSensitivePromotionAllowed: sequence.replayGradeAvailable,
-    fallbackKind: sequence.fallbackKind,
+    useYesPrice: events.length > 0 && events.every((event) => event.useYesPrice === true),
+    priceScale: events.length > 0 && events.every((event) => event.useYesPrice === true) ? "yes_leg" : "provider_default",
+    replayGradeAvailable: replayGradeForSegment,
+    captureComplete: events.length > 0 && sequence.snapshotCount > 0,
+    replayGradeForSegment,
+    replayGradeForCandidateWindow: false,
+    evaluationGrade: false,
+    executionSensitivePromotionAllowed: replayGradeForSegment,
+    fallbackKind: replayGradeForSegment ? "replay_grade" : sequence.fallbackKind,
+    sequenceGapCount: sequence.gapCount,
+    duplicateCount: sequence.duplicateCount,
+    outOfOrderCount: sequence.outOfOrderCount,
+    reconstructionValid: reconstruction.valid,
+    deterministicReplayHash: reconstruction.deterministicHash,
     replayFile: "replay.jsonl.gz",
     indexFile: "replay.index.json",
     rowCount: events.length,
     sourceEventCount: selectedSegment.sourceEventCount,
     evaluatedSegmentCount: selectedSegment.evaluatedSegmentCount,
     selectedSegmentKey: selectedSegment.selectedSegmentKey,
+    firstReceiveTs: index.firstReceiveTs,
+    lastReceiveTs: index.lastReceiveTs,
+    firstSeq: index.firstSeq,
+    lastSeq: index.lastSeq,
     sha256: index.sha256,
     gitCommit,
     captureRunId,
   };
   await writeFile(path.join(marketDir, "replay.index.json"), `${JSON.stringify(index, null, 2)}\n`, "utf8");
   await writeFile(path.join(marketDir, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+  await writeFile(path.join(marketDir, "sequence_audit.json"), `${JSON.stringify({
+    schemaVersion: "dogeedge.replay-sequence-audit.v1",
+    marketTicker,
+    generatedAt: manifest.generatedAt,
+    selectedSegmentKey: selectedSegment.selectedSegmentKey,
+    useYesPrice: manifest.useYesPrice,
+    sequence,
+    reconstruction,
+    replayGradeForSegment,
+    canPlaceOrders: false,
+  }, null, 2)}\n`, "utf8");
+  await writeFile(path.join(marketDir, "sequence_gaps.tsv"), tsv(["marketTicker", "expectedSeq", "actualSeq", "gapSize"], sequence.gaps.map((gap) => ({ marketTicker, ...gap }))), "utf8");
   marketSummaries.push(manifest);
   for (const gap of sequence.gaps) gapRows.push({ marketTicker, ...gap });
 }
@@ -130,6 +159,24 @@ const summary = {
 };
 await writeFile(path.join(outputRoot, "replay_manifest_summary.json"), `${JSON.stringify(summary, null, 2)}\n`, "utf8");
 await writeFile(path.join(outputRoot, "replay_gap_report.tsv"), tsv(["marketTicker", "expectedSeq", "actualSeq", "gapSize"], gapRows), "utf8");
+await writeFile(path.join(outputRoot, "sequence_audit.json"), `${JSON.stringify({
+  schemaVersion: "dogeedge.replay-sequence-audit-summary.v1",
+  generatedAt: summary.generatedAt,
+  inputRoot,
+  outputRoot,
+  targetMarketCount: targetMarkets.length,
+  replayGradeTargetMarketCount: replayGrade,
+  markets: marketSummaries.map((row) => ({
+    marketTicker: row.marketTicker,
+    replayGradeForSegment: row.replayGradeForSegment,
+    sequenceGapCount: row.sequenceGapCount,
+    duplicateCount: row.duplicateCount,
+    outOfOrderCount: row.outOfOrderCount,
+    reconstructionValid: row.reconstructionValid,
+    useYesPrice: row.useYesPrice,
+  })),
+  canPlaceOrders: false,
+}, null, 2)}\n`, "utf8");
 
 console.log(`Replay dataset build complete`);
 console.log(`Raw files: ${rawFiles.length}`);
@@ -137,7 +184,7 @@ console.log(`Markets: ${covered}/${targetMarkets.length} covered; replay-grade $
 console.log(`Summary: ${path.join(outputRoot, "replay_manifest_summary.json")}`);
 
 async function readMarketsFile(filePath) {
-  const text = await readFile(filePath, "utf8");
+  const text = stripBom(await readFile(filePath, "utf8"));
   if (filePath.endsWith(".json")) {
     const parsed = JSON.parse(text);
     return uniqueStrings(targetMarketValues(parsed, { preferActive: true }));
@@ -148,6 +195,8 @@ async function readMarketsFile(filePath) {
 function targetMarketValues(parsed, { preferActive = false } = {}) {
   if (Array.isArray(parsed)) return parsed.map(tickerFromTarget).filter(Boolean);
   if (!parsed || typeof parsed !== "object") return [];
+  const scalarTargets = [parsed.targetMarket, parsed.marketTicker, parsed.ticker].filter((value) => typeof value === "string");
+  if (scalarTargets.length) return scalarTargets;
   const primary = preferActive && Array.isArray(parsed.activeTargets) ? parsed.activeTargets : [];
   if (primary.length) return primary.map(tickerFromTarget).filter(Boolean);
   const fallback = [
@@ -226,6 +275,15 @@ function tsv(columns, rows) {
   return `${columns.join("\t")}\n${rows.map((row) => columns.map((column) => String(row[column] ?? "")).join("\t")).join("\n")}${rows.length ? "\n" : ""}`;
 }
 
+function sequenceGrade(sequence, reconstruction) {
+  return Boolean(
+    sequence?.replayGradeAvailable === true
+    && reconstruction?.valid === true
+    && reconstruction?.useYesPrice === true
+    && reconstruction?.errorCount === 0
+  );
+}
+
 async function gitCommitMaybe() {
   for (const gitBinary of gitCandidates()) {
     try {
@@ -273,4 +331,8 @@ function parseArgs(values) {
     }
   }
   return parsed;
+}
+
+function stripBom(value) {
+  return String(value ?? "").replace(/^\uFEFF/, "");
 }

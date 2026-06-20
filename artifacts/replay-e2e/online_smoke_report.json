@@ -1,0 +1,110 @@
+{
+  "schemaVersion": "dogeedge.kalshi-ws-smoke.v1",
+  "generatedAt": "2026-06-20T18:55:08.093Z",
+  "networkRequired": true,
+  "dryRunOnly": true,
+  "status": "ok",
+  "ok": true,
+  "dataRoot": "D:\\DogeEdge\\data",
+  "marketsFile": "C:\\Users\\matth\\DogeEdge-replay-e2e-20260620T182153Z\\artifacts\\replay-e2e\\ws-smoke-2\\target-markets\\active-targets.json",
+  "captureOut": "C:\\Users\\matth\\DogeEdge-replay-e2e-20260620T182153Z\\artifacts\\replay-e2e\\ws-smoke-2\\capture",
+  "durationSeconds": 20,
+  "credentials": {
+    "keyIdPresent": true,
+    "privateKeyPresent": true,
+    "privateKeyPathPresent": false,
+    "privateKeySource": "env_pem",
+    "reason": null
+  },
+  "captureStdout": "Replay provider capture complete: 561 events across 1 markets -> C:\\Users\\matth\\DogeEdge-replay-e2e-20260620T182153Z\\artifacts\\replay-e2e\\ws-smoke-2\\capture\n",
+  "captureStderr": "",
+  "health": {
+    "schemaVersion": "dogeedge.kalshi-subscription-health.v1",
+    "generatedAt": "2026-06-20T18:55:08.066Z",
+    "wsUrl": "wss://external-api-ws.kalshi.com/trade-api/ws/v2",
+    "wsSessionId": "kalshi-ws-2026-06-20T18-54-47.867Z-b0a6d482",
+    "targetMarkets": [
+      "KXDOGE15M-26JUN201500-00"
+    ],
+    "capturedMarkets": [
+      "KXDOGE15M-26JUN201500-00"
+    ],
+    "channels": [
+      "market_lifecycle_v2",
+      "orderbook_delta",
+      "trade"
+    ],
+    "useYesPrice": true,
+    "priceScale": "yes_leg",
+    "authenticatedConnection": true,
+    "subscriptionAcknowledged": true,
+    "initialOrderbookSnapshotReceived": true,
+    "rawMessagesWritten": 564,
+    "rawEventsWritten": 561,
+    "orderbookDeltaCount": 551,
+    "tradeCount": 9,
+    "lifecycleCount": 0,
+    "ignoredNonTargetEventCount": 0,
+    "ignoredNonTargetMarketCount": 0,
+    "captureComplete": true,
+    "replayGradeCandidate": true,
+    "canPlaceOrders": false,
+    "reasonCodes": [],
+    "rawTypeCounts": {
+      "subscribed": 3,
+      "orderbook_snapshot": 1,
+      "orderbook_delta": 551,
+      "trade": 9
+    },
+    "errors": []
+  },
+  "manifest": {
+    "schemaVersion": "dogeedge.replay-capture-run.v1",
+    "generatedAt": "2026-06-20T18:55:08.071Z",
+    "provider": "kalshi",
+    "captureMode": "websocket",
+    "captureRunId": "capture-2026-06-20T18-54-47.785Z",
+    "gitCommit": "1ff62b8536b6b6175d9f66007a0a794dc54f33da",
+    "marketCount": 1,
+    "capturedMarketCount": 1,
+    "markets": [
+      "KXDOGE15M-26JUN201500-00"
+    ],
+    "capturedMarkets": [
+      "KXDOGE15M-26JUN201500-00"
+    ],
+    "replayGradeIntended": true,
+    "fallbackKind": "absent",
+    "executionSensitivePromotionAllowed": false,
+    "canPlaceOrders": false,
+    "channels": [
+      "market_lifecycle_v2",
+      "orderbook_delta",
+      "trade"
+    ],
+    "useYesPrice": true,
+    "priceScale": "yes_leg",
+    "websocketSessionId": "kalshi-ws-2026-06-20T18-54-47.867Z-b0a6d482",
+    "rawMessageCount": 564,
+    "eventCount": 561,
+    "durationSeconds": 20,
+    "rawMessagesFile": "raw-websocket-messages-capture-2026-06-20T18-54-47.785Z.jsonl",
+    "eventPartFile": "part-capture-2026-06-20T18-54-47.785Z.jsonl",
+    "authenticatedConnection": true,
+    "subscriptionAcknowledged": true,
+    "initialOrderbookSnapshotReceived": true,
+    "orderbookDeltaCount": 551,
+    "tradeCount": 9,
+    "mockInput": null,
+    "unavailableReason": null,
+    "blockerArtifact": null
+  },
+  "reasonCodes": [],
+  "channelsImplemented": [
+    "orderbook_delta",
+    "trade",
+    "market_lifecycle_v2"
+  ],
+  "useYesPrice": true,
+  "canPlaceOrders": false
+}

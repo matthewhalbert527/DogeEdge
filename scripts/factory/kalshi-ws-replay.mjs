@@ -1,21 +1,10 @@
 import crypto from "node:crypto";
 import { normalizeReplayRawEvent } from "./raw-tick-extract.mjs";
 import { isRecord, numberOrNull, stringOrNull } from "./utils.mjs";
+import { defaultKalshiReplayWsUrl, kalshiWsAuthHeaders } from "./kalshi-ws-auth.mjs";
 
-export const defaultKalshiReplayWsUrl = "wss://external-api-ws.kalshi.com/trade-api/ws/v2";
 export const defaultKalshiReplayChannels = ["orderbook_delta", "trade", "market_lifecycle_v2"];
-
-export function kalshiWsAuthHeaders({ keyId, privateKeyPem, timestamp = String(Date.now()), requestPath = "/trade-api/ws/v2" } = {}) {
-  if (!keyId || !privateKeyPem) {
-    return { ok: false, reason: "KALSHI_API_KEY_ID_or_KALSHI_PRIVATE_KEY_PEM_missing" };
-  }
-  return {
-    ok: true,
-    timestamp,
-    keyId,
-    signature: signPss(privateKeyPem, `${timestamp}GET${requestPath}`),
-  };
-}
+export { defaultKalshiReplayWsUrl, kalshiWsAuthHeaders };
 
 export function kalshiReplaySubscription({ marketTickers = [], channels = defaultKalshiReplayChannels, useYesPrice = true, requestId = 1 } = {}) {
   return {
@@ -111,8 +100,8 @@ export function normalizeKalshiWsReplayMessage(raw, context = {}) {
     receiveTs,
     receiveMonotonicNs: context.receiveMonotonicNs ?? null,
     side: normalizeSide(msg.side ?? msg.book_side),
-    priceDollars: kalshiPriceDollars(msg.price ?? msg.yes_price ?? msg.yesPrice ?? msg.no_price ?? msg.noPrice),
-    deltaContracts: numberOrNull(msg.delta ?? msg.count ?? msg.size ?? msg.quantity),
+    priceDollars: kalshiPriceDollars(msg.price_dollars ?? msg.priceDollars ?? msg.price ?? msg.yes_price ?? msg.yesPrice ?? msg.no_price ?? msg.noPrice),
+    deltaContracts: numberOrNull(msg.delta_fp ?? msg.deltaFp ?? msg.delta ?? msg.count ?? msg.size ?? msg.quantity),
     bestYesBid: bestPriceFromSnapshot(msg, "yes"),
     bestYesAsk: bestAskFromSnapshot(msg, "yes"),
     bestNoBid: bestPriceFromSnapshot(msg, "no"),
@@ -135,7 +124,7 @@ export function normalizeKalshiWsReplayMessage(raw, context = {}) {
   };
 }
 
-export function signPss(privateKeyPem, text) {
+function signPss(privateKeyPem, text) {
   const signer = crypto.createSign("RSA-SHA256");
   signer.update(text);
   signer.end();
@@ -163,7 +152,15 @@ function channelFromKalshiType(value) {
 }
 
 function bestPriceFromSnapshot(msg, side) {
-  const levels = Array.isArray(msg?.[side]) ? msg[side] : Array.isArray(msg?.[`${side}s`]) ? msg[`${side}s`] : [];
+  const levels = Array.isArray(msg?.[side])
+    ? msg[side]
+    : Array.isArray(msg?.[`${side}s`])
+      ? msg[`${side}s`]
+      : Array.isArray(msg?.[`${side}_dollars_fp`])
+        ? msg[`${side}_dollars_fp`]
+        : Array.isArray(msg?.[`${side}DollarsFp`])
+          ? msg[`${side}DollarsFp`]
+          : [];
   const price = levels.length ? levels[0]?.[0] ?? levels[0]?.price : null;
   return kalshiPriceDollars(price);
 }
