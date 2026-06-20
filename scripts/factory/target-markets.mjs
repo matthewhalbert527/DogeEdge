@@ -17,7 +17,7 @@ export async function selectTargetMarkets(options = {}) {
   const maxActiveTargets = Math.max(0, Number(options.maxActiveTargets ?? 25));
   const activeHorizonMinutes = Math.max(1, Number(options.activeHorizonMinutes ?? 180));
   const activeHorizonMs = activeHorizonMinutes * 60_000;
-  const activeMinLeadMinutes = Math.max(0, Number(options.activeMinLeadMinutes ?? options.minActiveLeadMinutes ?? 5));
+  const activeMinLeadMinutes = Math.max(0, Number(options.activeMinLeadMinutes ?? options.minActiveLeadMinutes ?? 10));
   const activeMinLeadMs = activeMinLeadMinutes * 60_000;
   const providerActive = Boolean(options.providerActive);
   const providerActiveHorizonMinutes = Math.max(1, Number(options.providerActiveHorizonMinutes ?? 24 * 60));
@@ -220,7 +220,7 @@ function collectCurrentLocalMarkets(latest, { nowMs, activeHorizonMs, activeMinL
   for (const row of candidates) {
     const marketTicker = stringOrNull(row?.marketTicker ?? row?.ticker ?? row?.market_ticker);
     const closeMs = parseTime(row?.marketCloseTime ?? row?.marketCloseTimestamp ?? row?.closeTime);
-    if (marketTicker && (closeMs === null || activeCloseIsCaptureEligible(closeMs, nowMs, activeHorizonMs, activeMinLeadMs))) {
+    if (marketTicker && closeMs !== null && activeCloseIsCaptureEligible(closeMs, nowMs, activeHorizonMs, activeMinLeadMs)) {
       addTarget(active, marketTicker, "local_worker_current_market", { closeTime: closeMs, priority: 75 });
     }
   }
@@ -261,12 +261,12 @@ async function fetchProviderActiveMarkets({ provider, seriesTicker, baseUrl, fet
     })
     .filter((row) => row.marketTicker)
     .filter((row) => row.status !== "closed" && row.status !== "finalized")
-    .filter((row) => row.closeMs === null || row.millisecondsToClose > minLeadMs && row.millisecondsToClose <= horizonMs)
+    .filter((row) => row.closeMs !== null && row.millisecondsToClose > minLeadMs && row.millisecondsToClose <= horizonMs)
     .sort((left, right) => right.priority - left.priority || left.millisecondsToClose - right.millisecondsToClose || left.marketTicker.localeCompare(right.marketTicker));
 }
 
 function activeCloseIsCaptureEligible(closeMs, nowMs, activeHorizonMs, activeMinLeadMs) {
-  if (closeMs === null) return true;
+  if (closeMs === null) return false;
   return closeMs > nowMs + activeMinLeadMs && closeMs <= nowMs + activeHorizonMs;
 }
 

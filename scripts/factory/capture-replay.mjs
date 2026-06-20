@@ -1,4 +1,4 @@
-import { closeSync, openSync, writeSync } from "node:fs";
+import { closeSync, fsyncSync, openSync, writeSync } from "node:fs";
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import crypto from "node:crypto";
@@ -364,7 +364,7 @@ async function captureKalshiProviderReplay({ outRoot, provider, mode, markets, c
 
 function createJsonlStream(filePath, streams, state) {
   try {
-    const stream = { fd: openSync(filePath, "w"), closed: false };
+    const stream = { fd: openSync(filePath, "w"), closed: false, bytesSinceSync: 0, lastSyncMs: Date.now() };
     streams.push(stream);
     return stream;
   } catch (error) {
@@ -376,7 +376,23 @@ function createJsonlStream(filePath, streams, state) {
 function writeJsonl(stream, row, state) {
   if (!stream || stream.closed) return;
   try {
-    writeSync(stream.fd, `${JSON.stringify(row)}\n`, null, "utf8");
+    const line = `${JSON.stringify(row)}\n`;
+    writeSync(stream.fd, line, null, "utf8");
+    stream.bytesSinceSync += Buffer.byteLength(line);
+    maybeSyncJsonlStream(stream, state);
+  } catch (error) {
+    state.errors.push(error instanceof Error ? error.message : String(error));
+  }
+}
+
+function maybeSyncJsonlStream(stream, state, { force = false } = {}) {
+  if (!stream || stream.closed) return;
+  const nowMs = Date.now();
+  if (!force && stream.bytesSinceSync < 256 * 1024 && nowMs - stream.lastSyncMs < 1_000) return;
+  try {
+    fsyncSync(stream.fd);
+    stream.bytesSinceSync = 0;
+    stream.lastSyncMs = nowMs;
   } catch (error) {
     state.errors.push(error instanceof Error ? error.message : String(error));
   }
@@ -386,6 +402,7 @@ async function closeJsonlStreams(streams, state) {
   for (const stream of streams) {
     try {
       if (!stream.closed) {
+        maybeSyncJsonlStream(stream, state, { force: true });
         closeSync(stream.fd);
         stream.closed = true;
       }

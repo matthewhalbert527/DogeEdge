@@ -2879,10 +2879,44 @@ describe("factory research safeguards", () => {
 
     expect(calls[0]).toContain("series_ticker=KXDOGE15M");
     expect(selection.activeTargetCount).toBe(1);
-    expect(selection.activeMinLeadMinutes).toBe(5);
+    expect(selection.activeMinLeadMinutes).toBe(10);
     expect(selection.activeTickers).toEqual(["KXDOGE15M-26JUN171415-15"]);
     expect(selection.activeTargets[0].evidenceSources).toContain("kalshi_provider_open_market");
     expect(selection.reasonCodes).not.toContain("active_target_markets_absent");
+  });
+
+  it("does not select unknown-close local worker markets for replay capture", async () => {
+    const dataRoot = mkdtempSync(path.join(tmpdir(), "dogeedge-local-targets-test-"));
+    const storageDir = path.join(dataRoot, "local-worker");
+    mkdirSync(storageDir, { recursive: true });
+    writeFileSync(path.join(storageDir, "latest.json"), `${JSON.stringify({
+      paperInput: {
+        ticker: "KXDOGE15M-NO-CLOSE",
+      },
+    })}\n`);
+
+    const selection = await selectTargetMarkets({
+      dataRoot,
+      storageDir,
+      now: "2026-06-17T14:00:00.000Z",
+      maxActiveTargets: 2,
+      providerActive: true,
+      seriesTicker: "KXDOGE15M",
+      fetchImpl: async () => ({
+        ok: true,
+        json: async () => ({
+          markets: [{
+            ticker: "KXDOGE15M-TOO-SOON",
+            status: "active",
+            close_time: "2026-06-17T14:03:00.000Z",
+          }],
+        }),
+      }),
+    });
+
+    expect(selection.activeTargetCount).toBe(0);
+    expect(selection.activeTickers).toEqual([]);
+    expect(selection.reasonCodes).toContain("active_target_markets_absent");
   });
 
   it("preflights evidence bootstrap offline without pretending provider auth is ready", async () => {
