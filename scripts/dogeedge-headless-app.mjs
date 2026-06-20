@@ -94,7 +94,7 @@ async function buildStatus() {
   const latestAgeSeconds = latestStoredAt ? Math.max(0, (Date.parse(checkedAt) - Date.parse(latestStoredAt)) / 1000) : null;
   const executableAgeSeconds = executableStoredAt ? Math.max(0, (Date.parse(checkedAt) - Date.parse(executableStoredAt)) / 1000) : null;
   const summary = summarizeCanaries(executableDoc?.topTradersExecutable);
-  const selection = canarySelectionStatus(latest, executionCanaries);
+  const selection = canarySelectionStatus(latest, executionCanaries, executableDoc?.topTradersExecutable);
   const gateReasons = Array.isArray(latest?.runtimeSnapshot?.gate?.reasons) ? latest.runtimeSnapshot.gate.reasons.map(String) : [];
   const dryRunGuarded = gateReasons.some((reason) => /paper-only mode is active/i.test(reason))
     && gateReasons.some((reason) => /live trading is not enabled/i.test(reason));
@@ -127,22 +127,30 @@ async function buildStatus() {
   };
 }
 
-export function canarySelectionStatus(latest, executionCanaries) {
+export function canarySelectionStatus(latest, executionCanaries, executable = null) {
   const expectedCanaryIds = expectedCanaryAlgoIds(executionCanaries);
-  const selectedAlgoIds = selectedTopTraderAlgoIds(latest?.topTradersArena);
+  const currentSelectedAlgoIds = selectedTopTraderAlgoIds(latest?.topTradersArena);
   const expectedSet = new Set(expectedCanaryIds);
-  const selectedCanaryIds = selectedAlgoIds.filter((id) => expectedSet.has(id));
+  const currentSelectedCanaryIds = currentSelectedAlgoIds.filter((id) => expectedSet.has(id));
+  const activeCanaryIds = activeCanaryAlgoIds(executable, expectedSet);
+  const selectedCanaryIds = uniqueStrings([...currentSelectedCanaryIds, ...activeCanaryIds]);
+  const selectedAlgoIds = uniqueStrings([...currentSelectedAlgoIds, ...activeCanaryIds]);
   const topTradersStatus = stringOrNull(latest?.topTradersArena?.status);
+  const selectedAlgoCount = numberOrNull(latest?.topTradersArena?.selectedAlgoCount);
+  const hasSelectionEvidence = selectedAlgoIds.length > 0 || Number(selectedAlgoCount ?? 0) > 0;
   const stale = expectedCanaryIds.length > 0
     && topTradersStatus === "running"
-    && selectedAlgoIds.length > 0
-    && selectedCanaryIds.length === 0;
+    && hasSelectionEvidence
+    && selectedCanaryIds.length < expectedCanaryIds.length;
   return {
     expectedCanaryCount: expectedCanaryIds.length,
     selectedCanaryCount: selectedCanaryIds.length,
     expectedCanaryIds,
     selectedAlgoIds,
     selectedCanaryIds,
+    currentSelectedAlgoIds,
+    currentSelectedCanaryIds,
+    activeCanaryIds,
     canarySelectionStale: stale,
   };
 }
@@ -166,6 +174,17 @@ function selectedTopTraderAlgoIds(arena) {
     ...selected,
     stringOrNull(arena?.selectedAlgoId),
   ].filter(Boolean));
+}
+
+function activeCanaryAlgoIds(executable, expectedSet) {
+  const stats = executable?.stats && typeof executable.stats === "object" ? executable.stats : {};
+  const ids = [];
+  for (const row of Object.values(stats)) {
+    if (!(row?.lane === "exact_linked_execution_canary" || row?.evidenceStatus === "execution_canary_only")) continue;
+    const id = stringOrNull(row?.algoId) ?? (stringOrNull(row?.sourceAlgoId) ? `generated:${stringOrNull(row?.sourceAlgoId)}` : null);
+    if (id && expectedSet.has(id)) ids.push(id);
+  }
+  return uniqueStrings(ids);
 }
 
 function summarizeCanaries(executable) {

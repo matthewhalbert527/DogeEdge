@@ -1656,6 +1656,48 @@ describe("factory research safeguards", () => {
     });
   });
 
+  it("counts active execution canary rows when latest only exposes the current selected algo", () => {
+    const executionCanaries = {
+      probes: [
+        { id: "generated:sweep-scalp-current", sourceAlgoId: "sweep-scalp-current" },
+        { id: "generated:sweep-liquidity-current", sourceAlgoId: "sweep-liquidity-current" },
+        { id: "generated:sweep-scalp-third", sourceAlgoId: "sweep-scalp-third" },
+      ],
+    };
+    expect(canarySelectionStatus({
+      topTradersArena: {
+        status: "running",
+        selectedAlgoId: "generated:sweep-scalp-current",
+        selectedAlgoCount: 3,
+      },
+    }, executionCanaries, {
+      stats: {
+        "sweep-scalp-current": {
+          algoId: "generated:sweep-scalp-current",
+          lane: "exact_linked_execution_canary",
+        },
+        "sweep-liquidity-current": {
+          algoId: "generated:sweep-liquidity-current",
+          evidenceStatus: "execution_canary_only",
+        },
+        "sweep-scalp-third": {
+          sourceAlgoId: "sweep-scalp-third",
+          lane: "exact_linked_execution_canary",
+        },
+      },
+    })).toMatchObject({
+      expectedCanaryCount: 3,
+      selectedCanaryCount: 3,
+      currentSelectedCanaryIds: ["generated:sweep-scalp-current"],
+      activeCanaryIds: [
+        "generated:sweep-scalp-current",
+        "generated:sweep-liquidity-current",
+        "generated:sweep-scalp-third",
+      ],
+      canarySelectionStale: false,
+    });
+  });
+
   it("restarts headless Chrome only when stale canary selection is restart-eligible", () => {
     expect(shouldRestartChrome({
       status: "ok",
