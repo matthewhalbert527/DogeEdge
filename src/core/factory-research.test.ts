@@ -1740,6 +1740,74 @@ describe("factory research safeguards", () => {
     expect(lane.rejected.filter((row: { reasonCodes: string[] }) => row.reasonCodes.includes("excluded_unhealthy_execution_canary"))).toHaveLength(2);
   });
 
+  it("fills execution canaries from recent sweep fallback runs without loosening eligibility", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "dogeedge-canary-fallback-"));
+    const dataRoot = path.join(dir, "data");
+    const storageDir = path.join(dataRoot, "local-worker");
+    const fallbackRunDir = path.join(dataRoot, "backtests", "sweeps", "fallback-run");
+    mkdirSync(storageDir, { recursive: true });
+    mkdirSync(fallbackRunDir, { recursive: true });
+    const candidate = (algoId: string, family: string, runId: string, sideMode = "best", robustScore = 10, conservativeTotalPnl = 1) => ({
+      algoId,
+      algoName: algoId,
+      family,
+      params: family === "sweep-liquidity-imbalance"
+        ? { maxSpread: 0.04, minBidDepth: 1, minImbalance: 0.25, minEdge: 0, yesMode: "none" }
+        : { maxSpread: 0.01, feeBuffer: 0.004, minEdge: 0, sideMode, yesMode: "loose" },
+      researchCandidateId: `rcid-${runId}-${algoId}`,
+      candidateConfigHash: `hash-${runId}-${algoId}`,
+      sourceRunId: runId,
+      sourceSnapshotHash: `snapshot-${runId}`,
+      seed: `seed-${runId}`,
+      conservativeTotalPnl,
+      closed: 20,
+      independentClosedMarkets: 20,
+      walkForwardClosed: 5,
+      robustScore,
+    });
+    const primarySourcePath = path.join(dir, "primary.json");
+    writeFileSync(primarySourcePath, `${JSON.stringify({
+      runId: "primary-run",
+      randomSeed: "seed-primary",
+      candidates: [
+        candidate("primary-scalp", "sweep-scalp", "primary-run", "yes-only", 50),
+        candidate("primary-liquidity", "sweep-liquidity-imbalance", "primary-run", "best", 40),
+      ],
+    })}\n`);
+    writeFileSync(path.join(fallbackRunDir, "config.json"), `${JSON.stringify({
+      runId: "fallback-run",
+      randomSeed: "seed-fallback",
+      registry: {
+        configHash: "config-fallback",
+        inputManifestHash: "snapshot-fallback",
+      },
+    })}\n`);
+    writeFileSync(path.join(fallbackRunDir, "metrics.json"), `${JSON.stringify([
+      candidate("fallback-negative", "sweep-scalp", "fallback-run", "no-only", 60, -1),
+      candidate("primary-scalp", "sweep-scalp", "fallback-run", "yes-only", 55, 1),
+      candidate("fallback-safe-no", "sweep-scalp", "fallback-run", "no-only", 30, 1),
+    ])}\n`);
+    writeFileSync(path.join(fallbackRunDir, "candidates.json"), "[]\n");
+
+    execFileSync(process.execPath, [
+      "scripts/factory/evidence-lane.mjs",
+      "--data-root", dataRoot,
+      "--storage-dir", storageDir,
+      "--from", primarySourcePath,
+      "--max-probes", "3",
+      "--executable-only",
+    ], { cwd: process.cwd() });
+    const lane = JSON.parse(readFileSync(path.join(storageDir, "execution-canaries.json"), "utf8"));
+
+    expect(lane.probes.map((probe: { sourceAlgoId: string }) => probe.sourceAlgoId)).toContain("fallback-safe-no");
+    expect(lane.probes.map((probe: { sourceAlgoId: string }) => probe.sourceAlgoId)).not.toContain("fallback-negative");
+    expect(lane.probes.map((probe: { sourceAlgoId: string }) => probe.sourceAlgoId).filter((sourceAlgoId: string) => sourceAlgoId === "primary-scalp")).toHaveLength(1);
+    expect(lane.probes).toHaveLength(3);
+    expect(lane.sourceRunIds).toEqual(expect.arrayContaining(["primary-run", "fallback-run"]));
+    expect(lane.summary.fallbackCandidateRows).toBeGreaterThanOrEqual(1);
+    expect(lane.summary.reasonCodes).not.toContain("insufficient_supported_execution_canary_candidates");
+  });
+
   it("marks headless top-trader selection stale when it is not on the installed execution canary lane", () => {
     const executionCanaries = {
       probes: [

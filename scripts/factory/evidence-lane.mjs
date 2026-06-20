@@ -55,17 +55,18 @@ function selectDiverseExecutionCanaryRows(rows, maxProbes) {
   const sorted = [...rows].sort(compareExecutionCanaryCandidates);
   const selected = [];
   const selectedIds = new Set();
+  const selectedSourceAlgoIds = new Set();
   const selectedFamilies = new Set();
   const selectedBuckets = new Set();
   for (const row of sorted) {
     if (selected.length >= maxProbes) break;
-    if (!supportedExecutionCanaryFamilies.includes(row.family) || selectedFamilies.has(row.family)) continue;
+    if (!supportedExecutionCanaryFamilies.includes(row.family) || selectedFamilies.has(row.family) || selectedSourceAlgoIds.has(sourceAlgoKey(row))) continue;
     addSelected(row);
   }
   for (const bucket of ["yes", "no", "flex"]) {
     if (selected.length >= maxProbes) break;
     if (selectedBuckets.has(bucket)) continue;
-    const row = sorted.find((candidate) => executionSideBucket(candidate) === bucket && !selectedIds.has(candidateKey(candidate)));
+    const row = sorted.find((candidate) => executionSideBucket(candidate) === bucket && !selectedIds.has(candidateKey(candidate)) && !selectedSourceAlgoIds.has(sourceAlgoKey(candidate)));
     if (!row) continue;
     addSelected(row);
   }
@@ -73,6 +74,7 @@ function selectDiverseExecutionCanaryRows(rows, maxProbes) {
     if (selected.length >= maxProbes) break;
     const key = candidateKey(row);
     if (selectedIds.has(key)) continue;
+    if (selectedSourceAlgoIds.has(sourceAlgoKey(row))) continue;
     addSelected(row);
   }
   return selected;
@@ -80,6 +82,7 @@ function selectDiverseExecutionCanaryRows(rows, maxProbes) {
   function addSelected(row) {
     selected.push(row);
     selectedIds.add(candidateKey(row));
+    selectedSourceAlgoIds.add(sourceAlgoKey(row));
     selectedFamilies.add(row.family);
     selectedBuckets.add(executionSideBucket(row));
   }
@@ -140,6 +143,68 @@ function candidateKey(row) {
   return String(row?.researchCandidateId ?? row?.candidateConfigHash ?? row?.algoId ?? row?.id ?? JSON.stringify(row));
 }
 
+function sourceAlgoKey(row) {
+  return String(row?.sourceAlgoId ?? row?.algoId ?? row?.id ?? "");
+}
+
+function dedupeCandidateRows(rows) {
+  const seen = new Set();
+  const result = [];
+  for (const row of rows) {
+    const key = [
+      row?.researchCandidateId ?? "",
+      row?.candidateConfigHash ?? "",
+      row?.sourceRunId ?? "",
+      row?.algoId ?? row?.id ?? "",
+    ].join("|");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(row);
+  }
+  return result;
+}
+
+async function recentSupportedExecutionCanaryFallbackRows({
+  dataRoot,
+  primarySource = {},
+  excludedSourceAlgoIds = new Set(),
+  maxRuns = 24,
+} = {}) {
+  const sweepsDir = path.join(dataRoot, "backtests", "sweeps");
+  let entries = [];
+  try {
+    entries = await readdir(sweepsDir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const primaryRunId = String(primarySource?.runId ?? "");
+  const primaryRunDir = primarySource?.runDir ? path.resolve(String(primarySource.runDir)) : "";
+  const dirs = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const runDir = path.join(sweepsDir, entry.name);
+    const info = await stat(runDir).catch(() => null);
+    if (!info) continue;
+    dirs.push({ runDir, mtimeMs: info.mtimeMs });
+  }
+  dirs.sort((left, right) => right.mtimeMs - left.mtimeMs);
+  const rows = [];
+  for (const dir of dirs.slice(0, Math.max(0, Math.floor(maxRuns)))) {
+    const runDir = path.resolve(dir.runDir);
+    const source = await readRunDirectory(runDir).catch(() => null);
+    if (!source) continue;
+    if (primaryRunId && source.runId === primaryRunId) continue;
+    if (primaryRunDir && path.resolve(source.runDir ?? "") === primaryRunDir) continue;
+    for (const row of materializeExactLinkageForSource(source)) {
+      const sourceAlgoId = String(row?.algoId ?? row?.id ?? row?.sourceAlgoId ?? "");
+      if (excludedSourceAlgoIds.has(sourceAlgoId)) continue;
+      if (!evidenceProbeEligibility(row, { executableOnly: true }).ok) continue;
+      rows.push(row);
+    }
+  }
+  return rows;
+}
+
 export function evidenceProbeFromCandidate(candidate, { laneKind = evidenceProbeLaneKind } = {}) {
   const sourceAlgoId = String(candidate.algoId ?? candidate.id);
   const promotedAt = new Date().toISOString();
@@ -191,7 +256,16 @@ async function evidenceLaneCli() {
   const maxProbes = Math.max(0, Number(args["max-probes"] ?? 5));
   const executableOnly = Boolean(args["executable-only"] ?? args["execution-canary"] ?? args["execution-canaries"]);
   const excludedSourceAlgoIds = new Set(splitList(args["exclude-source-algos"]));
-  const rows = materializeExactLinkageForSource(source);
+  const primaryRows = materializeExactLinkageForSource(source);
+  const fallbackRows = executableOnly
+    ? await recentSupportedExecutionCanaryFallbackRows({
+      dataRoot,
+      primarySource: source,
+      excludedSourceAlgoIds,
+      maxRuns: Number(args["fallback-run-count"] ?? 24),
+    })
+    : [];
+  const rows = dedupeCandidateRows([...primaryRows, ...fallbackRows]);
   const candidateRows = excludedSourceAlgoIds.size > 0
     ? rows.filter((row) => !excludedSourceAlgoIds.has(String(row.algoId ?? row.id ?? row.sourceAlgoId ?? "")))
     : rows;
@@ -223,6 +297,8 @@ async function evidenceLaneCli() {
     lane: laneKind,
     executableOnly,
     supportedExecutionCanaryFamilies: executableOnly ? supportedExecutionCanaryFamilies : [],
+    sourceRunIds: uniqueStrings(result.selected.map((probe) => probe.sourceRunId).filter(Boolean)),
+    fallbackCandidateRows: fallbackRows.length,
     excludedSourceAlgoIds: [...excludedSourceAlgoIds],
     probes: result.selected,
     rejected: result.rejected,
@@ -232,8 +308,12 @@ async function evidenceLaneCli() {
       exactLinkedProbeCount: result.selected.filter((probe) => probe.exactLinked).length,
       supportedFamilyProbeCount: result.selected.filter((probe) => familyResearchSupported(probe.family)).length,
       supportedExecutionCanaryCount: result.selected.filter((probe) => supportedExecutionCanaryFamilies.includes(probe.family)).length,
+      fallbackCandidateRows: fallbackRows.length,
       researchValidatedRosterImpact: 0,
-      reasonCodes: result.selected.length === 0 && executableOnly ? ["no_supported_execution_canary_candidates"] : [],
+      reasonCodes: [
+        ...(result.selected.length === 0 && executableOnly ? ["no_supported_execution_canary_candidates"] : []),
+        ...(executableOnly && result.selected.length > 0 && result.selected.length < maxProbes ? ["insufficient_supported_execution_canary_candidates"] : []),
+      ],
     },
   };
   const laneFile = executableOnly ? "execution-canaries.json" : "evidence-probes.json";
@@ -716,6 +796,10 @@ function splitList(value) {
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function uniqueStrings(values) {
+  return [...new Set(values.map((value) => String(value)).filter(Boolean))];
 }
 
 function parseArgs(values) {
