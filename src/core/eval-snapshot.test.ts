@@ -169,6 +169,10 @@ describe("continuous evaluation snapshot exporter", () => {
       schemaVersion: "dogeedge.executable-readiness-gate.v1",
       allowedToLoadArenaBatch: false,
       state: "hold_gather_evidence",
+      representedDays: 8,
+      independentMarkets: 75,
+      representedDaysReady: true,
+      independentMarketsReady: true,
       reasonCodes: expect.arrayContaining(["official_settlement_coverage_below_threshold", "replay_grade_target_market_ticks_absent"]),
     });
     const readinessKpis = JSON.parse(readFileSync(path.join(result.snapshotDir, "readiness_kpis.json"), "utf8"));
@@ -179,6 +183,8 @@ describe("continuous evaluation snapshot exporter", () => {
       officialSettlementCoverage: 0,
       exactLinkedSupportedLiveRows: 0,
       replayGradeReady: false,
+      representedDays: 8,
+      independentMarkets: 75,
       seedCompleteness: 1,
       blockers: expect.arrayContaining(["replay_grade_target_market_ticks_absent"]),
     });

@@ -1179,6 +1179,33 @@ describe("factory research safeguards", () => {
     });
   });
 
+  it("fails closed when represented days or independent markets are missing", () => {
+    const gate = buildExecutableReadinessGate({
+      snapshotId: "snap",
+      generatedAt: "2026-06-09T12:00:00.000Z",
+      exactLinkSummary: { supportedLiveExactLinkedCount: 3, exactLinkRate: 1 },
+      settlementCoverageReport: { summary: { officialSettlementCoverage: 1 } },
+      replayParityReport: {
+        replayGrade: true,
+        targetMarketCount: 1,
+        replayGradeTargetMarketCoverage: 1,
+      },
+      simulatorCalibrationReport: { attempts: 10, labelKnownCount: 50 },
+      topRosterDefaultSortAudit: { researchRankedRosterCount: 1 },
+      dataQuality: {},
+      evidenceProbeSummary: { exactLinkedProbeCount: 3 },
+      seedCompleteness: 1,
+    });
+
+    expect(gate.allowedToLoadArenaBatch).toBe(false);
+    expect(gate.representedDaysReady).toBe(false);
+    expect(gate.independentMarketsReady).toBe(false);
+    expect(gate.reasonCodes).toEqual(expect.arrayContaining([
+      "represented_days_missing",
+      "independent_markets_missing",
+    ]));
+  });
+
   it("uses replay-grade coverage, not diagnostic sample coverage, for readiness", () => {
     const gate = buildExecutableReadinessGate({
       snapshotId: "snap",

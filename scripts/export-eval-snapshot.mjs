@@ -4429,6 +4429,8 @@ function flattenWarning(warning) {
 
 function dataQualitySummary(primaryRun, metrics) {
   const source = primaryRun?.dataQuality ?? {};
+  const representedDays = numberOrZero(source.representedDays ?? source.sampleSufficiency?.counts?.daysRepresented) || maxMetricNumber(metrics, "daysRepresented");
+  const independentMarkets = numberOrZero(source.independentMarkets ?? source.sampleSufficiency?.counts?.independentMarkets) || maxMetricNumber(metrics, "independentClosedMarkets") || numberOrZero(source.marketEvents ?? primaryRun?.eventCount);
   return {
     rawFrames: numberOrZero(source.rawFrames ?? primaryRun?.frameCount),
     usableFrames: numberOrZero(source.usableFrames ?? primaryRun?.frameCount),
@@ -4437,10 +4439,20 @@ function dataQualitySummary(primaryRun, metrics) {
     duplicateFramesRemoved: numberOrZero(source.duplicateFramesRemoved),
     overlappingFramesDownsampled: numberOrZero(source.overlappingFramesDownsampled),
     marketEvents: numberOrZero(source.marketEvents ?? primaryRun?.eventCount),
+    representedDays,
+    independentMarkets,
     warningCount: numberOrZero(source.warningCount) + metrics.reduce((total, metric) => total + (metric.warnings?.length ?? 0), 0),
     errorCount: numberOrZero(source.errorCount),
     settlementEvidence: source.settlementEvidence ?? {},
   };
+}
+
+function maxMetricNumber(metrics, field) {
+  if (!Array.isArray(metrics)) return 0;
+  return metrics.reduce((max, metric) => {
+    const value = numberOrZero(metric?.[field]);
+    return value > max ? value : max;
+  }, 0);
 }
 
 function seedCompletenessForMetrics(metrics = [], primaryRun = null) {
