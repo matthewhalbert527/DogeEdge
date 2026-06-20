@@ -864,6 +864,87 @@ describe("factory research safeguards", () => {
     expect(summary.totalPnl).toBe(0.12);
   });
 
+  it("uses exact-linked Top Traders executable positions as diagnostic paper evidence", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "dogeedge-executable-paper-evidence-"));
+    writeFileSync(path.join(dir, "paper-trades.jsonl"), "");
+    writeFileSync(path.join(dir, "top-traders-executable.json"), `${JSON.stringify({
+      storedAt: "2026-06-20T00:00:00.000Z",
+      topTradersExecutable: {
+        stats: {
+          "sweep-scalp-linked": {
+            sourceAlgoId: "sweep-scalp-linked",
+            algoId: "generated:sweep-scalp-linked",
+            family: "sweep-scalp",
+            lane: "exact_linked_execution_canary",
+            evidenceStatus: "execution_canary_only",
+            paperOnly: true,
+            exactLinked: true,
+            researchCandidateId: "rcid-linked",
+            candidateConfigHash: "hash-linked",
+          },
+          "legacy-unlinked": {
+            sourceAlgoId: "legacy-unlinked",
+            algoId: "generated:legacy-unlinked",
+            paperOnly: true,
+            exactLinked: false,
+          },
+        },
+        positions: [
+          {
+            id: "linked-position",
+            algoId: "generated:sweep-scalp-linked",
+            algoSourceId: "sweep-scalp-linked",
+            ticker: "KXDOGE15M-LINKED",
+            side: "YES",
+            contracts: 2,
+            entryPrice: 0.4,
+            exitPrice: 0.45,
+            openedAt: "2026-06-20T00:00:00.000Z",
+            closedAt: "2026-06-20T00:00:10.000Z",
+            status: "closed",
+            realizedPnl: 0.1,
+          },
+          {
+            id: "legacy-position",
+            algoId: "generated:legacy-unlinked",
+            algoSourceId: "legacy-unlinked",
+            ticker: "KXDOGE15M-LEGACY",
+            side: "NO",
+            contracts: 2,
+            entryPrice: 0.4,
+            exitPrice: 0.45,
+            openedAt: "2026-06-20T00:00:00.000Z",
+            closedAt: "2026-06-20T00:00:10.000Z",
+            status: "closed",
+            realizedPnl: 0.1,
+          },
+        ],
+      },
+    })}\n`);
+
+    const evidence = await readPaperEvidence({ storageDir: dir });
+    const summary = paperEvidenceForAlgo("sweep-scalp-linked", evidence, {
+      validationTrades: [{ pnl: 0.1 }],
+      validationRegimes: { unknown: 1 },
+      validationFill: { fillRate: 1, avgSlippage: 0 },
+    });
+
+    expect(evidence.summary).toMatchObject({
+      rawTradeRows: 0,
+      executablePositionRows: 1,
+      rawEvidenceRows: 1,
+      matchedAlgoCount: 1,
+    });
+    expect(evidence.byAlgoId["sweep-scalp-linked"]).toHaveLength(1);
+    expect(evidence.byAlgoId["legacy-unlinked"]).toBeUndefined();
+    expect(summary).toMatchObject({
+      available: true,
+      closedMarkets: 1,
+      closedTrades: 1,
+      totalPnl: 0.1,
+    });
+  });
+
   it("runs validate, replay-run, and promote-check CLI modes", () => {
     const root = mkdtempSync(path.join(tmpdir(), "dogeedge-cli-"));
     const framesDir = path.join(root, "frames");

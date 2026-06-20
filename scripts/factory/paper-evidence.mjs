@@ -5,7 +5,10 @@ import { average, roundMoney, roundRatio, unique } from "./utils.mjs";
 
 export async function readPaperEvidence({ storageDir, paperTradesPath = null, since = null, until = null } = {}) {
   const sourcePath = path.resolve(paperTradesPath ?? path.join(storageDir ?? ".", "paper-trades.jsonl"));
-  const rows = await readJsonLines(sourcePath);
+  const executablePath = path.resolve(storageDir ?? ".", "top-traders-executable.json");
+  const tradeRows = await readJsonLines(sourcePath);
+  const executableRows = await readExecutablePaperRows(executablePath);
+  const rows = dedupeEvidenceRows([...tradeRows, ...executableRows]);
   const filtered = rows.filter((row) => inWindow(row, since, until));
   const byAlgoId = {};
   for (const row of filtered) {
@@ -16,14 +19,25 @@ export async function readPaperEvidence({ storageDir, paperTradesPath = null, si
   }
   return {
     sourcePath,
+    sourcePaths: {
+      paperTrades: sourcePath,
+      topTradersExecutable: executablePath,
+    },
     byAlgoId,
     summary: {
       sourcePath,
-      rawTradeRows: rows.length,
+      sourcePaths: {
+        paperTrades: sourcePath,
+        topTradersExecutable: executablePath,
+      },
+      rawTradeRows: tradeRows.length,
+      executablePositionRows: executableRows.length,
+      rawEvidenceRows: rows.length,
       usableTradeRows: filtered.length,
       matchedAlgoCount: Object.keys(byAlgoId).length,
       limitations: [
         "Paper trade rows do not include a complete reject stream, so fill-quality drift uses trade/open/closed rates plus any slippage-like fields present.",
+        "Top Traders executable positions are used only when exact-linked and paper-only; they remain diagnostic paper evidence and do not make a rejected row promotable.",
       ],
     },
   };
@@ -86,7 +100,10 @@ export function paperEvidenceForAlgo(algoId, evidence, context = {}) {
 
 function paperAlgoKeys(row) {
   const keys = new Set();
-  const raw = stringOrNull(row?.sourceAlgoId) ?? sourceAlgoIdFromStrategyId(row?.strategyId);
+  const raw = stringOrNull(row?.sourceAlgoId)
+    ?? stringOrNull(row?.algoSourceId)
+    ?? stringOrNull(row?.sourceResearchAlgoId)
+    ?? sourceAlgoIdFromStrategyId(row?.strategyId);
   if (raw) {
     keys.add(raw);
     const withoutActivationSuffix = raw.replace(/:\d{10,}$/, "");
@@ -111,7 +128,10 @@ function normalizePaperTrade(row) {
   return {
     id: stringOrNull(row?.id) ?? JSON.stringify(row),
     strategyId: stringOrNull(row?.strategyId),
-    marketTicker: stringOrNull(row?.marketTicker) ?? "unknown",
+    sourceAlgoId: stringOrNull(row?.sourceAlgoId) ?? stringOrNull(row?.algoSourceId) ?? stringOrNull(row?.sourceResearchAlgoId),
+    researchCandidateId: stringOrNull(row?.researchCandidateId),
+    candidateConfigHash: stringOrNull(row?.candidateConfigHash),
+    marketTicker: stringOrNull(row?.marketTicker) ?? stringOrNull(row?.ticker) ?? "unknown",
     side: row?.side === "NO" ? "NO" : "YES",
     contracts: numberOrDefault(row?.contracts, 0),
     entryPrice: numberOrDefault(row?.entryPrice, 0),
@@ -119,11 +139,91 @@ function normalizePaperTrade(row) {
     openedAt: stringOrNull(row?.openedAt),
     closedAt: stringOrNull(row?.closedAt),
     status: row?.status === "closed" ? "closed" : row?.status === "open" ? "open" : "unknown",
-    pnl: numberOrNull(row?.pnl),
+    pnl: numberOrNull(row?.pnl) ?? numberOrNull(row?.realizedPnl),
     feesPaid: numberOrDefault(row?.feesPaid, 0),
     entryContext: isRecord(row?.entryContext) ? row.entryContext : {},
     exitContext: isRecord(row?.exitContext) ? row.exitContext : null,
   };
+}
+
+async function readExecutablePaperRows(filePath) {
+  const file = await readJsonMaybe(filePath);
+  const executable = isRecord(file?.topTradersExecutable) ? file.topTradersExecutable : isRecord(file) ? file : {};
+  const stats = isRecord(executable.stats) ? executable.stats : {};
+  const positions = Array.isArray(executable.positions) ? executable.positions : [];
+  if (!positions.length || !Object.keys(stats).length) return [];
+  const exactStats = new Map();
+  for (const [key, value] of Object.entries(stats)) {
+    if (!isExactLinkedPaperStat(value)) continue;
+    const sourceAlgoId = stringOrNull(value.sourceAlgoId) ?? stringOrNull(key);
+    if (!sourceAlgoId) continue;
+    exactStats.set(sourceAlgoId, value);
+    const generatedId = stringOrNull(value.algoId);
+    if (generatedId) exactStats.set(generatedId, value);
+  }
+  return positions
+    .map((position) => normalizeExecutablePosition(position, exactStats))
+    .filter(Boolean);
+}
+
+function normalizeExecutablePosition(position, exactStats) {
+  if (!isRecord(position)) return null;
+  const sourceAlgoId = stringOrNull(position.algoSourceId)
+    ?? stringOrNull(position.sourceAlgoId)
+    ?? sourceAlgoIdFromStrategyId(position.algoId)
+    ?? sourceAlgoIdFromStrategyId(position.strategyId);
+  const stat = exactStats.get(sourceAlgoId) ?? exactStats.get(stringOrNull(position.algoId)) ?? null;
+  if (!sourceAlgoId || !stat) return null;
+  return {
+    id: stringOrNull(position.id) ?? `${sourceAlgoId}:${position.ticker ?? position.marketTicker ?? "unknown"}:${position.openedAt ?? ""}`,
+    strategyId: stringOrNull(position.algoId) ?? `generated:${sourceAlgoId}`,
+    sourceAlgoId,
+    algoSourceId: sourceAlgoId,
+    sourceResearchAlgoId: stringOrNull(stat.sourceResearchAlgoId) ?? sourceAlgoId,
+    researchCandidateId: stringOrNull(stat.researchCandidateId),
+    candidateConfigHash: stringOrNull(stat.candidateConfigHash),
+    marketTicker: stringOrNull(position.ticker) ?? stringOrNull(position.marketTicker),
+    side: position.side === "NO" ? "NO" : "YES",
+    contracts: numberOrDefault(position.contracts, 0),
+    entryPrice: numberOrDefault(position.entryPrice, 0),
+    exitPrice: numberOrNull(position.exitPrice),
+    openedAt: stringOrNull(position.openedAt),
+    closedAt: stringOrNull(position.closedAt),
+    status: position.status === "closed" ? "closed" : position.status === "open" ? "open" : "unknown",
+    pnl: numberOrNull(position.realizedPnl),
+    realizedPnl: numberOrNull(position.realizedPnl),
+    feesPaid: 0,
+    entryContext: {
+      source: "top_traders_executable",
+      lane: stat.lane ?? null,
+      evidenceStatus: stat.evidenceStatus ?? null,
+      displayId: stat.displayId ?? position.algoDisplayId ?? null,
+      family: stat.family ?? position.algoFamily ?? null,
+    },
+    exitContext: position.status === "closed" ? { exitReason: position.exitReason ?? null } : null,
+  };
+}
+
+function isExactLinkedPaperStat(value) {
+  if (!isRecord(value)) return false;
+  return value.exactLinked === true
+    && value.paperOnly === true
+    && typeof value.researchCandidateId === "string"
+    && typeof value.candidateConfigHash === "string"
+    && stringOrNull(value.sourceAlgoId);
+}
+
+function dedupeEvidenceRows(rows) {
+  const seen = new Set();
+  const output = [];
+  for (const row of rows) {
+    const id = stringOrNull(row?.id) ?? JSON.stringify(row);
+    const key = `${stringOrNull(row?.sourceAlgoId) ?? stringOrNull(row?.algoSourceId) ?? stringOrNull(row?.strategyId) ?? ""}:${id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    output.push(row);
+  }
+  return output;
 }
 
 function regimeShareFromTrades(trades) {
@@ -179,6 +279,14 @@ async function readJsonLines(filePath) {
       .filter(Boolean);
   } catch {
     return [];
+  }
+}
+
+async function readJsonMaybe(filePath) {
+  try {
+    return JSON.parse(await readFile(filePath, "utf8"));
+  } catch {
+    return null;
   }
 }
 
