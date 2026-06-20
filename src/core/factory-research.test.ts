@@ -33,7 +33,7 @@ import { replayParityReportFromManifest } from "../../scripts/factory/replay-cov
 import { buildExecutableReadinessGate } from "../../scripts/factory/readiness-gate.mjs";
 import { forecastCalibrationForDecisionRows, officialForecastCalibrationReport, probabilityCalibrationForTrades, tradeCalibrationByCandidate } from "../../scripts/factory/probability-calibration.mjs";
 import { deterministicLinkageBackfill } from "../../scripts/factory/backfill-linkage.mjs";
-import { materializeExactLinkageForSource, mergeTopTradersExecutable, selectEvidenceProbes } from "../../scripts/factory/evidence-lane.mjs";
+import { loadSourceSweep, materializeExactLinkageForSource, mergeTopTradersExecutable, selectEvidenceProbes } from "../../scripts/factory/evidence-lane.mjs";
 import { executionCanariesNeedReseed, readinessComponent, writeReadinessPercent } from "../../scripts/factory/evidence-bootstrap.mjs";
 import { runEvidencePreflight } from "../../scripts/factory/evidence-preflight.mjs";
 import { fetchKalshiHistoricalSettlements } from "../../scripts/factory/provider-kalshi.mjs";
@@ -80,6 +80,14 @@ const baseFrame = {
   yesTopDepth: { bidSize: 20, askSize: 20 },
   noTopDepth: { bidSize: 20, askSize: 20 },
 };
+
+function writeSweepRun(sweepsDir: string, runId: string, config: Record<string, unknown>, metrics: unknown[]) {
+  const runDir = path.join(sweepsDir, runId);
+  mkdirSync(runDir, { recursive: true });
+  writeFileSync(path.join(runDir, "config.json"), `${JSON.stringify({ runId, ...config })}\n`);
+  writeFileSync(path.join(runDir, "candidates.json"), "[]\n");
+  writeFileSync(path.join(runDir, "metrics.json"), `${JSON.stringify(metrics)}\n`);
+}
 
 function responseJson(payload: unknown, { ok = true, status = 200, statusText = "OK" } = {}) {
   return {
@@ -1367,6 +1375,18 @@ describe("factory research safeguards", () => {
       maxExecutionCanaries: 3,
     })).toBe(false);
     expect(executionCanariesNeedReseed({
+      executionCanaries: {
+        sourceRunId: "2026-06-09T04-22-19Z",
+        paperOnly: true,
+        executableOnly: true,
+        lane: "exact_linked_execution_canary",
+        probes: [healthyCanary, healthyCanary, healthyCanary],
+      },
+      sourceRunId: "2026-06-20T00-05-37Z",
+      maxExecutionCanaries: 3,
+      maxSourceAgeHours: 72,
+    })).toBe(true);
+    expect(executionCanariesNeedReseed({
       executionCanaries: { sourceRunId: "run-2", probes: [{}, {}, {}] },
       sourceRunId: "run-2",
       maxExecutionCanaries: 3,
@@ -1382,6 +1402,56 @@ describe("factory research safeguards", () => {
       sourceRunId: "run-2",
       maxExecutionCanaries: 3,
     })).toBe(false);
+  });
+
+  it("loads the latest rich supported research source instead of a bounded promote-check", async () => {
+    const dataRoot = mkdtempSync(path.join(tmpdir(), "dogeedge-best-supported-research-"));
+    const sweepsDir = path.join(dataRoot, "backtests", "sweeps");
+    const supportedRow = {
+      algoId: "sweep-scalp-rich",
+      algoName: "Rich Supported Scalp",
+      family: "sweep-scalp",
+      params: { maxSpread: 0.08, feeBuffer: 0.004, minEdge: 0.02, sideMode: "best", yesMode: "loose" },
+      researchCandidateId: "rcid-rich",
+      candidateConfigHash: "hash-rich",
+      conservativeTotalPnl: 1.2,
+      closed: 40,
+      independentClosedMarkets: 35,
+      walkForwardClosed: 5,
+      robustScore: 4,
+    };
+    writeSweepRun(sweepsDir, "2026-06-20T00-45-11Z", {
+      mode: "promote-check",
+      algoCount: 109,
+      deepSweepMode: false,
+      requestedDeepSweepMode: false,
+    }, [{
+      ...supportedRow,
+      algoId: "sweep-scalp-bounded",
+      researchCandidateId: "rcid-bounded",
+      candidateConfigHash: "hash-bounded",
+    }]);
+    writeSweepRun(sweepsDir, "2026-06-20T00-05-37Z", {
+      mode: "deep-sweep",
+      algoCount: 981,
+      deepSweepMode: true,
+      requestedDeepSweepMode: true,
+    }, [supportedRow]);
+    writeFileSync(path.join(dataRoot, "backtests", "latest-sweep.json"), `${JSON.stringify({
+      runId: "2026-06-20T00-45-11Z",
+      mode: "promote-check",
+      topMetrics: [],
+    })}\n`);
+
+    const source = await loadSourceSweep({ from: "best-supported-research" }, dataRoot);
+
+    expect(source.runId).toBe("2026-06-20T00-05-37Z");
+    expect(source.sourceSelection).toMatchObject({
+      mode: "best_supported_research",
+      selectedRunId: "2026-06-20T00-05-37Z",
+      richResearchRun: true,
+      eligibleExecutionCanaryCandidates: 1,
+    });
   });
 
   it("keeps promotion readiness fail-closed when only evidence collection is complete", async () => {
@@ -2054,13 +2124,13 @@ describe("factory research safeguards", () => {
     const result = selectEvidenceProbes(rows, { maxProbes: 3, executableOnly: true });
 
     expect(result.selected.map((probe) => probe.sourceAlgoId)).toEqual([
-      "liquidity-ok",
       "scalp-high",
+      "liquidity-ok",
       "scalp-second",
     ]);
     expect(result.selected.map((probe) => probe.family)).toEqual([
-      "sweep-liquidity-imbalance",
       "sweep-scalp",
+      "sweep-liquidity-imbalance",
       "sweep-scalp",
     ]);
     expect(result.rejected.find((row) => row.algoId === "liquidity-negative-edge")?.reasonCodes).toContain("negative_min_edge_execution_canary");

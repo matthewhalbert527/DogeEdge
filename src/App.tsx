@@ -1656,16 +1656,20 @@ function App() {
     if (!appStateBackupReady || !factoryAutomation.enabled) return undefined;
 
     const maybeStartExecutionCanaries = () => {
-      const current = topTradersArenaRef.current;
-      if (current.status === "running" || current.status === "paused") return;
-      if (!liveOrderRouterStatus.dryRun || !liveOrderRouterStatus.liveSwitchEnabled) return;
-      if (nowLiveRunnerStatusRef.current === "running" || isLiveRunnerActive()) return;
-
       const selectedAlgoIds = topTraderCandidateAlgosForFactory(generatedPaperAlgosRef.current, factoryAlgoBatchesRef.current)
         .filter(topTraderExecutionCanaryOnly)
         .slice(0, topTradersRosterSize)
         .map(paperStrategyIdForActivatedRow);
       if (selectedAlgoIds.length === 0) return;
+
+      const current = topTradersArenaRef.current;
+      if (current.status === "paused") return;
+      const currentIds = uniqueStringList(current.selectedAlgoIds.length > 0
+        ? current.selectedAlgoIds
+        : current.selectedAlgoId ? [current.selectedAlgoId] : []);
+      if (current.status === "running" && sameStringList(currentIds, selectedAlgoIds)) return;
+      if (!liveOrderRouterStatus.dryRun || !liveOrderRouterStatus.liveSwitchEnabled) return;
+      if (nowLiveRunnerStatusRef.current === "running" || isLiveRunnerActive()) return;
 
       const startedAt = new Date().toISOString();
       topTradersRosterIdsRef.current = selectedAlgoIds;
@@ -11361,7 +11365,27 @@ function normalizeTopTradersExecutableState(value: unknown): TopTraderExecutable
 }
 
 function richerTopTradersExecutableState(current: TopTraderExecutableState, backup: TopTraderExecutableState): TopTraderExecutableState {
+  const backupCanarySignature = executionCanarySignature(backup);
+  const currentCanarySignature = executionCanarySignature(current);
+  if (backupCanarySignature && backupCanarySignature !== currentCanarySignature) return backup;
   return topTradersExecutableEvidenceCount(backup) > topTradersExecutableEvidenceCount(current) ? backup : current;
+}
+
+function executionCanarySignature(state: TopTraderExecutableState): string | null {
+  const rows = Object.values(state.stats)
+    .filter(topTraderExecutionCanaryOnly)
+    .map((stats) => [
+      stats.sourceAlgoId,
+      stats.sourceRunId ?? "",
+      stats.candidateConfigHash ?? "",
+    ].join(":"))
+    .sort();
+  return rows.length > 0 ? rows.join("|") : null;
+}
+
+function sameStringList(left: string[], right: string[]) {
+  if (left.length !== right.length) return false;
+  return left.every((value, index) => value === right[index]);
 }
 
 function topTradersExecutableEvidenceCount(state: TopTraderExecutableState) {

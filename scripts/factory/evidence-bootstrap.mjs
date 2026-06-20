@@ -3,6 +3,7 @@ import { access, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promi
 import path from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
+import { loadSourceSweep } from "./evidence-lane.mjs";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
@@ -19,6 +20,7 @@ async function evidenceBootstrapCli() {
   const mockSettlements = args["mock-settlements"] ? path.resolve(String(args["mock-settlements"])) : null;
   const mockReplayRaw = args["mock-replay-raw"] ? path.resolve(String(args["mock-replay-raw"])) : null;
   const probeSource = args["probe-source"] ? path.resolve(String(args["probe-source"])) : null;
+  const probeSourceMode = String(args["probe-source-mode"] ?? "best-supported-research");
   await mkdir(outDir, { recursive: true });
   await mkdir(evidenceDir, { recursive: true });
 
@@ -152,7 +154,7 @@ async function evidenceBootstrapCli() {
       "--max-probes", String(maxProbes),
     ];
     if (probeSource) reseedArgs.push("--from", probeSource);
-    else reseedArgs.push("--from", "latest-sweep");
+    else reseedArgs.push("--from", probeSourceMode);
     await runStep("reseed-evidence-lane", reseedArgs, { optional: true });
   }
 
@@ -162,12 +164,13 @@ async function evidenceBootstrapCli() {
   }
 
   const executionCanaries = await readJsonMaybe(path.join(storageDir, "execution-canaries.json"));
-  const sourceRunId = await evidenceLaneSourceRunId({ dataRoot, probeSource });
+  const sourceRunId = await evidenceLaneSourceRunId({ dataRoot, probeSource, probeSourceMode });
   const maxExecutionCanaries = Math.min(3, maxProbes);
   const canariesStale = executionCanariesNeedReseed({
     executionCanaries,
     sourceRunId,
     maxExecutionCanaries,
+    maxSourceAgeHours: Number(args["max-canary-source-age-hours"] ?? 72),
     force: Boolean(args["force-reseed-probes"]),
   });
   if (args["skip-execution-canaries"] !== true && maxExecutionCanaries > 0 && canariesStale) {
@@ -179,7 +182,7 @@ async function evidenceBootstrapCli() {
       "--executable-only",
     ];
     if (probeSource) canaryArgs.push("--from", probeSource);
-    else canaryArgs.push("--from", "latest-sweep");
+    else canaryArgs.push("--from", probeSourceMode);
     await runStep("reseed-execution-canaries", canaryArgs, { optional: true });
   }
 
@@ -330,6 +333,8 @@ export function readinessComponent(kpi, value, target, kind) {
 export function executionCanariesNeedReseed({
   executionCanaries = {},
   maxExecutionCanaries = 3,
+  sourceRunId = null,
+  maxSourceAgeHours = 72,
   force = false,
 } = {}) {
   const targetCount = Math.max(0, Math.floor(Number(maxExecutionCanaries ?? 0)));
@@ -349,10 +354,12 @@ export function executionCanariesNeedReseed({
       && probe.candidateConfigHash.length > 0
     ));
   if (targetCount <= 0) return Boolean(force);
+  const staleSource = executionCanarySourceIsStale(executionCanaries?.sourceRunId, sourceRunId, maxSourceAgeHours);
   return Boolean(
     force
     || canaryCount === 0
     || canaryCount < targetCount
+    || staleSource
     || !healthyCanaries
   );
 }
@@ -402,10 +409,28 @@ function roundPercent(value) {
   return Math.round(Number(value ?? 0) * 1000) / 10;
 }
 
-async function evidenceLaneSourceRunId({ dataRoot, probeSource }) {
-  const sourcePath = probeSource ?? path.join(dataRoot, "backtests", "latest-sweep.json");
-  const source = await readJsonMaybe(sourcePath);
-  return source?.runId ?? null;
+async function evidenceLaneSourceRunId({ dataRoot, probeSource, probeSourceMode = "best-supported-research" }) {
+  const source = await loadSourceSweep(probeSource ? { from: probeSource } : { from: probeSourceMode }, dataRoot).catch(() => null);
+  return source?.runId ?? source?.sourceSelection?.selectedRunId ?? null;
+}
+
+function executionCanarySourceIsStale(currentSourceRunId, nextSourceRunId, maxSourceAgeHours) {
+  if (!currentSourceRunId || !nextSourceRunId || currentSourceRunId === nextSourceRunId) return false;
+  const currentMs = runIdTimestampMs(currentSourceRunId);
+  const nextMs = runIdTimestampMs(nextSourceRunId);
+  if (!Number.isFinite(currentMs) || !Number.isFinite(nextMs) || nextMs <= currentMs) return false;
+  const maxAgeMs = Math.max(1, Number(maxSourceAgeHours ?? 72)) * 60 * 60 * 1000;
+  return Date.now() - currentMs >= maxAgeMs;
+}
+
+function runIdTimestampMs(value) {
+  const raw = String(value ?? "");
+  if (!/^\d{4}-\d{2}-\d{2}T/.test(raw)) return Number.NaN;
+  const direct = Date.parse(raw);
+  if (Number.isFinite(direct)) return direct;
+  const normalized = raw.replace(/T(\d{2})-(\d{2})-(\d{2})Z$/, "T$1:$2:$3Z");
+  const parsed = Date.parse(normalized);
+  return Number.isFinite(parsed) ? parsed : Number.NaN;
 }
 
 function exactLinkedExecutionCanaryCount(sources) {

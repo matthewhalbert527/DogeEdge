@@ -1,4 +1,4 @@
-import { access, appendFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { access, appendFile, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { researchCandidateIdentity, researchCandidateIdentityContext } from "./candidate-identity.mjs";
@@ -56,31 +56,33 @@ function selectDiverseExecutionCanaryRows(rows, maxProbes) {
   const selected = [];
   const selectedIds = new Set();
   const selectedFamilies = new Set();
+  const selectedBuckets = new Set();
+  for (const row of sorted) {
+    if (selected.length >= maxProbes) break;
+    if (!supportedExecutionCanaryFamilies.includes(row.family) || selectedFamilies.has(row.family)) continue;
+    addSelected(row);
+  }
   for (const bucket of ["yes", "no", "flex"]) {
     if (selected.length >= maxProbes) break;
+    if (selectedBuckets.has(bucket)) continue;
     const row = sorted.find((candidate) => executionSideBucket(candidate) === bucket && !selectedIds.has(candidateKey(candidate)));
     if (!row) continue;
-    selected.push(row);
-    selectedIds.add(candidateKey(row));
-    selectedFamilies.add(row.family);
-  }
-  for (const family of supportedExecutionCanaryFamilies) {
-    if (selected.length >= maxProbes) break;
-    if (selectedFamilies.has(family)) continue;
-    const row = sorted.find((candidate) => candidate.family === family && !selectedIds.has(candidateKey(candidate)));
-    if (!row) continue;
-    selected.push(row);
-    selectedIds.add(candidateKey(row));
-    selectedFamilies.add(row.family);
+    addSelected(row);
   }
   for (const row of sorted) {
     if (selected.length >= maxProbes) break;
     const key = candidateKey(row);
     if (selectedIds.has(key)) continue;
-    selected.push(row);
-    selectedIds.add(key);
+    addSelected(row);
   }
   return selected;
+
+  function addSelected(row) {
+    selected.push(row);
+    selectedIds.add(candidateKey(row));
+    selectedFamilies.add(row.family);
+    selectedBuckets.add(executionSideBucket(row));
+  }
 }
 
 function executionSideBucket(row) {
@@ -94,11 +96,22 @@ function executionSideBucket(row) {
 }
 
 function compareExecutionCanaryCandidates(left, right) {
-  return compareNumber(executionReachScore(right), executionReachScore(left))
+  return compareNumber(executionCanaryResearchScore(right), executionCanaryResearchScore(left))
+    || compareNumber(executionReachScore(right), executionReachScore(left))
     || compareNumber(right.robustScore, left.robustScore)
     || compareNumber(conservativePnl(right), conservativePnl(left))
     || compareNumber(evidenceCount(right), evidenceCount(left))
     || String(left.algoId ?? left.id ?? "").localeCompare(String(right.algoId ?? right.id ?? ""));
+}
+
+function executionCanaryResearchScore(row) {
+  const holdout = isRecord(row?.holdoutSummary) ? row.holdoutSummary : {};
+  return (row?.walkForwardPass ? 1000 : 0)
+    + (numberOrDefault(row?.totalPnl, 0) > 0 ? 300 : 0)
+    + (numberOrDefault(holdout.holdoutConservativeTotalPnl, numberOrDefault(row?.holdoutConservativeTotalPnl, 0)) > 0 ? 100 : 0)
+    + Math.max(-50, Math.min(50, conservativePnl(row))) * 10
+    + Math.max(-100, Math.min(100, numberOrDefault(row?.robustScore, 0))) * 2
+    + Math.min(100, evidenceCount(row)) * 0.2;
 }
 
 function executionReachScore(row) {
@@ -169,7 +182,7 @@ export function evidenceProbeFromCandidate(candidate, { laneKind = evidenceProbe
 async function evidenceLaneCli() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) {
-    console.log("Usage: node scripts/factory/evidence-lane.mjs [--from latest-sweep|file] [--run-id id] [--max-probes n] [--data-root dir] [--storage-dir dir] [--allow-insufficient-data-probe] [--executable-only]");
+    console.log("Usage: node scripts/factory/evidence-lane.mjs [--from latest-sweep|best-supported-research|file] [--run-id id] [--max-probes n] [--data-root dir] [--storage-dir dir] [--allow-insufficient-data-probe] [--executable-only]");
     return;
   }
   const dataRoot = path.resolve(args["data-root"] ?? process.env.DOGEEDGE_DATA_ROOT ?? await defaultDataRoot());
@@ -219,14 +232,18 @@ async function evidenceLaneCli() {
   console.log(`Output: ${path.join(storageDir, laneFile)}`);
 }
 
-async function loadSourceSweep(args, dataRoot) {
+export async function loadSourceSweep(args = {}, dataRoot = null) {
+  const root = dataRoot ?? await defaultDataRoot();
   if (args["from-run-dir"]) return readRunDirectory(path.resolve(String(args["from-run-dir"])));
   if (args["run-id"]) {
     const runId = String(args["run-id"]);
-    return readRunDirectory(path.join(dataRoot, "backtests", "sweeps", runId));
+    return readRunDirectory(path.join(root, "backtests", "sweeps", runId));
   }
   const from = String(args.from ?? "latest-sweep");
-  if (from === "latest-sweep") return readJson(path.join(dataRoot, "backtests", "latest-sweep.json"));
+  if (from === "best-supported-research" || from === "latest-supported-research" || from === "latest-rich-sweep") {
+    return loadBestSupportedResearchSweep(root);
+  }
+  if (from === "latest-sweep") return readJson(path.join(root, "backtests", "latest-sweep.json"));
   const resolved = path.resolve(from);
   try {
     const info = await stat(resolved);
@@ -235,6 +252,64 @@ async function loadSourceSweep(args, dataRoot) {
     // Fall through to JSON-file input.
   }
   return readJson(resolved);
+}
+
+async function loadBestSupportedResearchSweep(dataRoot) {
+  const sweepsDir = path.join(dataRoot, "backtests", "sweeps");
+  let entries = [];
+  try {
+    entries = await readdir(sweepsDir, { withFileTypes: true });
+  } catch {
+    return readJson(path.join(dataRoot, "backtests", "latest-sweep.json"));
+  }
+  const dirs = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const runDir = path.join(sweepsDir, entry.name);
+    const info = await stat(runDir).catch(() => null);
+    if (info) dirs.push({ runDir, mtimeMs: info.mtimeMs });
+  }
+  dirs.sort((left, right) => right.mtimeMs - left.mtimeMs);
+  const candidates = [];
+  for (const dir of dirs.slice(0, 24)) {
+    const source = await readRunDirectory(dir.runDir).catch(() => null);
+    if (!source) continue;
+    const rows = materializeExactLinkageForSource(source);
+    const eligibleRows = rows.filter((row) => evidenceProbeEligibility(row, { executableOnly: true }).ok);
+    if (!eligibleRows.length) continue;
+    const rowCount = rows.length;
+    const richResearchRun = source.mode !== "promote-check"
+      && (
+        source.deepSweepMode === true
+        || source.requestedDeepSweepMode === true
+        || Number(source.algoCount ?? 0) > 150
+        || rowCount > 150
+      );
+    candidates.push({
+      source,
+      mtimeMs: dir.mtimeMs,
+      richResearchRun,
+      eligibleCount: eligibleRows.length,
+      rowCount,
+    });
+  }
+  candidates.sort((left, right) => Number(right.richResearchRun) - Number(left.richResearchRun)
+    || right.mtimeMs - left.mtimeMs
+    || right.eligibleCount - left.eligibleCount);
+  if (!candidates.length) return readJson(path.join(dataRoot, "backtests", "latest-sweep.json"));
+  const selected = candidates[0];
+  return {
+    ...selected.source,
+    sourceSelection: {
+      mode: "best_supported_research",
+      selectedRunId: selected.source.runId ?? null,
+      selectedRunDir: selected.source.runDir ?? null,
+      richResearchRun: selected.richResearchRun,
+      eligibleExecutionCanaryCandidates: selected.eligibleCount,
+      rowCount: selected.rowCount,
+      fallbackUsed: false,
+    },
+  };
 }
 
 async function readRunDirectory(runDir) {
