@@ -1,9 +1,8 @@
-import { createWriteStream } from "node:fs";
+import { closeSync, openSync, writeSync } from "node:fs";
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import crypto from "node:crypto";
 import path from "node:path";
-import { finished } from "node:stream/promises";
 import tls from "node:tls";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
@@ -364,29 +363,36 @@ async function captureKalshiProviderReplay({ outRoot, provider, mode, markets, c
 }
 
 function createJsonlStream(filePath, streams, state) {
-  const stream = createWriteStream(filePath, { flags: "w", encoding: "utf8" });
-  stream.on("error", (error) => state.errors.push(error instanceof Error ? error.message : String(error)));
-  streams.push(stream);
-  return stream;
+  try {
+    const stream = { fd: openSync(filePath, "w"), closed: false };
+    streams.push(stream);
+    return stream;
+  } catch (error) {
+    state.errors.push(error instanceof Error ? error.message : String(error));
+    return null;
+  }
 }
 
 function writeJsonl(stream, row, state) {
+  if (!stream || stream.closed) return;
   try {
-    stream.write(`${JSON.stringify(row)}\n`);
+    writeSync(stream.fd, `${JSON.stringify(row)}\n`, null, "utf8");
   } catch (error) {
     state.errors.push(error instanceof Error ? error.message : String(error));
   }
 }
 
 async function closeJsonlStreams(streams, state) {
-  await Promise.all(streams.map(async (stream) => {
+  for (const stream of streams) {
     try {
-      stream.end();
-      await finished(stream);
+      if (!stream.closed) {
+        closeSync(stream.fd);
+        stream.closed = true;
+      }
     } catch (error) {
       state.errors.push(error instanceof Error ? error.message : String(error));
     }
-  }));
+  }
 }
 
 async function openKalshiWebSocket({ wsUrl, keyId, privateKeyPem, timeoutMs }) {
