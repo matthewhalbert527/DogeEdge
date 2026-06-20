@@ -349,8 +349,8 @@ export async function writeReadinessPercent(report) {
     ?? await latestBundleExecutableGate(report.reviewRoot);
   const researchRosterBlockers = await readJsonMaybe(path.join(evidenceDir, "research_roster_blockers.json"))
     ?? await latestReviewSnapshotJson(report.reviewRoot, "research_roster_blockers.json");
-  const officialSettlementCoverage = Number(settlement?.coverage?.officialSettlementCoverage ?? 0);
-  const replayGradeTargetMarketCoverage = Number(replay?.replayGradeTargetMarketCoverage ?? 0);
+  const officialSettlementCoverage = Number(executableGate?.officialSettlementCoverage ?? settlement?.coverage?.officialSettlementCoverage ?? 0);
+  const replayGradeTargetMarketCoverage = Number(executableGate?.replayGradeTargetMarketCoverage ?? replay?.replayGradeTargetMarketCoverage ?? 0);
   const exactLinkedProbeCount = Array.isArray(probes?.probes) ? probes.probes.filter((probe) => probe?.exactLinked).length : 0;
   const executionRows = latest?.topTradersExecutable?.stats && typeof latest.topTradersExecutable.stats === "object"
     ? Object.values(latest.topTradersExecutable.stats)

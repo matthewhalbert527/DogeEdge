@@ -2065,6 +2065,8 @@ describe("factory research safeguards", () => {
     writeFileSync(path.join(root, "review_exports", "bundles", "dogeedge-review-bundle-test", "snapshots", "executable_readiness_gate.json"), `${JSON.stringify({
       allowedToLoadArenaBatch: false,
       reasonCodes: ["research_validated_roster_empty"],
+      officialSettlementCoverage: 0.969,
+      replayGradeTargetMarketCoverage: 1,
     })}\n`);
     writeFileSync(path.join(evidenceDir, "research_roster_blockers.json"), `${JSON.stringify({
       currentBottleneck: "conservative_holdout_not_passing",
@@ -2108,6 +2110,11 @@ describe("factory research safeguards", () => {
         },
       },
       canPlaceOrders: false,
+    });
+    expect(readiness.components.find((component: { kpi: string }) => component.kpi === "official settlement coverage")).toMatchObject({
+      value: 96.9,
+      target: 95,
+      status: "pass",
     });
   });
 
