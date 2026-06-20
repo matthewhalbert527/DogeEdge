@@ -33,6 +33,8 @@ export async function auditReviewExports({
   const registry = roles.experimentRegistry ? await readJson(roles.experimentRegistry) : null;
   const latestSweep = roles.latestSweep ? await readJson(roles.latestSweep) : null;
   const rawTicksManifest = roles.rawTicksManifest ? await readJson(roles.rawTicksManifest) : null;
+  const replayParityReport = roles.replayParityReport ? await readJson(roles.replayParityReport) : null;
+  const replayManifestSummary = roles.replayManifestSummary ? await readJson(roles.replayManifestSummary) : null;
   const topTradersExecutable = roles.topTradersExecutable ? await readJson(roles.topTradersExecutable) : null;
   const leakageAudit = roles.leakageAudit ? await readJson(roles.leakageAudit) : null;
   const researchLiveAlignment = roles.researchLiveAlignment ? await readJson(roles.researchLiveAlignment) : null;
@@ -42,7 +44,7 @@ export async function auditReviewExports({
   const events = eventsFromDecisionFrameSample(frameRows);
   const recomputed = recomputeFolds(events, { foldCount, embargoMs });
   const foldDiff = diffFolds({ fullRun, registry, recomputed, debugOnly });
-  const bundleEvidence = bundleEvidenceSummary({ bundleManifest, rawTicksManifest });
+  const bundleEvidence = bundleEvidenceSummary({ bundleManifest, rawTicksManifest, replayParityReport, replayManifestSummary });
   const schema = validateSchemas({ roles, repoSnapshot, bundleManifest, fullRun, registry, latestSweep, simulatorConfig, frameRows, rawTicksManifest, leakageAudit, researchLiveAlignment, topRosterDefaultSortAudit, strict, promotionReview, requireRawTicks });
   const metrics = fullRun?.metrics ?? latestSweep?.topMetrics ?? [];
   const metricsCompare = metricsComparison(metrics);
@@ -146,6 +148,8 @@ async function discoverRoles(root) {
     bundleLatestSweep: rolePath("repo/latest-sweep.json"),
     topTradersExecutable: rolePath("repo/top-traders-executable.json"),
     rawTicksManifest: rolePath("snapshots/raw_market_ticks/manifest.json"),
+    replayParityReport: rolePath("snapshots/replay_parity_report.json"),
+    replayManifestSummary: rolePath("snapshots/replay_manifest_summary.json"),
     leakageAudit: rolePath("snapshots/leakage_audit.json") ?? rolePath("leakage_audit.json"),
     researchLiveAlignment: rolePath("snapshots/research_live_alignment.json") ?? rolePath("research_live_alignment.json"),
     rosterAlignment: rolePath("snapshots/roster_alignment.tsv.gz"),
@@ -237,8 +241,8 @@ function validateSchemas({ roles, repoSnapshot, bundleManifest, fullRun, registr
   return { warnings, errors, warningCount: warnings.length, errorCount: errors.length };
 }
 
-function bundleEvidenceSummary({ bundleManifest, rawTicksManifest }) {
-  if (!bundleManifest && !rawTicksManifest) return null;
+function bundleEvidenceSummary({ bundleManifest, rawTicksManifest, replayParityReport, replayManifestSummary }) {
+  if (!bundleManifest && !rawTicksManifest && !replayParityReport && !replayManifestSummary) return null;
   const rowExport = objectOrEmpty(bundleManifest?.rowExport);
   const rawExport = objectOrEmpty(bundleManifest?.rawMarketTickExport);
   const rawCoverage = objectOrEmpty(rawExport.targetMarketCoverage);
@@ -288,6 +292,14 @@ function bundleEvidenceSummary({ bundleManifest, rawTicksManifest }) {
     numberOrDefault(rawSourceHashPolicy.hashSkippedByteRatio, totalSourceBytes > 0 ? roundRatio(hashSkippedSourceBytes / totalSourceBytes) : null),
   );
 
+  const replaySource = replayParityReport ?? replayManifestSummary ?? null;
+  const replayTargetMarketCount = numberOrDefault(replaySource?.targetMarketCount, 0);
+  const replayGradeTargetMarketCount = numberOrDefault(replaySource?.replayGradeTargetMarketCount, 0);
+  const replayCoverage = numberOrDefault(
+    replaySource?.replayGradeTargetMarketCoverage,
+    replayTargetMarketCount > 0 ? roundRatio(replayGradeTargetMarketCount / replayTargetMarketCount) : null,
+  );
+
   return {
     rowExport: {
       mode: stringOrNull(rowExport.mode),
@@ -333,6 +345,20 @@ function bundleEvidenceSummary({ bundleManifest, rawTicksManifest }) {
         ),
       },
       warningCodes,
+    },
+    replay: {
+      reportPresent: Boolean(replayParityReport || replayManifestSummary),
+      source: replayParityReport ? "replay_parity_report" : replayManifestSummary ? "replay_manifest_summary" : null,
+      replayGrade: replaySource?.replayGrade === true || replaySource?.replayGradeAvailable === true,
+      executionSensitivePromotionAllowed: replaySource?.executionSensitivePromotionAllowed === true,
+      fallbackKind: stringOrNull(replaySource?.fallbackKind),
+      targetMarketCount: replayTargetMarketCount,
+      coveredTargetMarketCount: numberOrDefault(replaySource?.coveredTargetMarketCount, 0),
+      replayGradeTargetMarketCount,
+      replayGradeTargetMarketCoverage: replayCoverage,
+      sourceSnapshotFileCount: numberOrDefault(replaySource?.sourceSnapshotFileCount, numberOrDefault(replayManifestSummary?.rawFileCount, 0)),
+      sequenceGapCheckAvailable: replaySource?.sequenceGapCheckAvailable === true || replaySource?.replayGradeAvailable === true,
+      reasonCodes: arrayOfStrings(replaySource?.reasonCodes),
     },
     limitations: uniqueStrings(arrayOfStrings(bundleManifest?.limitations)),
   };
@@ -852,6 +878,7 @@ function bundleEvidenceMarkdown(summary) {
     return "- No bundle manifest was present; raw-tick and row-export readiness were not summarized.";
   }
   const raw = summary.rawTicks ?? {};
+  const replay = summary.replay ?? {};
   const coverage = raw.coverage ?? {};
   const targetSamples = raw.targetMarketSamples ?? {};
   const sourceHash = raw.sourceHash ?? {};
@@ -870,11 +897,17 @@ function bundleEvidenceMarkdown(summary) {
   const skippedByteRatio = typeof sourceHash.hashSkippedByteRatio === "number" ? `${Math.round(sourceHash.hashSkippedByteRatio * 1000) / 10}%` : "n/a";
   const lines = [
     `- ${rowText}`,
+    replay.reportPresent
+      ? `- Canonical replay: ${replay.replayGrade ? "replay-grade" : "not replay-grade"}; ${replay.replayGradeTargetMarketCount ?? 0}/${replay.targetMarketCount ?? 0} target markets (${typeof replay.replayGradeTargetMarketCoverage === "number" ? `${Math.round(replay.replayGradeTargetMarketCoverage * 1000) / 10}%` : "n/a"}); execution-sensitive promotion ${replay.executionSensitivePromotionAllowed ? "allowed by replay artifact" : "blocked by replay artifact"}.`
+      : "- Canonical replay: no replay parity report present.",
+    replay.reportPresent
+      ? `- Replay diagnostics: source ${replay.source ?? "unknown"}; fallback ${replay.fallbackKind ?? "unknown"}; sequence-gap check ${replay.sequenceGapCheckAvailable ? "available" : "absent"}; source files ${replay.sourceSnapshotFileCount ?? 0}; reason codes ${replay.reasonCodes?.join(", ") || "none"}.`
+      : "- Replay diagnostics: absent.",
     `- Raw ticks: ${rawState} (${raw.available ? "available" : "unavailable"}).`,
-    `- Coverage: ${coverage.covered ?? 0}/${totalTargets} target markets (${coveragePercent}); jsonl files: ${raw.jsonlFileCount ?? 0}; source files: ${raw.sourceSnapshotFileCount ?? 0}.`,
+    `- Raw diagnostic coverage: ${coverage.covered ?? 0}/${totalTargets} target markets (${coveragePercent}); jsonl files: ${raw.jsonlFileCount ?? 0}; source files: ${raw.sourceSnapshotFileCount ?? 0}.`,
     `- Source hashes: ${sourceHash.hashedFileCount ?? 0} hashed, ${sourceHash.skippedLargeFileCount ?? 0} skipped as large; skipped bytes: ${sourceHash.hashSkippedSourceBytes ?? 0}/${sourceHash.totalSourceBytes ?? 0} (${skippedByteRatio}).`,
-    `- Limitations: ${summary.limitations?.join(", ") || "none"}.`,
-    `- Raw tick warnings: ${raw.warningCodes?.join(", ") || "none"}.`,
+    `- Raw diagnostic limitations (do not override the canonical replay line above): ${summary.limitations?.join(", ") || "none"}.`,
+    `- Raw diagnostic warnings: ${raw.warningCodes?.join(", ") || "none"}.`,
   ];
   if (uncoveredSample.length) {
     const omitted = numberOrDefault(targetSamples.omittedUncoveredCount, 0);

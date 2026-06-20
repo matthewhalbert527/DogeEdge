@@ -1054,12 +1054,60 @@ describe("factory research safeguards", () => {
     });
     expect(finalReview).toContain("Bundle Evidence");
     expect(finalReview).toContain("Rows: capped at 1000");
+    expect(finalReview).toContain("Canonical replay: no replay parity report present.");
     expect(finalReview).toContain("Raw ticks: target_samples_absent");
-    expect(finalReview).toContain("Coverage: 0/2 target markets");
+    expect(finalReview).toContain("Raw diagnostic coverage: 0/2 target markets");
     expect(finalReview).toContain("raw_market_tick_jsonl_absent");
     expect(finalReview).toContain("Uncovered target sample: m-0, m-1");
     expect(finalReview).toContain("skipped bytes: 60000000/60000000 (100%)");
     expect(finalReview).toContain("Hash-skipped source sample: raw/snapshots/records.jsonl (60000000 bytes)");
+  });
+
+  it("distinguishes replay-grade parity from raw tick diagnostic sample coverage", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "dogeedge-review-replay-parity-"));
+    const input = path.join(root, "review_exports");
+    const out = path.join(root, "artifacts", "factory-audit");
+    writeReviewBundleFixture(input);
+    writeFileSync(path.join(input, "snapshots", "replay_parity_report.json"), `${JSON.stringify({
+      schemaVersion: "dogeedge.replay-parity-report.v1",
+      snapshotId: "snap-fixture",
+      generatedAt: "2026-06-01T00:00:00.000Z",
+      targetMarketCount: 1,
+      coveredTargetMarketCount: 1,
+      uncoveredTargetMarketCount: 0,
+      replayGradeTargetMarketCount: 1,
+      coverageRate: 1,
+      replayGradeTargetMarketCoverage: 1,
+      parquetAvailable: false,
+      jsonlAvailable: true,
+      replayGrade: true,
+      sampleParity: true,
+      executionSensitivePromotionAllowed: true,
+      fallbackKind: "replay_grade",
+      sourceSnapshotFileCount: 42,
+      sequenceGapCheckAvailable: true,
+      failClosed: false,
+      reasonCodes: [],
+    })}\n`);
+
+    const audit = await auditReviewExports({ input, outDir: out, foldCount: 2, embargoMs: 60_000, gateReport: true });
+    const finalReview = readFileSync(path.join(out, "final-review.md"), "utf8");
+
+    expect(audit.bundleEvidence?.replay).toMatchObject({
+      reportPresent: true,
+      source: "replay_parity_report",
+      replayGrade: true,
+      executionSensitivePromotionAllowed: true,
+      targetMarketCount: 1,
+      replayGradeTargetMarketCount: 1,
+      replayGradeTargetMarketCoverage: 1,
+      sourceSnapshotFileCount: 42,
+      sequenceGapCheckAvailable: true,
+      reasonCodes: [],
+    });
+    expect(finalReview).toContain("Canonical replay: replay-grade; 1/1 target markets (100%)");
+    expect(finalReview).toContain("Replay diagnostics: source replay_parity_report; fallback replay_grade; sequence-gap check available");
+    expect(finalReview).toContain("Raw diagnostic coverage: 0/2 target markets");
   });
 
   it("audits the latest review bundle when given the review_exports parent", async () => {
