@@ -129,6 +129,7 @@ async function evidenceBootstrapCli() {
   if (args["base-url"]) targetMarketArgs.push("--base-url", String(args["base-url"]));
   if (args["provider-active-horizon-minutes"]) targetMarketArgs.push("--provider-active-horizon-minutes", String(args["provider-active-horizon-minutes"]));
   await runStep("select-target-markets", targetMarketArgs);
+  await mirrorTargetMarketSelectionArtifacts(path.join(outDir, "target-markets"), path.join(evidenceDir, "target-markets"));
   await maybeReseedExecutionCanaries("pre-capture");
 
   const closedTargetsFile = targetMarketsFile ?? path.join(outDir, "target-markets", "closed-targets.json");
@@ -267,6 +268,8 @@ async function writeEvidenceStatus(report) {
   await mkdir(evidenceDir, { recursive: true });
   const settlement = await readJsonMaybe(path.join(evidenceDir, "settlement_fetch_report.json"));
   const replay = await readJsonMaybe(path.join(evidenceDir, "replay_coverage_report.json"));
+  const targetMarkets = await readJsonMaybe(path.join(evidenceDir, "target-markets", "target_markets.json"))
+    ?? await readJsonMaybe(path.join(report.outDir, "target-markets", "target_markets.json"));
   const probes = await readJsonMaybe(path.join(report.storageDir, "evidence-probes.json"));
   const status = {
     schemaVersion: "dogeedge.evidence-status.v1",
@@ -275,6 +278,10 @@ async function writeEvidenceStatus(report) {
     lastBootstrapRunId: report.runId,
     lastSuccessfulSettlementFetchAt: settlement?.generatedAt ?? null,
     officialSettlementCoverage: settlement?.coverage?.officialSettlementCoverage ?? null,
+    targetMarketsGeneratedAt: targetMarkets?.generatedAt ?? null,
+    closedTargetCount: targetMarkets?.closedTargetCount ?? 0,
+    activeTargetCount: targetMarkets?.activeTargetCount ?? 0,
+    activeTickers: Array.isArray(targetMarkets?.activeTickers) ? targetMarkets.activeTickers : [],
     replayGradeMarketCount: replay?.replayGradeTargetMarketCount ?? replay?.replayGradeMarketCount ?? 0,
     replayCoveredMarketCount: replay?.coveredTargetMarketCount ?? replay?.coveredMarketCount ?? 0,
     exactLinkedProbeCount: Array.isArray(probes?.probes) ? probes.probes.filter((probe) => probe.exactLinked).length : 0,
@@ -287,6 +294,36 @@ async function writeEvidenceStatus(report) {
     canPlaceOrders: false,
   };
   await writeFile(path.join(evidenceDir, "evidence_status.json"), `${JSON.stringify(status, null, 2)}\n`, "utf8");
+}
+
+export async function mirrorTargetMarketSelectionArtifacts(sourceDir, targetDir) {
+  await mkdir(targetDir, { recursive: true });
+  const copied = [];
+  for (const name of [
+    "target_markets.json",
+    "closed-targets.json",
+    "active-targets.json",
+    "closed-targets.txt",
+    "active-targets.txt",
+  ]) {
+    const source = path.join(sourceDir, name);
+    const target = path.join(targetDir, name);
+    try {
+      const text = await readFile(source, "utf8");
+      await writeFile(target, text, "utf8");
+      copied.push(target);
+    } catch {
+      // Some caller-provided target files only have a combined JSON document.
+    }
+  }
+  await writeFile(path.join(targetDir, "mirror_manifest.json"), `${JSON.stringify({
+    schemaVersion: "dogeedge.target-markets-mirror.v1",
+    generatedAt: new Date().toISOString(),
+    sourceDir: path.resolve(sourceDir),
+    targetDir: path.resolve(targetDir),
+    copiedFiles: copied.map((file) => path.basename(file)),
+  }, null, 2)}\n`, "utf8");
+  return copied;
 }
 
 export async function writeReadinessPercent(report) {

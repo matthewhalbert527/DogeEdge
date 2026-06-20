@@ -34,7 +34,7 @@ import { buildExecutableReadinessGate } from "../../scripts/factory/readiness-ga
 import { forecastCalibrationForDecisionRows, officialForecastCalibrationReport, probabilityCalibrationForTrades, tradeCalibrationByCandidate } from "../../scripts/factory/probability-calibration.mjs";
 import { deterministicLinkageBackfill } from "../../scripts/factory/backfill-linkage.mjs";
 import { loadSourceSweep, materializeExactLinkageForSource, mergeTopTradersExecutable, selectEvidenceProbes } from "../../scripts/factory/evidence-lane.mjs";
-import { executionCanariesNeedReseed, executionCanaryHealth, mergedCanaryExclusions, readinessComponent, writeReadinessPercent } from "../../scripts/factory/evidence-bootstrap.mjs";
+import { executionCanariesNeedReseed, executionCanaryHealth, mergedCanaryExclusions, mirrorTargetMarketSelectionArtifacts, readinessComponent, writeReadinessPercent } from "../../scripts/factory/evidence-bootstrap.mjs";
 import { evidenceLoopHealth, executionCanarySupervisorHealth } from "../../scripts/dogeedge-evidence-supervisor.mjs";
 import { canarySelectionStatus, shouldRestartChrome } from "../../scripts/dogeedge-headless-app.mjs";
 import { runEvidencePreflight } from "../../scripts/factory/evidence-preflight.mjs";
@@ -1754,6 +1754,38 @@ describe("factory research safeguards", () => {
         "generated:sweep-scalp-third",
       ],
       canarySelectionStale: false,
+    });
+  });
+
+  it("mirrors current target-market selection into stable evidence status artifacts", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "dogeedge-target-mirror-"));
+    const sourceDir = path.join(root, "run", "target-markets");
+    const targetDir = path.join(root, "evidence", "target-markets");
+    mkdirSync(sourceDir, { recursive: true });
+    writeFileSync(path.join(sourceDir, "target_markets.json"), `${JSON.stringify({
+      schemaVersion: "dogeedge.target-markets.v1",
+      generatedAt: "2026-06-20T03:25:00.000Z",
+      closedTargetCount: 50,
+      activeTargetCount: 2,
+      activeTickers: ["KXDOGE15M-A", "KXDOGE15M-B"],
+    })}\n`);
+    writeFileSync(path.join(sourceDir, "active-targets.json"), `${JSON.stringify({ markets: ["KXDOGE15M-A", "KXDOGE15M-B"] })}\n`);
+    writeFileSync(path.join(sourceDir, "active-targets.txt"), "KXDOGE15M-A\nKXDOGE15M-B\n");
+
+    const copied = await mirrorTargetMarketSelectionArtifacts(sourceDir, targetDir);
+    const mirrored = JSON.parse(readFileSync(path.join(targetDir, "target_markets.json"), "utf8"));
+    const manifest = JSON.parse(readFileSync(path.join(targetDir, "mirror_manifest.json"), "utf8"));
+
+    expect(copied.map((file) => path.basename(file))).toEqual(expect.arrayContaining([
+      "target_markets.json",
+      "active-targets.json",
+      "active-targets.txt",
+    ]));
+    expect(mirrored.activeTargetCount).toBe(2);
+    expect(mirrored.activeTickers).toEqual(["KXDOGE15M-A", "KXDOGE15M-B"]);
+    expect(manifest).toMatchObject({
+      schemaVersion: "dogeedge.target-markets-mirror.v1",
+      copiedFiles: expect.arrayContaining(["target_markets.json"]),
     });
   });
 
