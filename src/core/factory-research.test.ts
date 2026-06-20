@@ -227,6 +227,46 @@ describe("factory research safeguards", () => {
     expect(result.metrics[0].sampleSufficiency.ok).toBe(false);
   });
 
+  it("can run a bounded trade export without retaining closed trade rows in ranked metrics", () => {
+    const loadResult = pipelineLoadResult(20);
+    const algos = Array.from({ length: 4 }, (_, index) => ({
+      ...alwaysYesAlgo,
+      id: `memory-safe-${index}`,
+      name: `Memory Safe ${index}`,
+    }));
+
+    const result = runFactoryResearchPipeline({
+      algos,
+      loadResult,
+      options: {
+        foldCount: 2,
+        bootstrapIterations: 100,
+        maxExportTrades: 5,
+        retainClosedTradesForRanking: false,
+        thresholds: {
+          minResearchEvents: 10,
+          minHoldoutEvents: 2,
+          minHoldoutClosed: 1,
+          minHoldoutMarkets: 1,
+          minClosedTrades: 1,
+          minWalkForwardClosed: 1,
+        },
+      },
+    });
+
+    expect(result.tradeExport).toMatchObject({
+      mode: "bounded",
+      maxRows: 5,
+      exportedRows: 5,
+      truncated: true,
+    });
+    expect(result.tradeExport.totalRows).toBeGreaterThan(5);
+    expect(result.trades).toHaveLength(5);
+    expect(result.metrics[0].closedTrades).toBeUndefined();
+    expect(result.metrics[0].concentration.maxMarketShare).toEqual(expect.any(Number));
+    expect(result.metrics[0].familyAdjustedPValue).toEqual(expect.any(Number));
+  });
+
   it("hard-fails research samples below event, holdout, or fold thresholds", () => {
     const events = Array.from({ length: 8 }, (_, index) => event(
       `tiny-${index}`,
@@ -2147,6 +2187,50 @@ function marketEvents() {
   }).frame;
   const deduped = deduplicateDecisionFrames([open, close]).frames;
   return buildMarketEvents(deduped).events;
+}
+
+function pipelineLoadResult(eventCount: number) {
+  const frames = [];
+  const startMs = Date.parse("2026-06-01T00:00:00.000Z");
+  for (let index = 0; index < eventCount; index += 1) {
+    const ticker = `KXDOGE15M-MEM-${String(index).padStart(3, "0")}`;
+    const closeMs = startMs + (index + 1) * 15 * 60_000;
+    const openMs = closeMs - 30_000;
+    const labelMs = closeMs - 1_000;
+    frames.push(
+      normalizeDecisionFrame({
+        ...baseFrame,
+        id: `${ticker}-open`,
+        marketTicker: ticker,
+        marketCloseTime: new Date(closeMs).toISOString(),
+        capturedAt: new Date(openMs).toISOString(),
+        observedAt: new Date(openMs).toISOString(),
+        secondsToClose: 30,
+        estimate: 0.252 + index * 0.000001,
+      }).frame,
+      normalizeDecisionFrame({
+        ...baseFrame,
+        id: `${ticker}-label`,
+        marketTicker: ticker,
+        marketCloseTime: new Date(closeMs).toISOString(),
+        capturedAt: new Date(labelMs).toISOString(),
+        observedAt: new Date(labelMs).toISOString(),
+        secondsToClose: 1,
+        estimate: 0.253 + index * 0.000001,
+      }).frame,
+    );
+  }
+  const deduped = deduplicateDecisionFrames(frames.filter(Boolean)).frames;
+  return {
+    frames: deduped,
+    warnings: [],
+    errors: [],
+    frameCountRaw: deduped.length,
+    frameCount: deduped.length,
+    duplicateFrameCount: 0,
+    overlappingFrameCount: 0,
+    eventCount,
+  };
 }
 
 function event(id: string, start: string, end: string) {

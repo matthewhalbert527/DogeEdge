@@ -1,3 +1,5 @@
+import { once } from "node:events";
+import { createWriteStream } from "node:fs";
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -115,6 +117,14 @@ const algos = selectedAlgoIds ? allAlgos.filter((algo) => selectedAlgoIds.has(al
 if (algos.length === 0) {
   throw new Error(`No algos selected. Known algos: ${allAlgos.map((algo) => algo.id).join(", ")}`);
 }
+const defaultDeepSweepTradeExportLimit = 100_000;
+const maxExportTrades = parseOptionalPositiveInt(
+  args["max-export-trades"] ?? process.env.DOGEEDGE_BACKTEST_MAX_EXPORT_TRADES,
+  activeDeepSweepMode ? defaultDeepSweepTradeExportLimit : null,
+);
+const retainClosedTradesForRanking = args["retain-closed-trades-for-ranking"] === true
+  ? true
+  : !(activeDeepSweepMode || algos.length > 150);
 
 await writeJsonIfMissing(path.join(algosDir, "registry.json"), {
   updatedAt: new Date().toISOString(),
@@ -140,12 +150,15 @@ const pipeline = runFactoryResearchPipeline({
     paperEvidence,
     officialOutcomes,
     searchBudget,
+    maxExportTrades,
+    retainClosedTradesForRanking,
   },
 });
 const filteredFrames = pipeline.frames;
 let metrics = pipeline.metrics;
 let candidates = pipeline.candidates;
 const trades = pipeline.trades;
+const tradeExport = pipeline.tradeExport ?? null;
 const finishedAt = new Date().toISOString();
 const registry = await experimentRegistryEntry({
   repoRoot,
@@ -219,6 +232,9 @@ await writeFile(path.join(runDir, "config.json"), `${JSON.stringify({
   minCandidateClosed,
   minWalkForwardClosed,
   thresholds,
+  maxExportTrades,
+  retainClosedTradesForRanking,
+  tradeExport,
   validateMode,
   replayRunMode,
   promoteCheckMode,
@@ -266,7 +282,8 @@ await writeFile(path.join(runDir, "metrics.json"), `${JSON.stringify(metrics, nu
 await writeFile(path.join(runDir, "metrics.csv"), `${robustMetricsCsv(metrics)}\n`);
 await writeFile(path.join(runDir, "candidates.json"), `${JSON.stringify(candidates, null, 2)}\n`);
 await writeFile(path.join(runDir, "candidates.csv"), `${robustMetricsCsv(candidates)}\n`);
-await writeFile(path.join(runDir, "trades.jsonl"), trades.map((trade) => JSON.stringify(trade)).join("\n") + (trades.length ? "\n" : ""));
+await writeJsonlFile(path.join(runDir, "trades.jsonl"), trades);
+if (tradeExport) await writeFile(path.join(runDir, "trade-export-manifest.json"), `${JSON.stringify(tradeExport, null, 2)}\n`);
 await writeFile(path.join(runDir, "experiment-registry.json"), `${JSON.stringify(registry, null, 2)}\n`);
 await writeFile(path.join(runDir, "report.md"), `${robustMarkdownReport({ runId, startedAt, finishedAt, dataRoot, framesDir, frameCount: filteredFrames.length, eventCount: pipeline.events.length, algoCount: algos.length, sweepMode, dataQuality: pipeline.dataQuality, metrics, candidates, searchBudget })}\n`);
 await writeFile(path.join(backtestsDir, "latest.json"), `${JSON.stringify({
@@ -288,6 +305,9 @@ await writeFile(path.join(backtestsDir, "latest.json"), `${JSON.stringify({
   deepSweepMode: activeDeepSweepMode,
   requestedDeepSweepMode,
   searchBudget,
+  maxExportTrades,
+  retainClosedTradesForRanking,
+  tradeExport,
   permissiveDebug,
   randomSeed,
   embargoMs,
@@ -321,6 +341,9 @@ if (sweepMode) {
     searchBudget,
     minCandidateClosed,
     minWalkForwardClosed,
+    maxExportTrades,
+    retainClosedTradesForRanking,
+    tradeExport,
     permissiveDebug,
     randomSeed,
     embargoMs,
@@ -345,6 +368,7 @@ console.log(`Market events: ${pipeline.events.length}`);
 console.log(`Algos: ${algos.length}`);
 if (searchBudget?.limited) console.log(`Search budget limited: ${searchBudget.reasonCodes.join(", ")}; generated ${cappedSweepAlgos.length}/${searchBudget.requestedSweepAlgos} sweep algos.`);
 if (searchBudget?.promoteCheckDiagnosticCap?.applied) console.log(`Promote-check diagnostic cap: generated ${cappedSweepAlgos.length}/${searchBudget.promoteCheckDiagnosticCap.requestedSweepAlgos} sweep algos; cap ${searchBudget.promoteCheckDiagnosticCap.maxGeneratedAlgos}.`);
+if (tradeExport?.truncated) console.log(`Trade export bounded: wrote ${tradeExport.exportedRows}/${tradeExport.totalRows} rows to trades.jsonl; full metrics and gates were still computed.`);
 console.log(`Run: ${runDir}`);
 const viableConsoleCandidates = candidates.filter(consolePromotionCandidateIsViable);
 if (viableConsoleCandidates.length === 0) {
@@ -380,6 +404,27 @@ function parseArgs(values) {
     index += 1;
   }
   return parsed;
+}
+
+function parseOptionalPositiveInt(value, fallback = null) {
+  if (value === null || value === undefined || value === false) return fallback;
+  if (value === true || String(value).toLowerCase() === "none" || String(value).toLowerCase() === "all") return null;
+  const parsed = Math.floor(Number(value));
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+async function writeJsonlFile(filePath, rows) {
+  const stream = createWriteStream(filePath, { encoding: "utf8" });
+  try {
+    for (const row of rows) {
+      if (!stream.write(`${JSON.stringify(row)}\n`)) await once(stream, "drain");
+    }
+    stream.end();
+    await once(stream, "finish");
+  } catch (error) {
+    stream.destroy(error);
+    throw error;
+  }
 }
 
 async function comparePaths(baseDir, parsedArgs) {

@@ -258,6 +258,14 @@ function multipleTestingPenaltyFor(metric, totalTrials, familyTrials) {
 }
 
 function concentrationMetrics(metric) {
+  if ((!Array.isArray(metric.closedTrades) || metric.closedTrades.length === 0) && metric.concentration) {
+    return {
+      maxMarketShare: Number(metric.concentration.maxMarketShare ?? 0),
+      maxDayShare: Number(metric.concentration.maxDayShare ?? 0),
+      maxSideShare: Number(metric.concentration.maxSideShare ?? 0),
+      maxRegimeShare: Number(metric.concentration.maxRegimeShare ?? 0),
+    };
+  }
   const trades = metric.closedTrades ?? [];
   const positivePnl = Math.max(0.0001, trades.filter((trade) => trade.pnl > 0).reduce((total, trade) => total + trade.pnl, 0));
   const byMarket = maxShare(trades, positivePnl, (trade) => trade.marketTicker);
@@ -294,11 +302,49 @@ function trialSummaryFor(metrics) {
   };
 }
 
-export function attachClosedTrades(metric, trades) {
+export function attachClosedTrades(metric, trades, options = {}) {
   const closedTrades = trades.filter((trade) => trade.status === "closed" && typeof trade.pnl === "number");
-  return {
+  return attachClosedTradeSummaries(metric, closedTrades, options);
+}
+
+export function attachClosedTradeSummaries(metric, closedTrades, { retainClosedTrades = true } = {}) {
+  const marketBlockPnls = pnlRows(closedTrades, (trade) => trade.marketTicker ?? trade.market_id ?? trade.marketId ?? "unknown", "marketTicker");
+  const byDay = pnlRows(closedTrades, (trade) => String(trade.closedAt ?? trade.openedAt).slice(0, 10), "day");
+  const bySide = pnlRows(closedTrades, (trade) => trade.side ?? "unknown", "side");
+  const byRegime = pnlRows(closedTrades, (trade) => trade.entryContext?.regime?.timeToClose ?? "unknown", "regime");
+  const positivePnl = Math.max(0.0001, closedTrades.filter((trade) => trade.pnl > 0).reduce((total, trade) => total + trade.pnl, 0));
+  const summary = {
+    closed: closedTrades.length,
+    independentMarkets: marketBlockPnls.length,
+    representedDays: byDay.length,
+    retainedRows: retainClosedTrades ? closedTrades.length : 0,
+  };
+  const compact = {
     ...metric,
-    closedTrades,
+    closedTradeSummary: summary,
+    marketBlockPnls,
+    concentration: {
+      maxMarketShare: maxPositiveShareFromRows(marketBlockPnls, positivePnl),
+      maxDayShare: maxPositiveShareFromRows(byDay, positivePnl),
+      maxSideShare: maxPositiveShareFromRows(bySide, positivePnl),
+      maxRegimeShare: maxPositiveShareFromRows(byRegime, positivePnl),
+    },
     closedTradePnlStdDev: roundMoney(stddev(closedTrades.map((trade) => trade.pnl)) ?? 0),
   };
+  if (retainClosedTrades) compact.closedTrades = closedTrades;
+  return compact;
+}
+
+function pnlRows(trades, keyFn, keyField) {
+  const groups = new Map();
+  for (const trade of trades) {
+    const key = keyFn(trade) ?? "unknown";
+    groups.set(key, roundMoney((groups.get(key) ?? 0) + Number(trade.pnl ?? 0)));
+  }
+  return [...groups.entries()].sort((left, right) => String(left[0]).localeCompare(String(right[0]))).map(([key, pnl]) => ({ [keyField]: key, pnl }));
+}
+
+function maxPositiveShareFromRows(rows, positivePnl) {
+  const positives = rows.map((row) => Number(row.pnl ?? 0)).filter((value) => value > 0);
+  return positives.length ? roundRatio(Math.max(...positives) / positivePnl) : 0;
 }

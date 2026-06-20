@@ -125,9 +125,16 @@ function menuBootstrapNull(metrics, options) {
 
 function marketBlockSeries(metric) {
   const byMarket = new Map();
-  for (const trade of metric.closedTrades ?? []) {
-    const key = trade.marketTicker ?? trade.market_id ?? trade.marketId ?? "unknown";
-    byMarket.set(key, (byMarket.get(key) ?? 0) + Number(trade.pnl ?? 0));
+  if (Array.isArray(metric.marketBlockPnls) && metric.marketBlockPnls.length) {
+    for (const row of metric.marketBlockPnls) {
+      const key = row.marketTicker ?? row.marketId ?? row.market_id ?? "unknown";
+      byMarket.set(key, (byMarket.get(key) ?? 0) + Number(row.pnl ?? 0));
+    }
+  } else {
+    for (const trade of metric.closedTrades ?? []) {
+      const key = trade.marketTicker ?? trade.market_id ?? trade.marketId ?? "unknown";
+      byMarket.set(key, (byMarket.get(key) ?? 0) + Number(trade.pnl ?? 0));
+    }
   }
   const marketIds = [...byMarket.keys()].sort();
   const values = marketIds.map((key) => byMarket.get(key) ?? 0);

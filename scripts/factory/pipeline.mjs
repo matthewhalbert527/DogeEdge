@@ -1,6 +1,6 @@
 import { dataQualitySummary, filterFramesByTime, buildMarketEvents, settlementCoverageSummary } from "./data.mjs";
 import { chronologicalSplit, cpcvApproximationFolds, purgedEmbargoFolds } from "./splits.mjs";
-import { defaultCostModels, simulateAlgos } from "./simulator.mjs";
+import { defaultCostModels, simulateAlgoEvents } from "./simulator.mjs";
 import { costComparisonMetrics, executionTelemetryForSimulation, foldMetricsForAlgo, metricsForAlgo, summarizeFoldMetrics, trainMetricsForAlgo } from "./metrics.mjs";
 import { attachClosedTrades, candidateMetrics, rankFactoryMetrics } from "./ranking.mjs";
 import { finalHoldoutSplit, holdoutSummary } from "./holdout.mjs";
@@ -70,13 +70,16 @@ export function runFactoryResearchPipeline({ algos, loadResult, since = null, un
     };
   }
   const costModels = options.costModels ?? defaultCostModels;
-  const simulations = simulateAlgos(algos, events, {
-    costModels,
-    seed: options.seed,
-    bootstrapIterations: options.bootstrapIterations,
-  });
-
-  const metrics = simulations.map((simulation) => {
+  const metrics = [];
+  const trades = [];
+  const tradeExport = tradeExportManifest(options);
+  const rankingRetainsClosedTrades = options.retainClosedTradesForRanking !== false;
+  for (const algo of algos) {
+    const simulation = simulateSingleAlgo(algo, events, {
+      costModels,
+      seed: options.seed,
+      bootstrapIterations: options.bootstrapIterations,
+    });
     const base = simulation.byCostModel.base ?? Object.values(simulation.byCostModel)[0];
     const conservative = simulation.byCostModel.conservative ?? base;
     const baseMetric = metricsForAlgo(simulation.algo, base.trades, options);
@@ -168,20 +171,16 @@ export function runFactoryResearchPipeline({ algos, loadResult, since = null, un
         settlementEvidence,
         permissiveDebug: Boolean(options.permissiveDebug),
       },
-    }, base.trades);
-    return metric;
-  });
+    }, base.trades, { retainClosedTrades: rankingRetainsClosedTrades });
+    metrics.push(metric);
+    appendExportTrades(trades, simulation, tradeExport);
+  }
 
   const rankedMetrics = rankFactoryMetrics(metrics, options).map(publicMetric);
   const candidates = candidateMetrics(rankedMetrics);
-  const trades = simulations.flatMap((simulation) => {
-    const base = simulation.byCostModel.base ?? Object.values(simulation.byCostModel)[0];
-    return base.trades.map((trade) => ({
-      algoId: simulation.algo.id,
-      algoName: simulation.algo.name,
-      ...trade,
-    }));
-  }).sort((left, right) => String(left.algoName).localeCompare(String(right.algoName)) || Date.parse(left.openedAt) - Date.parse(right.openedAt));
+  trades.sort((left, right) => String(left.algoName).localeCompare(String(right.algoName)) || Date.parse(left.openedAt) - Date.parse(right.openedAt));
+  tradeExport.exportedRows = trades.length;
+  tradeExport.truncated = tradeExport.totalRows > tradeExport.exportedRows;
 
   return {
     frames: filteredFrames,
@@ -198,6 +197,7 @@ export function runFactoryResearchPipeline({ algos, loadResult, since = null, un
     metrics: rankedMetrics,
     candidates,
     trades,
+    tradeExport,
     costModels,
     searchBudget: options.searchBudget ?? null,
     dataQuality: {
@@ -212,6 +212,8 @@ export function runFactoryResearchPipeline({ algos, loadResult, since = null, un
 function publicMetric(metric) {
   const {
     closedTrades: _closedTrades,
+    marketBlockPnls: _marketBlockPnls,
+    closedTradeSummary: _closedTradeSummary,
     foldMetrics,
     cpcvMetrics,
     cpcvTrainMetrics,
@@ -228,6 +230,56 @@ function publicMetric(metric) {
     cpcvPathMetrics: compactCpcvPathMetrics(cpcvMetrics, cpcvTrainMetrics),
     regimeBreakdown: compactRegimeBreakdown(regimeBreakdown),
   };
+}
+
+function simulateSingleAlgo(algo, events, options = {}) {
+  const costModels = options.costModels ?? defaultCostModels;
+  const byCostModel = {};
+  for (const costModel of costModels) {
+    byCostModel[costModel.id] = simulateAlgoEvents(algo, events, {
+      ...options,
+      costModel,
+      seed: `${options.seed ?? "dogeedge"}:${algo.id}:${costModel.id}`,
+    });
+  }
+  return {
+    algo,
+    byCostModel,
+    trades: byCostModel.base?.trades ?? Object.values(byCostModel)[0]?.trades ?? [],
+  };
+}
+
+function tradeExportManifest(options = {}) {
+  const rawLimit = options.maxExportTrades;
+  const maxRows = rawLimit === null || rawLimit === undefined || rawLimit === false
+    ? Number.POSITIVE_INFINITY
+    : Math.max(0, Math.floor(Number(rawLimit)));
+  return {
+    schemaVersion: "dogeedge.factory.trade-export.v1",
+    mode: Number.isFinite(maxRows) ? "bounded" : "complete",
+    maxRows: Number.isFinite(maxRows) ? maxRows : null,
+    totalRows: 0,
+    exportedRows: 0,
+    skippedRows: 0,
+    truncated: false,
+  };
+}
+
+function appendExportTrades(output, simulation, manifest) {
+  const base = simulation.byCostModel.base ?? Object.values(simulation.byCostModel)[0];
+  const limit = Number.isFinite(manifest.maxRows) ? manifest.maxRows : Number.POSITIVE_INFINITY;
+  for (const trade of base.trades) {
+    manifest.totalRows += 1;
+    if (output.length >= limit) {
+      manifest.skippedRows += 1;
+      continue;
+    }
+    output.push({
+      algoId: simulation.algo.id,
+      algoName: simulation.algo.name,
+      ...trade,
+    });
+  }
 }
 
 function compactCostModels(costModels = {}) {
