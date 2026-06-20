@@ -187,11 +187,13 @@ async function checkHeadless() {
   const ageSeconds = doc?.checkedAt ? Math.max(0, (Date.parse(checkedAt) - Date.parse(doc.checkedAt)) / 1000) : null;
   const fresh = ageSeconds !== null && ageSeconds <= Math.max(90, heartbeatSeconds * 4);
   return {
-    ok: Boolean(doc?.status === "ok" && fresh && doc.latestFresh !== false && doc.executableFresh !== false && doc.topTradersStatus === "running" && doc.canarySelectionStale !== true),
+    ok: headlessSupervisorOk(doc, { fresh }),
     status: doc?.status ?? null,
     checkedAt: doc?.checkedAt ?? null,
     ageSeconds,
     fresh,
+    latestFresh: doc?.latestFresh ?? null,
+    executableFresh: doc?.executableFresh ?? null,
     topTradersStatus: doc?.topTradersStatus ?? null,
     selectedAlgoCount: doc?.selectedAlgoCount ?? null,
     canaryAttempts: doc?.canaryAttempts ?? null,
@@ -201,6 +203,16 @@ async function checkHeadless() {
     canarySelectionStale: doc?.canarySelectionStale === true,
     canarySelectionRestartEligible: doc?.canarySelectionRestartEligible === true,
   };
+}
+
+export function headlessSupervisorOk(doc, { fresh = false } = {}) {
+  return Boolean(
+    doc?.status === "ok"
+    && fresh
+    && doc.chromeAlive !== false
+    && doc.topTradersStatus === "running"
+    && doc.canarySelectionStale !== true
+  );
 }
 
 async function checkExecutionCanaries() {
@@ -283,7 +295,7 @@ export function evidenceLoopHealth(doc, { nowMs = Date.now(), heartbeatSeconds =
   const running = doc?.status === "running";
   const runningFresh = running && loopAlive && startedAt ? nowMs - startedAt <= Math.max(45 * 60_000, heartbeatSeconds * 8 * 1000) : false;
   return {
-    ok: Boolean((doc?.status === "ok" && !overdue && recentEnough) || runningFresh),
+    ok: Boolean((doc?.status === "ok" && loopAlive && !overdue && recentEnough) || runningFresh),
     status: doc?.status ?? null,
     loopPid: Number.isInteger(loopPid) && loopPid > 0 ? loopPid : null,
     loopAlive,

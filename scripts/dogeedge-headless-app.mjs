@@ -311,7 +311,6 @@ export function shouldRestartChrome(status) {
   if (!status || typeof status !== "object") return true;
   if (status.status !== "ok") return true;
   if (status.chromeAlive === false) return true;
-  if (status.latestFresh === false || status.executableFresh === false) return true;
   if (status.topTradersStatus && status.topTradersStatus !== "running") return true;
   if (Number(status.selectedAlgoCount ?? 0) <= 0 && Number(status.canaryRows ?? 0) > 0) return true;
   if (status.canarySelectionRestartEligible === true) return true;

@@ -35,7 +35,7 @@ import { forecastCalibrationForDecisionRows, officialForecastCalibrationReport, 
 import { deterministicLinkageBackfill } from "../../scripts/factory/backfill-linkage.mjs";
 import { loadSourceSweep, materializeExactLinkageForSource, mergeTopTradersExecutable, selectEvidenceProbes } from "../../scripts/factory/evidence-lane.mjs";
 import { countTargetMarkets, evalBundleArgsForBootstrap, executionCanariesNeedReseed, executionCanaryHealth, mergedCanaryExclusions, mirrorTargetMarketSelectionArtifacts, readinessComponent, writeReadinessPercent } from "../../scripts/factory/evidence-bootstrap.mjs";
-import { evidenceLoopArgsForSupervisor, evidenceLoopHealth, executionCanarySupervisorHealth } from "../../scripts/dogeedge-evidence-supervisor.mjs";
+import { evidenceLoopArgsForSupervisor, evidenceLoopHealth, executionCanarySupervisorHealth, headlessSupervisorOk } from "../../scripts/dogeedge-evidence-supervisor.mjs";
 import { canarySelectionStatus, shouldRestartChrome } from "../../scripts/dogeedge-headless-app.mjs";
 import { runEvidencePreflight } from "../../scripts/factory/evidence-preflight.mjs";
 import { fetchKalshiHistoricalSettlements } from "../../scripts/factory/provider-kalshi.mjs";
@@ -1711,6 +1711,22 @@ describe("factory research safeguards", () => {
     });
   });
 
+  it("does not treat a stopped evidence loop as healthy just because the last cycle was recent", () => {
+    const nowMs = Date.parse("2026-06-20T01:30:00.000Z");
+    expect(evidenceLoopHealth({
+      status: "ok",
+      loopPid: 99999999,
+      finishedAt: "2026-06-20T01:25:00.000Z",
+      nextRunAt: "2026-06-20T01:45:00.000Z",
+      canPlaceOrders: false,
+    }, { nowMs, heartbeatSeconds: 30 })).toMatchObject({
+      ok: false,
+      loopAlive: false,
+      recentEnough: true,
+      overdue: false,
+    });
+  });
+
   it("starts the evidence loop frequently enough to catch 15-minute replay targets", () => {
     const args = evidenceLoopArgsForSupervisor({
       maxProbes: 3,
@@ -2035,6 +2051,23 @@ describe("factory research safeguards", () => {
       canarySelectionStale: true,
       canarySelectionRestartEligible: true,
     })).toBe(true);
+  });
+
+  it("does not restart healthy headless monitoring only because local worker timestamps are quiet", () => {
+    const quietStatus = {
+      status: "ok",
+      chromeAlive: true,
+      latestFresh: false,
+      executableFresh: false,
+      topTradersStatus: "running",
+      selectedAlgoCount: 3,
+      canaryRows: 3,
+      canarySelectionStale: false,
+      canarySelectionRestartEligible: false,
+    };
+
+    expect(shouldRestartChrome(quietStatus)).toBe(false);
+    expect(headlessSupervisorOk(quietStatus, { fresh: true })).toBe(true);
   });
 
   it("loads the latest rich supported research source instead of a bounded promote-check", async () => {
