@@ -162,6 +162,10 @@ async function checkHeadless() {
     selectedAlgoCount: doc?.selectedAlgoCount ?? null,
     canaryAttempts: doc?.canaryAttempts ?? null,
     canaryAcceptedBuys: doc?.canaryAcceptedBuys ?? null,
+    expectedCanaryCount: doc?.expectedCanaryCount ?? null,
+    selectedCanaryCount: doc?.selectedCanaryCount ?? null,
+    canarySelectionStale: doc?.canarySelectionStale === true,
+    canarySelectionRestartEligible: doc?.canarySelectionRestartEligible === true,
   };
 }
 

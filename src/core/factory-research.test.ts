@@ -35,6 +35,7 @@ import { forecastCalibrationForDecisionRows, officialForecastCalibrationReport, 
 import { deterministicLinkageBackfill } from "../../scripts/factory/backfill-linkage.mjs";
 import { loadSourceSweep, materializeExactLinkageForSource, mergeTopTradersExecutable, selectEvidenceProbes } from "../../scripts/factory/evidence-lane.mjs";
 import { executionCanariesNeedReseed, readinessComponent, writeReadinessPercent } from "../../scripts/factory/evidence-bootstrap.mjs";
+import { canarySelectionStatus, shouldRestartChrome } from "../../scripts/dogeedge-headless-app.mjs";
 import { runEvidencePreflight } from "../../scripts/factory/evidence-preflight.mjs";
 import { fetchKalshiHistoricalSettlements } from "../../scripts/factory/provider-kalshi.mjs";
 import { selectTargetMarkets } from "../../scripts/factory/target-markets.mjs";
@@ -1402,6 +1403,62 @@ describe("factory research safeguards", () => {
       sourceRunId: "run-2",
       maxExecutionCanaries: 3,
     })).toBe(false);
+  });
+
+  it("marks headless top-trader selection stale when it is not on the installed execution canary lane", () => {
+    const executionCanaries = {
+      probes: [
+        { id: "generated:sweep-scalp-current", sourceAlgoId: "sweep-scalp-current" },
+        { id: "generated:sweep-liquidity-current", sourceAlgoId: "sweep-liquidity-current" },
+      ],
+    };
+    expect(canarySelectionStatus({
+      topTradersArena: {
+        status: "running",
+        selectedAlgoId: "generated:sweep-scalp-legacy",
+        selectedAlgoIds: ["generated:sweep-scalp-legacy"],
+      },
+    }, executionCanaries)).toMatchObject({
+      expectedCanaryCount: 2,
+      selectedCanaryCount: 0,
+      canarySelectionStale: true,
+    });
+    expect(canarySelectionStatus({
+      topTradersArena: {
+        status: "running",
+        selectedAlgoId: "generated:sweep-scalp-current",
+        selectedAlgoIds: ["generated:sweep-scalp-current", "generated:sweep-liquidity-current"],
+      },
+    }, executionCanaries)).toMatchObject({
+      expectedCanaryCount: 2,
+      selectedCanaryCount: 2,
+      canarySelectionStale: false,
+    });
+  });
+
+  it("restarts headless Chrome only when stale canary selection is restart-eligible", () => {
+    expect(shouldRestartChrome({
+      status: "ok",
+      chromeAlive: true,
+      latestFresh: true,
+      executableFresh: true,
+      topTradersStatus: "running",
+      selectedAlgoCount: 3,
+      canaryRows: 3,
+      canarySelectionStale: true,
+      canarySelectionRestartEligible: false,
+    })).toBe(false);
+    expect(shouldRestartChrome({
+      status: "ok",
+      chromeAlive: true,
+      latestFresh: true,
+      executableFresh: true,
+      topTradersStatus: "running",
+      selectedAlgoCount: 3,
+      canaryRows: 3,
+      canarySelectionStale: true,
+      canarySelectionRestartEligible: true,
+    })).toBe(true);
   });
 
   it("loads the latest rich supported research source instead of a bounded promote-check", async () => {

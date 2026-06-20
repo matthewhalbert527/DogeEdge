@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const args = parseArgs(process.argv.slice(2));
 const url = stringArg("url", "http://127.0.0.1:5173");
@@ -16,10 +17,11 @@ const once = Boolean(args.once);
 let chrome = null;
 let startedAt = new Date().toISOString();
 
-process.on("SIGINT", () => shutdown(0));
-process.on("SIGTERM", () => shutdown(0));
-
-await run();
+if (isMainModule()) {
+  process.on("SIGINT", () => shutdown(0));
+  process.on("SIGTERM", () => shutdown(0));
+  await run();
+}
 
 async function run() {
   if (!existsSync(chromePath)) {
@@ -81,20 +83,25 @@ async function closeChrome() {
 async function buildStatus() {
   const latestPath = path.join(storageDir, "latest.json");
   const executablePath = path.join(storageDir, "top-traders-executable.json");
+  const executionCanariesPath = path.join(storageDir, "execution-canaries.json");
   const latest = await readJsonMaybe(latestPath);
   const executableDoc = await readJsonMaybe(executablePath);
+  const executionCanaries = await readJsonMaybe(executionCanariesPath);
   const checkedAt = new Date().toISOString();
+  const startedAgeSeconds = Math.max(0, (Date.parse(checkedAt) - Date.parse(startedAt)) / 1000);
   const latestStoredAt = stringOrNull(latest?.storedAt);
   const executableStoredAt = stringOrNull(executableDoc?.storedAt);
   const latestAgeSeconds = latestStoredAt ? Math.max(0, (Date.parse(checkedAt) - Date.parse(latestStoredAt)) / 1000) : null;
   const executableAgeSeconds = executableStoredAt ? Math.max(0, (Date.parse(checkedAt) - Date.parse(executableStoredAt)) / 1000) : null;
   const summary = summarizeCanaries(executableDoc?.topTradersExecutable);
+  const selection = canarySelectionStatus(latest, executionCanaries);
   const gateReasons = Array.isArray(latest?.runtimeSnapshot?.gate?.reasons) ? latest.runtimeSnapshot.gate.reasons.map(String) : [];
   const dryRunGuarded = gateReasons.some((reason) => /paper-only mode is active/i.test(reason))
     && gateReasons.some((reason) => /live trading is not enabled/i.test(reason));
   return {
     startedAt,
     checkedAt,
+    startedAgeSeconds,
     url,
     status: "ok",
     storageDir,
@@ -114,7 +121,51 @@ async function buildStatus() {
     dryRunGuarded,
     gateReasons,
     ...summary,
+    ...selection,
+    canarySelectionRestartEligible: selection.canarySelectionStale === true
+      && startedAgeSeconds >= Math.max(30, heartbeatSeconds * 2),
   };
+}
+
+export function canarySelectionStatus(latest, executionCanaries) {
+  const expectedCanaryIds = expectedCanaryAlgoIds(executionCanaries);
+  const selectedAlgoIds = selectedTopTraderAlgoIds(latest?.topTradersArena);
+  const expectedSet = new Set(expectedCanaryIds);
+  const selectedCanaryIds = selectedAlgoIds.filter((id) => expectedSet.has(id));
+  const topTradersStatus = stringOrNull(latest?.topTradersArena?.status);
+  const stale = expectedCanaryIds.length > 0
+    && topTradersStatus === "running"
+    && selectedAlgoIds.length > 0
+    && selectedCanaryIds.length === 0;
+  return {
+    expectedCanaryCount: expectedCanaryIds.length,
+    selectedCanaryCount: selectedCanaryIds.length,
+    expectedCanaryIds,
+    selectedAlgoIds,
+    selectedCanaryIds,
+    canarySelectionStale: stale,
+  };
+}
+
+export function expectedCanaryAlgoIds(executionCanaries) {
+  const probes = Array.isArray(executionCanaries?.probes) ? executionCanaries.probes : [];
+  const ids = [];
+  for (const probe of probes) {
+    const id = stringOrNull(probe?.id);
+    const sourceAlgoId = stringOrNull(probe?.sourceAlgoId);
+    const generatedId = sourceAlgoId ? `generated:${sourceAlgoId}` : null;
+    const candidate = id ?? generatedId;
+    if (candidate) ids.push(candidate);
+  }
+  return uniqueStrings(ids);
+}
+
+function selectedTopTraderAlgoIds(arena) {
+  const selected = Array.isArray(arena?.selectedAlgoIds) ? arena.selectedAlgoIds : [];
+  return uniqueStrings([
+    ...selected,
+    stringOrNull(arena?.selectedAlgoId),
+  ].filter(Boolean));
 }
 
 function summarizeCanaries(executable) {
@@ -213,6 +264,10 @@ function numberOrZero(value) {
   return Number.isFinite(number) ? number : 0;
 }
 
+function uniqueStrings(values) {
+  return [...new Set(values.map((value) => String(value)).filter((value) => value.length > 0))];
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -224,12 +279,17 @@ function shutdown(code) {
   process.exit(code);
 }
 
-function shouldRestartChrome(status) {
+export function shouldRestartChrome(status) {
   if (!status || typeof status !== "object") return true;
   if (status.status !== "ok") return true;
   if (status.chromeAlive === false) return true;
   if (status.latestFresh === false || status.executableFresh === false) return true;
   if (status.topTradersStatus && status.topTradersStatus !== "running") return true;
   if (Number(status.selectedAlgoCount ?? 0) <= 0 && Number(status.canaryRows ?? 0) > 0) return true;
+  if (status.canarySelectionRestartEligible === true) return true;
   return false;
+}
+
+function isMainModule() {
+  return process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 }
