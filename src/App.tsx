@@ -3370,6 +3370,7 @@ function FactoryArenaView({
       <PanelTitle title="Factory & Arena" icon={<BrainCircuit size={18} />} />
       <div className="factory-grid">
         <FactoryBatchPanel arena={arena} arenaArchives={arenaArchives} asOf={asOf} batches={factoryAlgoBatches} onGenerateFactoryBatch={onGenerateFactoryBatch} savedTradeSummaries={savedTradeSummaries} />
+        <FactoryReadinessStagePanel latestSweep={latestSweep} />
         <FactoryResearchEvidencePanel latestSweep={latestSweep} />
       </div>
       <TestingArenaView
@@ -3498,6 +3499,82 @@ function FactoryBatchPanel({
       <p className="panel-note">Each generation trains on Arena results that match the current testing mode. Older and repeat-buy samples stay visible in Activated Algos but are skipped for parent selection.</p>
     </section>
   );
+}
+
+function FactoryReadinessStagePanel({ latestSweep }: { latestSweep: LocalFactorySweep | null }) {
+  const rows = latestSweep ? [...latestSweep.candidates, ...latestSweep.topMetrics] : [];
+  const officialCoverage = factorySweepOfficialSettlementCoverage(latestSweep, rows);
+  const replayReady = factorySweepReplayGradeTicksAvailable(latestSweep);
+  const researchGate = factoryResearchGateSummary(latestSweep);
+  const exactLinkedPaperRows = rows.filter((row) => row.researchCandidateId && row.candidateConfigHash && row.paperEvidence?.available).length;
+  const independentMarkets = Math.max(0, ...rows.map((row) => Number(row.independentClosedMarkets ?? 0)), 0);
+  const distinctDays = Math.max(0, ...rows.map((row) => Number(row.daysRepresented ?? 0)), 0);
+  const labelKnown = rows.filter((row) => row.officialResolutionAvailable).length;
+  const stage = usageStageFromSweep({
+    officialCoverage,
+    replayReady,
+    exactLinkedPaperRows,
+    independentMarkets,
+    distinctDays,
+    labelKnown,
+    researchValidated: researchGate.validCount,
+  });
+  return (
+    <section className="panel factory-panel">
+      <div className="panel-heading compact">
+        <div>
+          <h2>Readiness Stages</h2>
+          <span className="panel-subtitle">Pipeline, research, paper, and live are separate gates</span>
+        </div>
+        <Badge tone={stage.tone}>{stage.label}</Badge>
+      </div>
+      <div className="stats-grid compact">
+        <Stat label="Official Labels" value={percent(officialCoverage)} tone={officialCoverage >= 0.95 ? "positive" : undefined} />
+        <Stat label="Replay Grade" value={replayReady ? "ready" : "blocked"} tone={replayReady ? "positive" : "negative"} />
+        <Stat label="Exact Paper" value={countOrDash(exactLinkedPaperRows)} tone={exactLinkedPaperRows > 0 ? "positive" : undefined} />
+        <Stat label="Markets" value={countOrDash(independentMarkets)} tone={independentMarkets >= 20 ? "positive" : undefined} />
+        <Stat label="Days" value={countOrDash(distinctDays)} tone={distinctDays >= 7 ? "positive" : undefined} />
+        <Stat label="Labels Known" value={countOrDash(labelKnown)} tone={labelKnown >= 20 ? "positive" : undefined} />
+      </div>
+      <div className="alert-card warn">
+        <strong>{researchGate.hasValidCandidate ? "Paper gate review required" : "No statistically validated candidate"}</strong>
+        <span>{stage.detail}</span>
+      </div>
+      <p className="panel-note">Live eligibility remains locked behind extended paper validation and manual approval. This panel never promotes telemetry-only, rejected, unsupported, or missing-link rows.</p>
+    </section>
+  );
+}
+
+function usageStageFromSweep({
+  officialCoverage,
+  replayReady,
+  exactLinkedPaperRows,
+  independentMarkets,
+  distinctDays,
+  labelKnown,
+  researchValidated,
+}: {
+  officialCoverage: number;
+  replayReady: boolean;
+  exactLinkedPaperRows: number;
+  independentMarkets: number;
+  distinctDays: number;
+  labelKnown: number;
+  researchValidated: number;
+}) {
+  if (researchValidated > 0) {
+    return { label: "Stage D Review", tone: "warn" as const, detail: "At least one candidate reached the research roster, but live promotion still requires frozen paper validation and human review." };
+  }
+  if (independentMarkets >= 100 && distinctDays >= 7 && officialCoverage >= 0.95 && replayReady) {
+    return { label: "Stage C", tone: "info" as const, detail: "Research search can run under a locked protocol; paper-candidate gates still require positive conservative holdout evidence." };
+  }
+  if (independentMarkets >= 20 && labelKnown >= 20 && exactLinkedPaperRows >= 3 && officialCoverage >= 0.95 && replayReady) {
+    return { label: "Stage B", tone: "info" as const, detail: "Diagnostic evidence exists, but promotion eligibility remains closed until a locked research protocol and larger sample pass." };
+  }
+  if (replayReady && officialCoverage >= 0.95 && exactLinkedPaperRows >= 1) {
+    return { label: "Stage A", tone: "good" as const, detail: "The pipeline is operational as infrastructure proof only; it is not statistical validation." };
+  }
+  return { label: "Not Ready", tone: "warn" as const, detail: "Evidence acquisition must add replay-grade markets, finalized labels, and exact-linked paper rows before research can be trusted." };
 }
 
 function FactoryResearchEvidencePanel({ latestSweep }: { latestSweep: LocalFactorySweep | null }) {

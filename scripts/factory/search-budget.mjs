@@ -19,18 +19,39 @@ export const defaultSearchBudgetPolicy = {
 
 export const defaultPromoteCheckDiagnosticCap = 100;
 
+export function evidenceScaledFamilyTrialCap(independentReplayGradeMarkets = 0) {
+  const count = Math.max(0, Number(independentReplayGradeMarkets ?? 0));
+  if (count < 20) return { maxRegisteredCandidatesPerFamily: 10, mode: "fixed_diagnostic_templates", parameterOptimizationAllowed: false };
+  if (count < 50) return { maxRegisteredCandidatesPerFamily: 25, mode: "bounded_registered_search", parameterOptimizationAllowed: true };
+  if (count < 100) return { maxRegisteredCandidatesPerFamily: 50, mode: "bounded_registered_search", parameterOptimizationAllowed: true };
+  if (count < 200) return { maxRegisteredCandidatesPerFamily: 100, mode: "bounded_registered_search", parameterOptimizationAllowed: true };
+  return { maxRegisteredCandidatesPerFamily: 200, mode: "bounded_registered_search", parameterOptimizationAllowed: true };
+}
+
 export function searchBudgetDecision({
   eventCount = 0,
   officialSettlementCoverage = 0,
+  independentReplayGradeMarkets = null,
   requestedSweepAlgos = 0,
   sweepMode = false,
   deepSweepMode = false,
   policy = {},
 } = {}) {
+  const evidenceCap = evidenceScaledFamilyTrialCap(independentReplayGradeMarkets ?? eventCount);
   const config = { ...defaultSearchBudgetPolicy, ...policy };
+  config.lowEvidenceFamilyPilotCount = Math.min(config.lowEvidenceFamilyPilotCount, evidenceCap.maxRegisteredCandidatesPerFamily);
+  config.lowEvidenceLabFamilyPilotCount = Math.min(config.lowEvidenceLabFamilyPilotCount, evidenceCap.maxRegisteredCandidatesPerFamily);
+  if ((independentReplayGradeMarkets ?? eventCount) < 20) {
+    const activeFamilySlots = Math.max(1, config.priorityResearchFamilies?.length ?? 0);
+    config.lowEvidenceSweepCap = Math.min(config.lowEvidenceSweepCap, evidenceCap.maxRegisteredCandidatesPerFamily * activeFamilySlots);
+    config.lowEvidenceExecutableMintingAllowed = true;
+    config.allowLowEvidenceLabResearch = false;
+    config.allowLabOnlyFamilyMinting = false;
+  }
   const reasonCodes = [];
   if (eventCount < config.minEventsForBroadSweep) reasonCodes.push("search_budget_limited_by_sample_size");
   if (officialSettlementCoverage < config.minOfficialSettlementCoverage) reasonCodes.push("deep_sweep_blocked_low_official_coverage");
+  if ((independentReplayGradeMarkets ?? eventCount) < 20) reasonCodes.push("search_budget_limited_by_replay_grade_market_count");
   const limited = sweepMode && reasonCodes.length > 0;
   const deepSweepAllowed = !deepSweepMode
     ? false
@@ -49,8 +70,11 @@ export function searchBudgetDecision({
     reasonCodes,
     eventCount,
     officialSettlementCoverage: roundRatio(officialSettlementCoverage),
+    independentReplayGradeMarkets: independentReplayGradeMarkets ?? null,
     requestedSweepAlgos,
     maxGeneratedAlgos,
+    evidenceScaledFamilyTrialCap: evidenceCap.maxRegisteredCandidatesPerFamily,
+    parameterOptimizationAllowed: evidenceCap.parameterOptimizationAllowed,
     executableMintingAllowed,
     labResearchAllowed,
     policy: config,

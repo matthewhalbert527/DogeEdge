@@ -1,6 +1,6 @@
 import { once } from "node:events";
 import { createWriteStream } from "node:fs";
-import { access, mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { readFactoryDecisionFrames } from "./factory/data.mjs";
@@ -82,6 +82,7 @@ const paperEvidence = await readPaperEvidence({
 });
 const officialSettlementRows = await readOfficialSettlementStore(officialSettlementsPath);
 const officialOutcomes = officialOutcomeMap(officialSettlementRows);
+const independentReplayGradeMarkets = await independentReplayGradeMarketCount(dataRoot);
 const loadResult = await readFactoryDecisionFrames(framesDir, { permissiveDebug, officialOutcomes });
 const defaultAlgos = algoDefinitions();
 const requestedSweepAlgos = sweepMode ? sweepAlgoDefinitions() : [];
@@ -91,6 +92,7 @@ const officialSettlementCoverage = loadResult.events.length
 let searchBudget = searchBudgetDecision({
   eventCount: loadResult.eventCount,
   officialSettlementCoverage,
+  independentReplayGradeMarkets,
   requestedSweepAlgos: requestedSweepAlgos.length,
   sweepMode,
   deepSweepMode: requestedDeepSweepMode,
@@ -1162,6 +1164,31 @@ async function writeJsonIfMissing(filePath, value) {
     await access(filePath);
   } catch {
     await writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`);
+  }
+}
+
+async function independentReplayGradeMarketCount(root) {
+  const datasetRoot = path.join(root, "research", "datasets");
+  const entries = await readdir(datasetRoot, { withFileTypes: true }).catch(() => []);
+  const dirs = entries.filter((entry) => entry.isDirectory()).map((entry) => path.join(datasetRoot, entry.name)).sort();
+  for (const dir of dirs.reverse()) {
+    try {
+      const manifest = JSON.parse(await readFile(path.join(dir, "dataset_manifest.json"), "utf8"));
+      const count = Number(manifest.marketCount ?? manifest.includedMarketIds?.length ?? 0);
+      if (Number.isFinite(count) && count > 0) return count;
+    } catch {
+      // Try the next dataset.
+    }
+  }
+  try {
+    const registryPath = path.join(root, "evidence-registry", "markets.jsonl");
+    const rows = (await readFile(registryPath, "utf8")).split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+    return new Set(rows.filter((row) => row.replayGrade === true).map((row) => row.marketTicker).filter(Boolean)).size;
+  } catch {
+    return null;
   }
 }
 

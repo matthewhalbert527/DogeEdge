@@ -1,0 +1,47 @@
+name: PR Checks
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  verify:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run lint
+      - run: npm run build
+      - name: Offline replay fixture
+        shell: pwsh
+        run: |
+          npm run factory:capture-replay -- --mock-input test/fixtures/replay-raw/KXDOGE15M-FIXTURE.jsonl --markets-file test/fixtures/target-markets.json --out artifacts/ci/replay/raw
+          npm run factory:build-replay -- --input artifacts/ci/replay/raw --markets-file test/fixtures/target-markets.json --out artifacts/ci/replay/final
+          npm run factory:replay-coverage -- --input artifacts/ci/replay/final --markets-file test/fixtures/target-markets.json --out artifacts/ci/replay/coverage.json
+      - name: Research protocol fixture
+        shell: pwsh
+        run: |
+          npm run factory:fetch-settlements -- --mock-input test/fixtures/official-settlements.mock.jsonl --out artifacts/ci/official_settlements.jsonl
+          npm run factory:build-research-dataset -- --replay-root artifacts/ci/replay/final --settlements artifacts/ci/official_settlements.jsonl --out artifacts/ci/research/dataset
+          npm run factory:calibrate-simulator -- --dataset artifacts/ci/research/dataset --replay-root artifacts/ci/replay/final --out artifacts/ci/research/dataset/simulator-calibration
+          npm run factory:create-protocol -- --dataset artifacts/ci/research/dataset --out artifacts/ci/research/protocol
+          npm run factory:lock-protocol -- --protocol artifacts/ci/research/protocol/experiment_protocol.json
+          npm run factory:protocol-audit -- --protocol artifacts/ci/research/protocol/experiment_protocol.json --out artifacts/ci/research/protocol
+          npm run factory:usage-readiness -- --dataset artifacts/ci/research/dataset --protocol artifacts/ci/research/protocol/experiment_protocol.json --out artifacts/ci/usage-readiness.json
+      - name: Secret and generated-data scan
+        shell: pwsh
+        run: |
+          if (git grep -n -I -E "BEGIN (RSA |EC |OPENSSH |)PRIVATE KEY|KALSHI-ACCESS-SIGNATURE: [A-Za-z0-9+/=]{20,}" -- . ':!src/core/*test.ts') { throw "Potential secret material found" }
+          $large = git ls-files | ForEach-Object { $item = Get-Item $_ -ErrorAction SilentlyContinue; if ($item -and $item.Length -gt 5242880) { "$($_)`t$($item.Length)" } }
+          if ($large) { $large; throw "Oversized tracked file found" }
+      - name: Hidden Unicode scan
+        shell: pwsh
+        run: |
+          $bad = Select-String -Path (git ls-files '*.js' '*.mjs' '*.ts' '*.tsx' '*.json' '*.md') -Pattern ([char]0x202A),([char]0x202B),([char]0x202D),([char]0x202E),([char]0x2066),([char]0x2067),([char]0x2068),([char]0x2069) -SimpleMatch
+          if ($bad) { $bad; throw "Bidirectional Unicode control character found" }

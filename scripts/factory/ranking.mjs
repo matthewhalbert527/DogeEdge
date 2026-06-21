@@ -56,7 +56,7 @@ export function rankFactoryMetrics(metrics, options = {}) {
       ...review,
     };
   });
-  return withStats.sort((left, right) => right.robustScore - left.robustScore || right.totalPnl - left.totalPnl || right.closed - left.closed);
+  return withStats.sort(compareResearchCandidates);
 }
 
 export function candidateMetrics(metrics) {
@@ -92,6 +92,58 @@ function robustScoreFor(metric, context) {
     ? (calibration.expectedCalibrationError ?? 0.5) * 20 + Math.max(0, (calibration.brierScore ?? 0.25) - 0.25) * 20
     : 0;
   return roundRatio(pnl + sampleBonus + consistency + cpcvScore + walkForwardScore + holdoutScore + paperScore + confidence - risk - concentrationPenalty - ciPenalty - calibrationPenalty - context.multipleTestingPenalty * 20 - pValuePenalty);
+}
+
+export function compareResearchCandidates(left, right) {
+  const leftGate = gatePassSortValue(left);
+  const rightGate = gatePassSortValue(right);
+  if (leftGate !== rightGate) return rightGate - leftGate;
+  const leftConservative = conservativeHoldoutExpectancy(left);
+  const rightConservative = conservativeHoldoutExpectancy(right);
+  const leftPositiveConservative = leftConservative > 0 ? 1 : 0;
+  const rightPositiveConservative = rightConservative > 0 ? 1 : 0;
+  if (leftPositiveConservative !== rightPositiveConservative) return rightPositiveConservative - leftPositiveConservative;
+  const leftStress = Number(left.costModels?.stress?.totalPnl ?? left.stressTotalPnl ?? 0);
+  const rightStress = Number(right.costModels?.stress?.totalPnl ?? right.stressTotalPnl ?? 0);
+  const leftPositiveStress = leftStress >= 0 ? 1 : 0;
+  const rightPositiveStress = rightStress >= 0 ? 1 : 0;
+  if (leftPositiveStress !== rightPositiveStress) return rightPositiveStress - leftPositiveStress;
+  const leftConfidence = Number(left.adjustedConfidence ?? left.dsrApprox ?? left.psr ?? 0);
+  const rightConfidence = Number(right.adjustedConfidence ?? right.dsrApprox ?? right.psr ?? 0);
+  if (leftConfidence !== rightConfidence) return rightConfidence - leftConfidence;
+  const leftFold = Number(left.foldSummary?.positiveFoldRate ?? left.foldConsistency ?? 0);
+  const rightFold = Number(right.foldSummary?.positiveFoldRate ?? right.foldConsistency ?? 0);
+  if (leftFold !== rightFold) return rightFold - leftFold;
+  const leftDrawdown = Math.abs(Math.min(0, Number(left.maxDrawdown ?? 0)));
+  const rightDrawdown = Math.abs(Math.min(0, Number(right.maxDrawdown ?? 0)));
+  if (leftDrawdown !== rightDrawdown) return leftDrawdown - rightDrawdown;
+  const leftConcentration = concentrationPenaltySortValue(left);
+  const rightConcentration = concentrationPenaltySortValue(right);
+  if (leftConcentration !== rightConcentration) return leftConcentration - rightConcentration;
+  const leftSample = Number(left.independentClosedMarkets ?? left.independentMarkets ?? left.closed ?? 0);
+  const rightSample = Number(right.independentClosedMarkets ?? right.independentMarkets ?? right.closed ?? 0);
+  if (leftSample !== rightSample) return rightSample - leftSample;
+  return Number(right.totalPnl ?? 0) - Number(left.totalPnl ?? 0);
+}
+
+function gatePassSortValue(metric) {
+  if (metric.promotionVerdict === "tiny_live_eligible" || metric.promotionVerdict === "paper_candidate" || metric.promotionVerdict === "paper_only") return 1;
+  if (metric.gatePassed === true || metric.promotionEligible === true) return 1;
+  return 0;
+}
+
+function conservativeHoldoutExpectancy(metric) {
+  const holdout = metric.holdoutSummary ?? {};
+  if (Number.isFinite(holdout.conservativeExpectancy)) return Number(holdout.conservativeExpectancy);
+  if (Number.isFinite(holdout.expectancy)) return Number(holdout.expectancy);
+  const conservative = metric.costModels?.conservative ?? metric;
+  const independentMarkets = Math.max(1, Number(metric.independentClosedMarkets ?? metric.independentMarkets ?? metric.closed ?? 1));
+  return Number(conservative.totalPnl ?? 0) / independentMarkets;
+}
+
+function concentrationPenaltySortValue(metric) {
+  const concentration = metric.concentration ?? {};
+  return Number(concentration.maxMarketShare ?? 0) + Number(concentration.maxDayShare ?? 0) + Number(concentration.maxRegimeShare ?? 0);
 }
 
 export function probabilisticSharpeRatio(metric, benchmarkSharpe = 0) {

@@ -49,7 +49,13 @@ artifacts/factory-audit/
 artifacts/eval-smoke/
 artifacts/evidence/
 artifacts/evidence-*/
+artifacts/evidence-runtime/
+artifacts/profitability-readiness/
+artifacts/replay-e2e-publication/
 artifacts/cli-audit-latest/
+data/replay/
+data/research/
+data/evidence-registry/
 
 # Tauri/Rust build artifacts and installers
 src-tauri/target/

@@ -524,11 +524,27 @@ async function acquireLock(lockPath, runId) {
   await mkdir(path.dirname(lockPath), { recursive: true });
   try {
     await access(lockPath);
-    throw new Error(`e2e evidence lock exists: ${lockPath}`);
+    const existing = await readJsonMaybe(lockPath);
+    if (existing?.pid && !isProcessRunning(existing.pid)) {
+      await rm(lockPath, { force: true }).catch(() => {});
+    } else {
+      throw new Error(`e2e evidence lock exists: ${lockPath}`);
+    }
   } catch (error) {
     if (error?.code !== "ENOENT") throw error;
   }
   await writeFile(lockPath, `${JSON.stringify({ runId, pid: process.pid, createdAt: new Date().toISOString(), canPlaceOrders: false })}\n`, { flag: "wx" });
+}
+
+function isProcessRunning(pid) {
+  const numericPid = Number(pid);
+  if (!Number.isInteger(numericPid) || numericPid <= 0) return false;
+  try {
+    process.kill(numericPid, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function writeManifest(runDir, runId) {
