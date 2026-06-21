@@ -33,7 +33,8 @@ jobs:
           npm run factory:create-protocol -- --dataset artifacts/ci/research/dataset --out artifacts/ci/research/protocol
           npm run factory:lock-protocol -- --protocol artifacts/ci/research/protocol/experiment_protocol.json
           npm run factory:protocol-audit -- --protocol artifacts/ci/research/protocol/experiment_protocol.json --out artifacts/ci/research/protocol
-          npm run factory:usage-readiness -- --dataset artifacts/ci/research/dataset --protocol artifacts/ci/research/protocol/experiment_protocol.json --out artifacts/ci/usage-readiness.json
+          npm run factory:usage-readiness -- --data-root artifacts/ci/data-root --dataset artifacts/ci/research/dataset --protocol artifacts/ci/research/protocol/experiment_protocol.json --calibration artifacts/ci/research/dataset/simulator-calibration/simulator_calibration.json --out artifacts/ci/usage-readiness.json
+          npm run factory:ci-summary -- --root artifacts/ci --out artifacts/ci/summary
       - name: Secret and generated-data scan
         shell: pwsh
         run: |
@@ -45,3 +46,14 @@ jobs:
         run: |
           $bad = Select-String -Path (git ls-files '*.js' '*.mjs' '*.ts' '*.tsx' '*.json' '*.md') -Pattern ([char]0x202A),([char]0x202B),([char]0x202D),([char]0x202E),([char]0x2066),([char]0x2067),([char]0x2068),([char]0x2069) -SimpleMatch
           if ($bad) { $bad; throw "Bidirectional Unicode control character found" }
+      - name: Upload replay and research artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dogeedge-pr-checks-artifacts
+          path: |
+            artifacts/ci/replay/**
+            artifacts/ci/research/**
+            artifacts/ci/usage-readiness.json
+            artifacts/ci/summary/**
+          if-no-files-found: error

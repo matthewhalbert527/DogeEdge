@@ -197,8 +197,27 @@ async function acquireLock(lockPath, value) {
   try {
     await writeFile(lockPath, `${JSON.stringify({ ...value, pid: process.pid })}\n`, { flag: "wx" });
   } catch (error) {
-    if (error?.code === "EEXIST") throw new Error(`duplicate_collector_lockout:${lockPath}`);
+    if (error?.code === "EEXIST") {
+      const existing = await readJsonMaybe(lockPath);
+      if (existing?.pid && !isProcessRunning(existing.pid)) {
+        await rm(lockPath, { force: true }).catch(() => {});
+        await writeFile(lockPath, `${JSON.stringify({ ...value, pid: process.pid, recoveredStaleLock: true })}\n`, { flag: "wx" });
+        return;
+      }
+      throw new Error(`duplicate_collector_lockout:${lockPath}`);
+    }
     throw error;
+  }
+}
+
+function isProcessRunning(pid) {
+  const numericPid = Number(pid);
+  if (!Number.isInteger(numericPid) || numericPid <= 0) return false;
+  try {
+    process.kill(numericPid, 0);
+    return true;
+  } catch {
+    return false;
   }
 }
 

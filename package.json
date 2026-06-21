@@ -41,6 +41,7 @@
     "factory:evaluate-holdout": "node scripts/factory/research-protocol.mjs --evaluate-holdout",
     "factory:protocol-audit": "node scripts/factory/research-protocol.mjs --audit",
     "factory:usage-readiness": "node scripts/factory/usage-readiness.mjs",
+    "factory:ci-summary": "node scripts/factory/ci-summary.mjs",
     "factory:backfill-linkage": "node scripts/factory/backfill-linkage.mjs",
     "factory:linkage-audit": "node scripts/factory/backfill-linkage.mjs --audit-only",
     "factory:archive-legacy-telemetry": "node scripts/factory/archive-legacy-telemetry.mjs",
